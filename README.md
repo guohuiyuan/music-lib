@@ -19,19 +19,29 @@ music-lib/
 │   └── song.go
 ├── utils/                # 基础工具 (HTTP Client, Md5)
 │   └── request.go
+├── bilibili/             # Bilibili 音频源实现 (基于DASH API)
+│   └── bilibili.go
+├── fivesing/             # 5sing 原创音乐源实现
+│   └── fivesing.go
+├── jamendo/              # Jamendo 免费音乐源实现
+│   └── jamendo.go
+├── joox/                 # JOOX 音乐源实现
+│   └── joox.go
 ├── kugou/                # 酷狗源实现 (纯逻辑，无UI)
 │   └── kugou.go
-├── qq/                   # QQ音乐源实现 (基于旧版API)
-│   └── qq.go
+├── kuwo/                 # 酷我音乐源实现 (基于车载API)
+│   └── kuwo.go
 ├── migu/                 # 咪咕音乐源实现 (基于安卓API)
 │   └── migu.go
-└── netease/              # 网易云音乐源实现 (基于Linux API和WeApi)
-    ├── crypto.go         # 加密算法 (AES-ECB, AES-CBC, RSA)
-    └── netease.go        # 核心业务逻辑
-├── kuwo/                 # 酷我音乐源实现 (基于车载API)
-    └── kuwo.go           # 核心业务逻辑
-├── bilibili/             # Bilibili 音频源实现 (基于DASH API)
-    └── bilibili.go       # 核心业务逻辑
+├── netease/              # 网易云音乐源实现 (基于Linux API和WeApi)
+│   ├── crypto.go         # 加密算法 (AES-ECB, AES-CBC, RSA)
+│   └── netease.go        # 核心业务逻辑
+├── qianqian/             # 千千音乐源实现
+│   └── qianqian.go
+├── qq/                   # QQ音乐源实现 (基于旧版API)
+│   └── qq.go
+└── soda/                 # Soda 音乐源实现
+    └── soda.go
 ```
 
 ## 安装
@@ -152,6 +162,46 @@ require github.com/guohuiyuan/music-lib v1.0.0
 #### `func GetDownloadURL(s *model.Song) (string, error)`
 获取音频流链接。使用 DASH 格式 API (`api.bilibili.com/x/player/playurl`)，参数 `fnval=16` 请求音视频分离。支持音质优先级：Flac (无损) > Dolby (杜比) > Audio (普通)。注意：需要正确的 Cookie 才能获取高音质音频。
 
+### fivesing 包
+
+#### `func Search(keyword string) ([]model.Song, error)`
+搜索 5sing 原创音乐。使用 `search.5sing.kugou.com/home/json` API，支持原创 (yc)、翻唱 (fc) 等多种类型。返回的歌曲 ID 是复合格式：`SongID|TypeEname`。自动移除搜索结果中的 `<em>` 标签和高亮标记。
+
+#### `func GetDownloadURL(s *model.Song) (string, error)`
+获取下载链接。使用 `mobileapi.5sing.kugou.com/song/getSongUrl` API，支持 SQ (无损)、HQ (高品质)、LQ (普通) 三种音质。音质选择策略：SQ > HQ > LQ。
+
+### jamendo 包
+
+#### `func Search(keyword string) ([]model.Song, error)`
+搜索 Jamendo 免费音乐。使用 `api.jamendo.com/v3.0/tracks` API，支持按流行度排序和分页。返回的歌曲包含完整的元数据（专辑、时长、大小等）。
+
+#### `func GetDownloadURL(s *model.Song) (string, error)`
+获取下载链接。直接返回歌曲的音频流地址，支持多种格式（MP3、Ogg、Flac）。Jamendo 提供完全免费的音乐下载。
+
+### joox 包
+
+#### `func Search(keyword string) ([]model.Song, error)`
+搜索 JOOX 音乐。使用 `api-jooxtt.sanook.com/openjoox/v1/search` API，支持多语言搜索和分页。自动过滤 VIP 歌曲。
+
+#### `func GetDownloadURL(s *model.Song) (string, error)`
+获取下载链接。使用 JOOX 的播放接口获取音频流地址，支持 128k 和 320k 音质。
+
+### qianqian 包
+
+#### `func Search(keyword string) ([]model.Song, error)`
+搜索千千音乐。使用 `music.taihe.com/v1/search` API，支持多歌手拼接和歌曲时长信息。自动过滤 VIP 和付费歌曲。
+
+#### `func GetDownloadURL(s *model.Song) (string, error)`
+获取下载链接。使用千千音乐的播放接口获取音频流地址，支持多种音质。
+
+### soda 包
+
+#### `func Search(keyword string) ([]model.Song, error)`
+搜索 Soda 音乐。使用 Soda 音乐的搜索 API，支持歌曲、专辑、歌手等多种搜索类型。
+
+#### `func GetDownloadURL(s *model.Song) (string, error)`
+获取下载链接。使用 Soda 音乐的播放接口获取音频流地址。
+
 ### model 包
 
 #### `type Song struct`
@@ -162,7 +212,7 @@ require github.com/guohuiyuan/music-lib v1.0.0
 - `Album`: 专辑名称
 - `AlbumID`: 专辑ID
 - `Duration`: 时长（秒）
-- `Source`: 来源（kugou, netease, qq）
+- `Source`: 来源（kugou, netease, qq, kuwo, migu, bilibili, fivesing, jamendo, joox, qianqian, soda）
 - `URL`: 下载地址
 - `Size`: 文件大小
 
@@ -189,6 +239,39 @@ require github.com/guohuiyuan/music-lib v1.0.0
 - 某些歌曲可能需要VIP权限才能获取下载链接
 - API可能会变更，需要定期维护
 - 仅供学习和研究使用，请遵守相关法律法规
+
+## 与 go-music-dl 集成
+
+music-lib 是 [go-music-dl](https://github.com/guohuiyuan/go-music-dl) 项目的核心依赖。go-music-dl 是一个完整的、工程化的 Go 项目，将 CLI（命令行）和 Web 服务合二为一。
+
+### 主要特性
+- **双模式运行**: 支持命令行交互模式和 Web 服务模式
+- **现代化界面**: 
+  - CLI: 使用 Bubble Tea 提供交互式表格界面
+  - Web: 使用 Gin + Tailwind CSS 提供美观的网页界面
+- **完整元数据**: 显示歌曲时长、大小、专辑等详细信息
+- **统一文件命名**: 下载文件自动命名为 `歌手 - 歌名.mp3` 格式
+
+### 快速开始
+```bash
+# 安装 go-music-dl
+git clone https://github.com/guohuiyuan/go-music-dl.git
+cd go-music-dl
+go build -o music-dl ./cmd/music-dl
+
+# CLI 模式
+./music-dl -k "周杰伦"
+
+# Web 模式
+./music-dl web
+```
+
+### 项目结构
+go-music-dl 使用 music-lib 作为核心搜索库，在此基础上构建了完整的用户界面和工程化架构：
+- `cmd/music-dl/`: 命令行入口（基于 Cobra）
+- `internal/cli/`: CLI 交互逻辑（基于 Bubble Tea）
+- `internal/web/`: Web 服务逻辑（基于 Gin）
+- `pkg/models/`: 扩展数据模型（格式化方法）
 
 ## 许可证
 
