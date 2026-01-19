@@ -321,4 +321,4 @@ go-music-dl 使用 music-lib 作为核心搜索库，在此基础上构建了完
 
 ## 许可证
 
-GNU General Public License v3.0
+GNU Affero General Public License v3.0
