@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/guohuiyuan/music-lib/model"
@@ -15,10 +16,10 @@ import (
 )
 
 const (
-	UserAgent    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-	Referer      = "https://www.jamendo.com/search?q=musicdl"
-	XJamVersion  = "4gvfvv"
-	SearchAPI    = "https://www.jamendo.com/api/search"
+	UserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+	Referer       = "https://www.jamendo.com/search?q=musicdl"
+	XJamVersion   = "4gvfvv"
+	SearchAPI     = "https://www.jamendo.com/api/search"
 	SearchApiPath = "/api/search" // 用于签名计算
 )
 
@@ -30,7 +31,6 @@ func init() {
 // 对应 Python: _search 方法
 func Search(keyword string) ([]model.Song, error) {
 	// 1. 构造搜索参数
-	// Python: {'query': keyword, 'type': 'track', 'limit': ..., 'identities': 'www'}
 	params := url.Values{}
 	params.Set("query", keyword)
 	params.Set("type", "track")
@@ -43,7 +43,6 @@ func Search(keyword string) ([]model.Song, error) {
 	xJamCall := makeXJamCall(SearchApiPath)
 
 	// 3. 发送请求
-	// Python: headers['x-jam-call'] = self._makexjamcall()
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),
@@ -56,7 +55,6 @@ func Search(keyword string) ([]model.Song, error) {
 	}
 
 	// 4. 解析 JSON
-	// Jamendo 返回的是一个对象列表
 	var results []struct {
 		ID       int    `json:"id"`
 		Name     string `json:"name"`
@@ -67,7 +65,13 @@ func Search(keyword string) ([]model.Song, error) {
 		Album struct {
 			Name string `json:"name"`
 		} `json:"album"`
-		// 下载/流地址可能在 download 或 stream 字段中
+		// 封面结构
+		Cover struct {
+			Big struct {
+				Size300 string `json:"size300"`
+			} `json:"big"`
+		} `json:"cover"`
+		// 下载/流地址
 		Download map[string]string `json:"download"`
 		Stream   map[string]string `json:"stream"`
 	}
@@ -88,35 +92,38 @@ func Search(keyword string) ([]model.Song, error) {
 			continue
 		}
 
-		// 音质选择策略: flac > ogg > mp3
-		// Python: for quality in ['flac', 'ogg', 'mp3']: ...
+		// 音质选择策略: flac > mp3 > ogg
+		// 这里的顺序决定了下载的优先格式
 		var downloadURL string
+		var ext string
+
 		if url := streams["flac"]; url != "" {
 			downloadURL = url
-		} else if url := streams["ogg"]; url != "" {
-			downloadURL = url
+			ext = "flac"
 		} else if url := streams["mp3"]; url != "" {
 			downloadURL = url
+			ext = "mp3"
+		} else if url := streams["ogg"]; url != "" {
+			downloadURL = url
+			ext = "ogg"
 		} else {
 			continue // 没有有效链接
 		}
 
-		// 简单处理 ID 转 string
-		idStr := fmt.Sprintf("%d", item.ID)
+		// [核心修改] 将下载链接拼接到 ID 中，确保 GetDownloadURL 能获取到
+		// 格式: ID|DownloadURL
+		compoundID := fmt.Sprintf("%d|%s", item.ID, downloadURL)
 
-		// 填充 Song 模型
-		// 注意：Jamendo 直接给出了 URL，我们将其存入 model.Song 的 URL 字段中
-		// 如果 model.Song 没有 URL 字段，可以考虑存入 ID 字段做 Hack (如 "ID|URL")
-		// 这里假设 model.Song 结构体有 URL 字段 (符合 music-lib 通用设计)
 		songs = append(songs, model.Song{
 			Source:   "jamendo",
-			ID:       idStr,
+			ID:       compoundID,             // 存储复合ID
 			Name:     item.Name,
 			Artist:   item.Artist.Name,
 			Album:    item.Album.Name,
 			Duration: item.Duration,
-			URL:      downloadURL, // 直接存储 URL
-			// Size 未知
+			Ext:      ext,                    // 明确指定后缀
+			Cover:    item.Cover.Big.Size300, // 填充封面
+			// Size:  0,                      // Jamendo 搜索结果不包含大小
 		})
 	}
 
@@ -124,35 +131,33 @@ func Search(keyword string) ([]model.Song, error) {
 }
 
 // GetDownloadURL 获取下载链接
-// 由于 Jamendo 搜索结果直接包含链接，这里直接从 Song 对象提取
 func GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "jamendo" {
 		return "", errors.New("source mismatch")
 	}
 
+	// [核心修改] 从复合 ID 中提取下载链接
+	parts := strings.SplitN(s.ID, "|", 2)
+	if len(parts) == 2 {
+		return parts[1], nil
+	}
+
+	// 兼容旧逻辑：如果 ID 中没有 URL，尝试读取 s.URL (如果 struct 支持)
 	if s.URL != "" {
 		return s.URL, nil
 	}
 
-	// 如果 URL 为空 (例如是通过纯 ID 构造的 Song 对象)，
-	// 按照 Python 代码逻辑，它没有提供通过 ID 获取 Track 的独立 API 方法。
-	// 为了健壮性，这里返回错误提示。在完整实现中，可以通过调用 Search 接口查询 ID 来获取。
-	return "", errors.New("url not present in song object, please search first")
+	return "", errors.New("download url missing in song ID")
 }
 
 // makeXJamCall 生成动态签名
-// 对应 Python: _makexjamcall
 func makeXJamCall(path string) string {
-	// 1. 生成随机数字符串 (模拟 Python random.random())
-	// Python 的 random.random() 返回 [0.0, 1.0) 的浮点数
 	r := rand.Float64()
 	randStr := fmt.Sprintf("%v", r)
 
-	// 2. 计算 SHA1 (path + rand)
 	data := path + randStr
 	hash := sha1.Sum([]byte(data))
 	digest := hex.EncodeToString(hash[:])
 
-	// 3. 拼接结果: ${digest}*{rand}~
 	return fmt.Sprintf("$%s*%s~", digest, randStr)
 }

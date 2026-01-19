@@ -52,7 +52,7 @@ func Search(keyword string) ([]model.Song, error) {
 					Name string `json:"name"`
 				} `json:"albums"`
 				ContentID       string `json:"contentId"`
-				ChargeAuditions string `json:"chargeAuditions"` // 0:免费 1:收费
+				ChargeAuditions string `json:"chargeAuditions"`
 				ImgItems        []struct {
 					Img string `json:"img"`
 				} `json:"imgItems"`
@@ -60,10 +60,10 @@ func Search(keyword string) ([]model.Song, error) {
 				RateFormats []struct {
 					FormatType      string   `json:"formatType"`
 					ResourceType    string   `json:"resourceType"`
-					Size            string   `json:"size"`            // 通用大小
-					AndroidSize     string   `json:"androidSize"`     // [重点] 安卓端实际大小
+					Size            string   `json:"size"`
+					AndroidSize     string   `json:"androidSize"` // 优先使用
 					FileType        string   `json:"fileType"`
-					AndroidFileType string   `json:"androidFileType"` // [重点] 安卓端文件后缀
+					AndroidFileType string   `json:"androidFileType"`
 					Price           string   `json:"price"`
 					ShowTag         []string `json:"showTag"`
 				} `json:"rateFormats"`
@@ -91,7 +91,6 @@ func Search(keyword string) ([]model.Song, error) {
 			continue
 		}
 
-		// 定义候选结构
 		type validFormat struct {
 			index int
 			size  int64
@@ -99,23 +98,28 @@ func Search(keyword string) ([]model.Song, error) {
 		}
 		var candidates []validFormat
 		var duration int64 = 0
+		var pqSize int64 = 0 // [新增] 专门记录标准音质大小
 
 		for i, fmtItem := range item.RateFormats {
-			// --- [修改点] 优先使用 AndroidSize ---
-			// 这里的逻辑是：如果 androidSize 存在且不为0，就用它；否则回退到通用 size
+			// 解析大小：优先 AndroidSize
 			sizeStr := fmtItem.AndroidSize
 			if sizeStr == "" || sizeStr == "0" {
 				sizeStr = fmtItem.Size
 			}
 			sizeVal, _ := strconv.ParseInt(sizeStr, 10, 64)
 
-			// --- [修改点] 优先使用 AndroidFileType ---
+			// 解析后缀
 			ext := fmtItem.AndroidFileType
 			if ext == "" {
 				ext = fmtItem.FileType
 			}
 
-			// 计算时长 (PQ 码率最准，但这只是估算，显示用)
+			// [新增] 如果是标准音质(PQ)，记录其大小用于展示
+			if fmtItem.FormatType == "PQ" {
+				pqSize = sizeVal
+			}
+
+			// 估算时长 (优先用 PQ 码率 128k 估算)
 			if duration == 0 && sizeVal > 0 {
 				var bitrate int64 = 0
 				switch fmtItem.FormatType {
@@ -128,10 +132,8 @@ func Search(keyword string) ([]model.Song, error) {
 				}
 			}
 
-			// --- 过滤逻辑 (保持之前的优化) ---
+			// --- 过滤逻辑 ---
 			priceVal, _ := strconv.Atoi(fmtItem.Price)
-			
-			// 1. VIP 标签过滤
 			isVipTag := false
 			for _, tag := range fmtItem.ShowTag {
 				if tag == "vip" {
@@ -139,14 +141,13 @@ func Search(keyword string) ([]model.Song, error) {
 					break
 				}
 			}
-
-			// 2. 隐形收费过滤 (针对周杰伦等歌曲: 试听收费且价格>=200)
+			// 隐形收费过滤
 			isHiddenPaid := (item.ChargeAuditions == "1" && priceVal >= 200)
 
 			if !isVipTag && !isHiddenPaid {
 				candidates = append(candidates, validFormat{
 					index: i, 
-					size:  sizeVal, // 这里存入的就是 androidSize
+					size:  sizeVal,
 					ext:   ext,
 				})
 			}
@@ -156,13 +157,21 @@ func Search(keyword string) ([]model.Song, error) {
 			continue 
 		}
 
-		// 选择最佳音质 (Size 最大)
+		// 2. 选择最佳音质 (用于下载)
+		// 保持原逻辑：按大小排序，取最大的作为下载目标（尽力而为）
 		sort.Slice(candidates, func(i, j int) bool {
 			return candidates[i].size > candidates[j].size
 		})
 		
-		bestInfo := candidates[0]
+		bestInfo := candidates[0] // 用于 ID 生成的格式信息 (通常是 SQ/HQ)
 		bestFormat := item.RateFormats[bestInfo.index]
+
+		// 3. 确定展示大小
+		// [修改] 如果找到了 PQ 大小，强制使用 PQ 大小进行展示；否则使用最佳格式的大小
+		displaySize := bestInfo.size
+		if pqSize > 0 {
+			displaySize = pqSize
+		}
 
 		compoundID := fmt.Sprintf("%s|%s|%s", item.ContentID, bestFormat.ResourceType, bestFormat.FormatType)
 		
@@ -177,17 +186,17 @@ func Search(keyword string) ([]model.Song, error) {
 			Name:     item.Name,
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    albumName,
-			Size:     bestInfo.size,   // [确认] 这里使用的是优先取到的 AndroidSize
+			Size:     displaySize, // 展示标准音质大小 (解决货不对板问题)
 			Duration: int(duration),
 			Cover:    coverURL,
-			Ext:      bestInfo.ext,    // 记录正确后缀
+			Ext:      bestInfo.ext, 
 		})
 	}
 
 	return songs, nil
 }
 
-// GetDownloadURL 保持带重定向解析的逻辑
+// GetDownloadURL 保持不变 (继续尝试请求 search 中选定的 bestFormat)
 func GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "migu" {
 		return "", errors.New("source mismatch")
