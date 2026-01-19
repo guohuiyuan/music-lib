@@ -22,7 +22,6 @@ const (
 // 对应 Python: _search 方法前半部分
 func Search(keyword string) ([]model.Song, error) {
 	// 1. 构造参数
-	// Python: default_rule = {'country': 'sg', 'lang': 'zh_cn', 'keyword': keyword}
 	params := url.Values{}
 	params.Set("country", "sg")
 	params.Set("lang", "zh_cn")
@@ -31,7 +30,6 @@ func Search(keyword string) ([]model.Song, error) {
 	apiURL := "https://cache.api.joox.com/openjoox/v3/search?" + params.Encode()
 
 	// 2. 发送请求
-	// Joox 对 IP 和 Cookie 校验较严
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", Cookie),
@@ -41,8 +39,7 @@ func Search(keyword string) ([]model.Song, error) {
 		return nil, err
 	}
 
-	// 3. 解析 JSON
-	// 结构: section_list[] -> item_list[] -> song[] -> song_info{}
+	// 3. 解析 JSON (更新结构体以支持 Duration 和 Images)
 	var resp struct {
 		SectionList []struct {
 			ItemList []struct {
@@ -54,6 +51,14 @@ func Search(keyword string) ([]model.Song, error) {
 						ArtistList []struct {
 							Name string `json:"name"`
 						} `json:"artist_list"`
+						
+						// [新增] 补充字段
+						PlayDuration int `json:"play_duration"` // 时长 (秒)
+						Images       []struct {
+							Width int    `json:"width"`
+							URL   string `json:"url"`
+						} `json:"images"` // 封面列表
+						VipFlag int `json:"vip_flag"`
 					} `json:"song_info"`
 				} `json:"song"`
 			} `json:"item_list"`
@@ -66,7 +71,6 @@ func Search(keyword string) ([]model.Song, error) {
 
 	// 4. 转换模型
 	var songs []model.Song
-	// 遍历多层嵌套结构
 	for _, section := range resp.SectionList {
 		for _, items := range section.ItemList {
 			for _, songItem := range items.Song {
@@ -81,13 +85,28 @@ func Search(keyword string) ([]model.Song, error) {
 					artistNames = append(artistNames, ar.Name)
 				}
 
+				// [新增] 提取封面
+				// 优先取 300x300 的图片，如果没有则取第一张
+				var cover string
+				for _, img := range info.Images {
+					if img.Width == 300 {
+						cover = img.URL
+						break
+					}
+				}
+				if cover == "" && len(info.Images) > 0 {
+					cover = info.Images[0].URL
+				}
+
 				songs = append(songs, model.Song{
 					Source:   "joox",
 					ID:       info.ID,
 					Name:     info.Name,
 					Artist:   strings.Join(artistNames, "、"),
 					Album:    info.AlbumName,
-					Duration: 0, // 搜索列表未返回时长
+					Duration: info.PlayDuration, // [新增] 填充时长
+					Cover:    cover,             // [新增] 填充封面
+					Size:     0,                 // 搜索结果 JSON 中未提供文件大小
 				})
 			}
 		}
@@ -97,14 +116,12 @@ func Search(keyword string) ([]model.Song, error) {
 }
 
 // GetDownloadURL 获取下载链接
-// 对应 Python: _search 方法内的 web_get_songinfo 调用逻辑
 func GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "joox" {
 		return "", errors.New("source mismatch")
 	}
 
 	// 1. 构造参数
-	// Python: params = {'songid': ..., 'lang': lang, 'country': country}
 	params := url.Values{}
 	params.Set("songid", s.ID)
 	params.Set("lang", "zh_cn")
@@ -123,7 +140,6 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	}
 
 	// 3. 处理 JSONP
-	// 响应格式: MusicInfoCallback({...})
 	bodyStr := string(body)
 	if strings.HasPrefix(bodyStr, "MusicInfoCallback(") {
 		bodyStr = strings.TrimPrefix(bodyStr, "MusicInfoCallback(")
@@ -137,47 +153,37 @@ func GetDownloadURL(s *model.Song) (string, error) {
 		Mp3Url    string      `json:"mp3Url"`
 		M4aUrl    string      `json:"m4aUrl"`
 		MInterval int         `json:"minterval"`
-		KbpsMap   interface{} `json:"kbps_map"` // 注意：这通常是一个 JSON 字符串，需要二次解析
+		KbpsMap   interface{} `json:"kbps_map"`
 	}
 
-	// Joox 的 JSON 有时不太标准，如果 json.Unmarshal 失败可能需要更宽松的解析器
-	// 这里假设标准库能处理清洗后的 JSONP
 	if err := json.Unmarshal([]byte(bodyStr), &resp); err != nil {
 		return "", fmt.Errorf("joox detail json error: %w", err)
 	}
 
-	// 5. 解析 KbpsMap (用于判断音质是否存在)
-	// Python: kbps_map = json_repair.loads(download_result['kbps_map'])
+	// 5. 解析 KbpsMap
 	availableQualities := make(map[string]interface{})
 	if kbpsMapStr, ok := resp.KbpsMap.(string); ok {
-		// 如果是字符串，需要二次反序列化
 		json.Unmarshal([]byte(kbpsMapStr), &availableQualities)
 	} else if kbpsMapObj, ok := resp.KbpsMap.(map[string]interface{}); ok {
-		// 如果已经是对象
 		availableQualities = kbpsMapObj
 	}
 
 	// 6. 音质选择策略
-	// Python: [('r320Url', '320'), ('r192Url', '192'), ('mp3Url', '128'), ('m4aUrl', '96')]
-	// 逻辑: 检查 kbps_map 是否有对应 key，且 url 是否非空
-
 	type Candidate struct {
-		URLField string
-		MapKey   string
-		URL      string
+		MapKey string
+		URL    string
 	}
 
 	candidates := []Candidate{
-		{"r320Url", "320", resp.R320Url},
-		{"r192Url", "192", resp.R192Url},
-		{"mp3Url", "128", resp.Mp3Url},
-		{"m4aUrl", "96", resp.M4aUrl},
+		{"320", resp.R320Url},
+		{"192", resp.R192Url},
+		{"128", resp.Mp3Url},
+		{"96", resp.M4aUrl},
 	}
 
 	for _, c := range candidates {
-		// 检查 KbpsMap 中是否有该码率 (值通常是文件大小，非0即存在)
 		if val, ok := availableQualities[c.MapKey]; ok {
-			// 简单的非空/非零检查
+			// 检查是否有大小信息
 			hasSize := false
 			switch v := val.(type) {
 			case string:
@@ -189,10 +195,6 @@ func GetDownloadURL(s *model.Song) (string, error) {
 			}
 
 			if hasSize && c.URL != "" {
-				// 可以在这里反向填充时长
-				if s.Duration == 0 {
-					s.Duration = resp.MInterval
-				}
 				return c.URL, nil
 			}
 		}

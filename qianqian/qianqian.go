@@ -55,11 +55,17 @@ func Search(keyword string) ([]model.Song, error) {
 				TSID       string `json:"TSID"`
 				Title      string `json:"title"`
 				AlbumTitle string `json:"albumTitle"`
-				Pic        string `json:"pic"`
-				Lyric      string `json:"lyric"` // 歌词 URL
+				Pic        string `json:"pic"`      // [新增] 封面
+				Duration   int    `json:"duration"` // [新增] 时长
+				Lyric      string `json:"lyric"`
 				Artist     []struct {
 					Name string `json:"name"`
 				} `json:"artist"`
+				// [新增] 音质信息，用于获取文件大小
+				RateFileInfo map[string]struct {
+					Size   int64  `json:"size"`
+					Format string `json:"format"`
+				} `json:"rateFileInfo"`
 			} `json:"typeTrack"`
 		} `json:"data"`
 	}
@@ -77,13 +83,27 @@ func Search(keyword string) ([]model.Song, error) {
 			artistNames = append(artistNames, ar.Name)
 		}
 
+		// [新增] 计算文件大小
+		// 逻辑：遍历下载时尝试的音质顺序，找到第一个存在的大小
+		// 顺序与 GetDownloadURL 保持一致：3000(无损) > 320(高品) > 128(标准) > 64
+		var size int64
+		rates := []string{"3000", "320", "128", "64"}
+		for _, r := range rates {
+			if info, ok := item.RateFileInfo[r]; ok && info.Size > 0 {
+				size = info.Size
+				break
+			}
+		}
+
 		songs = append(songs, model.Song{
-			Source: "qianqian",
-			ID:     item.TSID,
-			Name:   item.Title,
-			Artist: strings.Join(artistNames, "、"),
-			Album:  item.AlbumTitle,
-			// Duration 和 Size 需要在下载接口获取，这里暂留空
+			Source:   "qianqian",
+			ID:       item.TSID,
+			Name:     item.Title,
+			Artist:   strings.Join(artistNames, "、"),
+			Album:    item.AlbumTitle,
+			Duration: item.Duration, // [新增] 填充时长
+			Size:     size,          // [新增] 填充大小
+			Cover:    item.Pic,      // [新增] 填充封面
 		})
 	}
 
@@ -147,9 +167,6 @@ func GetDownloadURL(s *model.Song) (string, error) {
 		}
 
 		if downloadURL != "" {
-			// 成功获取链接，这里其实可以顺便更新 s.Size 和 s.Duration
-			// s.Size = resp.Data.Size
-			// s.Duration = resp.Data.Duration
 			return downloadURL, nil
 		}
 	}
