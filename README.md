@@ -197,10 +197,23 @@ require github.com/guohuiyuan/music-lib v1.0.0
 ### soda 包
 
 #### `func Search(keyword string) ([]model.Song, error)`
-搜索 Soda 音乐。使用 Soda 音乐的搜索 API，支持歌曲、专辑、歌手等多种搜索类型。
+搜索 Soda 音乐。使用汽水音乐 Web API (`api.qishui.com`)，支持歌曲、专辑、歌手等多种搜索类型。返回的歌曲包含完整的元数据（时长、封面、文件大小等）。
 
 #### `func GetDownloadURL(s *model.Song) (string, error)`
-获取下载链接。使用 Soda 音乐的播放接口获取音频流地址。
+获取下载链接。使用 Soda 音乐的播放接口获取加密的音频流地址。**注意：Soda 音乐的音频文件是加密的，需要使用 `DecryptAudio` 函数进行解密后才能正常播放。**
+
+#### `func GetDownloadInfo(s *model.Song) (*DownloadInfo, error)`
+获取下载信息，包含加密的音频链接和解密所需的 PlayAuth Key。返回的 `DownloadInfo` 结构体包含：
+- `URL`: 加密的音频链接
+- `PlayAuth`: 解密 Key (Base64 编码)
+- `Format`: 文件格式 (m4a)
+- `Size`: 文件大小
+
+#### `func DecryptAudio(fileData []byte, playAuth string) ([]byte, error)`
+解密汽水音乐下载的加密音频数据。使用 AES-CTR 算法和从 PlayAuth 中提取的密钥进行解密。支持 MP4 容器格式，自动处理加密的音频样本。
+
+#### `type DownloadInfo struct`
+下载信息结构体，包含下载所需的 URL 和解密 Key。
 
 ### model 包
 
