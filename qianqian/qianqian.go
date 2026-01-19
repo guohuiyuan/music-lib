@@ -66,10 +66,12 @@ func Search(keyword string) ([]model.Song, error) {
 					Size   int64  `json:"size"`
 					Format string `json:"format"`
 				} `json:"rateFileInfo"`
+				IsVip int `json:"isVip"` // 新增：VIP 状态字段
 			} `json:"typeTrack"`
 		} `json:"data"`
 	}
 
+	fmt.Println(string(body))
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("qianqian json parse error: %w", err)
 	}
@@ -77,6 +79,10 @@ func Search(keyword string) ([]model.Song, error) {
 	// 5. 转换模型
 	var songs []model.Song
 	for _, item := range resp.Data.TypeTrack {
+		// 过滤条件：跳过 VIP 歌曲（isVip=1）
+		if item.IsVip == 1 {
+			continue
+		}
 		// 拼接歌手名
 		var artistNames []string
 		for _, ar := range item.Artist {
