@@ -49,7 +49,7 @@ func Search(keyword string) ([]model.Song, error) {
 					Track struct {
 						ID       string `json:"id"`
 						Name     string `json:"name"`
-						Duration int    `json:"duration"`
+						Duration int    `json:"duration"` // 毫秒
 						Artists  []struct {
 							Name string `json:"name"`
 						} `json:"artists"`
@@ -57,6 +57,8 @@ func Search(keyword string) ([]model.Song, error) {
 							Name     string `json:"name"`
 							UrlCover struct {
 								Urls []string `json:"urls"`
+								// [新增] 必须获取 URI 才能拼接出完整的图片地址
+								Uri  string   `json:"uri"` 
 							} `json:"url_cover"`
 						} `json:"album"`
 						LabelInfo struct {
@@ -86,17 +88,21 @@ func Search(keyword string) ([]model.Song, error) {
 			continue
 		}
 
-		// 过滤 VIP 下载 (可选，参考 soda.py 逻辑可能不需要过滤，但这里保留以防万一)
-		// if track.LabelInfo.OnlyVipDownload { continue }
-
 		var artistNames []string
 		for _, ar := range track.Artists {
 			artistNames = append(artistNames, ar.Name)
 		}
 
+		// [核心修复] 拼接完整的封面链接
+		// Python逻辑: urls[0] + uri + "~c5_375x375.jpg"
 		var cover string
 		if len(track.Album.UrlCover.Urls) > 0 {
-			cover = track.Album.UrlCover.Urls[0] + "~c5_375x375.jpg"
+			domain := track.Album.UrlCover.Urls[0]
+			uri := track.Album.UrlCover.Uri
+			// 只有当 domain 和 uri 都不为空时拼接
+			if domain != "" && uri != "" {
+				cover = domain + uri + "~c5_375x375.jpg"
+			}
 		}
 
 		var maxSize int64
@@ -112,9 +118,9 @@ func Search(keyword string) ([]model.Song, error) {
 			Name:     track.Name,
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    track.Album.Name,
-			Duration: track.Duration / 1000,
+			Duration: track.Duration / 1000, // 毫秒转秒
 			Size:     maxSize,
-			Cover:    cover,
+			Cover:    cover, // 此时 cover 才是有效的完整 URL
 		})
 	}
 
@@ -214,26 +220,21 @@ func GetDownloadInfo(s *model.Song) (*DownloadInfo, error) {
 }
 
 // GetDownloadURL 返回下载链接
-// 注意：汽水音乐的链接需要下载后解密，如果直接在浏览器播放会失败
-// 建议使用 Download 函数下载并解密到本地
 func GetDownloadURL(s *model.Song) (string, error) {
 	info, err := GetDownloadInfo(s)
 	if err != nil {
 		return "", err
 	}
-	// 返回带 Auth 的链接，方便调试，但普通播放器无法播放
 	return info.URL + "#auth=" + url.QueryEscape(info.PlayAuth), nil
 }
 
 // Download 下载并解密歌曲 (专供 Core 调用)
 func Download(s *model.Song, outputPath string) error {
-	// 1. 获取下载信息
 	info, err := GetDownloadInfo(s)
 	if err != nil {
 		return fmt.Errorf("get download info failed: %w", err)
 	}
 
-	// 2. 下载原始加密文件
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", info.URL, nil)
 	if err != nil {
@@ -256,13 +257,11 @@ func Download(s *model.Song, outputPath string) error {
 		return err
 	}
 
-	// 3. 解密
 	decryptedData, err := DecryptAudio(encryptedData, info.PlayAuth)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
 	}
 
-	// 4. 保存
 	err = os.WriteFile(outputPath, decryptedData, 0644)
 	if err != nil {
 		return err
@@ -271,58 +270,45 @@ func Download(s *model.Song, outputPath string) error {
 	return nil
 }
 
-// DecryptAudio 解密汽水音乐下载的加密音频数据
-// fileData: 下载的原始文件字节数据
-// playAuth: GetDownloadInfo 返回的 PlayAuth 字符串
+// DecryptAudio 解密逻辑 (保持之前修复后的位运算优先级)
 func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
-	// 1. 提取 AES Key
 	hexKey, err := extractKey(playAuth)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract key: %w", err)
-	}
-	if hexKey == "" {
-		return nil, errors.New("extract key return empty")
+		return nil, err
 	}
 	keyBytes, err := hex.DecodeString(hexKey)
 	if err != nil {
-		return nil, fmt.Errorf("invalid hex key: %w", err)
+		return nil, err
 	}
 
-	// 2. 查找 moov box
 	moov, err := findBox(fileData, "moov", 0, len(fileData))
 	if err != nil {
 		return nil, errors.New("moov box not found")
 	}
 
-	// 3. 查找 trak -> mdia -> minf -> stbl 链路
-	trak, err := findBox(fileData, "trak", moov.offset+8, moov.offset+moov.size)
+	stbl, err := findBox(fileData, "stbl", moov.offset, moov.offset+moov.size) 
 	if err != nil {
-		return nil, errors.New("trak box not found")
+		trak, _ := findBox(fileData, "trak", moov.offset+8, moov.offset+moov.size)
+		if trak != nil {
+			mdia, _ := findBox(fileData, "mdia", trak.offset+8, trak.offset+trak.size)
+			if mdia != nil {
+				minf, _ := findBox(fileData, "minf", mdia.offset+8, mdia.offset+mdia.size)
+				if minf != nil {
+					stbl, _ = findBox(fileData, "stbl", minf.offset+8, minf.offset+minf.size)
+				}
+			}
+		}
 	}
-	mdia, err := findBox(fileData, "mdia", trak.offset+8, trak.offset+trak.size)
-	if err != nil {
-		return nil, errors.New("mdia box not found")
-	}
-	minf, err := findBox(fileData, "minf", mdia.offset+8, mdia.offset+mdia.size)
-	if err != nil {
-		return nil, errors.New("minf box not found")
-	}
-	stbl, err := findBox(fileData, "stbl", minf.offset+8, minf.offset+minf.size)
-	if err != nil {
+	if stbl == nil {
 		return nil, errors.New("stbl box not found")
 	}
 
-	// 4. 解析 stsz（Sample Sizes）
 	stsz, err := findBox(fileData, "stsz", stbl.offset+8, stbl.offset+stbl.size)
 	if err != nil {
 		return nil, errors.New("stsz box not found")
 	}
 	sampleSizes := parseStsz(stsz.data)
-	if len(sampleSizes) == 0 {
-		return nil, errors.New("parse stsz empty")
-	}
 
-	// 5. 查找 senc box（先 moov 后 stbl，对齐 Python）
 	senc, err := findBox(fileData, "senc", moov.offset+8, moov.offset+moov.size)
 	if err != nil {
 		senc, err = findBox(fileData, "senc", stbl.offset+8, stbl.offset+stbl.size)
@@ -331,23 +317,17 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 		return nil, errors.New("senc box not found")
 	}
 	ivs := parseSenc(senc.data)
-	if len(ivs) == 0 {
-		return nil, errors.New("parse senc ivs empty")
-	}
 
-	// 6. 查找 mdat box
 	mdat, err := findBox(fileData, "mdat", 0, len(fileData))
 	if err != nil {
 		return nil, errors.New("mdat box not found")
 	}
 
-	// 7. AES-CTR 解密
 	block, err := aes.NewCipher(keyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("create aes cipher failed: %w", err)
+		return nil, err
 	}
 
-	// 复制原始数据，避免修改原切片
 	decryptedData := make([]byte, len(fileData))
 	copy(decryptedData, fileData)
 
@@ -362,12 +342,11 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 		chunk := decryptedData[readPtr : readPtr+size]
 
 		if i < len(ivs) {
-			// IV 填充：8字节 + 8个\x00（和 Python 一致）
 			iv := ivs[i]
 			if len(iv) < 16 {
-				paddedIV := make([]byte, 16)
-				copy(paddedIV, iv)
-				iv = paddedIV
+				padded := make([]byte, 16)
+				copy(padded, iv)
+				iv = padded
 			}
 			stream := cipher.NewCTR(block, iv)
 			dst := make([]byte, size)
@@ -379,14 +358,12 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 		readPtr += size
 	}
 
-	// 8. 替换 mdat 数据
 	if len(decryptedMdat) == int(mdat.size)-8 {
 		copy(decryptedData[mdat.offset+8:], decryptedMdat)
 	} else {
 		return nil, errors.New("decrypted size mismatch")
 	}
 
-	// 9. 替换 stsd 中的 enca -> mp4a
 	stsd, err := findBox(fileData, "stsd", stbl.offset+8, stbl.offset+stbl.size)
 	if err == nil {
 		stsdOffset := stsd.offset
@@ -399,8 +376,6 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 
 	return decryptedData, nil
 }
-
-// --- 工具函数（严格对齐 Python 实现）---
 
 type mp4Box struct {
 	offset int
@@ -419,13 +394,8 @@ func findBox(data []byte, boxType string, start, end int) (*mp4Box, error) {
 		if size < 8 {
 			break
 		}
-		currentType := data[pos+4 : pos+8]
-		if bytes.Equal(currentType, target) {
-			return &mp4Box{
-				offset: pos,
-				size:   size,
-				data:   data[pos+8 : pos+size],
-			}, nil
+		if bytes.Equal(data[pos+4:pos+8], target) {
+			return &mp4Box{offset: pos, size: size, data: data[pos+8 : pos+size]}, nil
 		}
 		pos += size
 	}
@@ -439,18 +409,15 @@ func parseStsz(data []byte) []uint32 {
 	sampleSizeFixed := binary.BigEndian.Uint32(data[4:8])
 	sampleCount := int(binary.BigEndian.Uint32(data[8:12]))
 	sizes := make([]uint32, sampleCount)
-
 	if sampleSizeFixed != 0 {
 		for i := 0; i < sampleCount; i++ {
 			sizes[i] = sampleSizeFixed
 		}
 	} else {
 		for i := 0; i < sampleCount; i++ {
-			offset := 12 + i*4
-			if offset+4 > len(data) {
-				break
+			if 12+i*4+4 <= len(data) {
+				sizes[i] = binary.BigEndian.Uint32(data[12+i*4 : 12+i*4+4])
 			}
-			sizes[i] = binary.BigEndian.Uint32(data[offset : offset+4])
 		}
 	}
 	return sizes
@@ -465,16 +432,12 @@ func parseSenc(data []byte) [][]byte {
 	ivs := make([][]byte, 0, sampleCount)
 	ptr := 8
 	hasSubsamples := (flags & 0x02) != 0
-
 	for i := 0; i < sampleCount; i++ {
 		if ptr+8 > len(data) {
 			break
 		}
-		// 提取 8 字节 IV
-		rawIV := data[ptr : ptr+8]
-		ivs = append(ivs, rawIV)
+		ivs = append(ivs, data[ptr:ptr+8])
 		ptr += 8
-
 		if hasSubsamples {
 			if ptr+2 > len(data) {
 				break
@@ -486,15 +449,12 @@ func parseSenc(data []byte) [][]byte {
 	return ivs
 }
 
-// bitcount 完全移植 Python 的 bitcount 逻辑
-// 【关键修复】Go 中 & 优先级高于 +，必须加括号以匹配 Python 逻辑
 func bitcount(n int) int {
 	u := uint32(n)
 	u = u & 0xFFFFFFFF
 	u = u - ((u >> 1) & 0x55555555)
 	u = (u & 0x33333333) + ((u >> 2) & 0x33333333)
-	// Python: ((n + (n >> 4) & 0xF0F0F0F) * 0x1010101) >> 24
-	// Go (Fix): (((u + (u >> 4)) & 0xF0F0F0F) * 0x1010101) >> 24
+	// Go Fix: 增加括号处理优先级问题
 	return int((((u + (u >> 4)) & 0xF0F0F0F) * 0x1010101) >> 24)
 }
 
@@ -512,7 +472,6 @@ func decryptSpadeInner(keyBytes []byte) []byte {
 	result := make([]byte, len(keyBytes))
 	buff := append([]byte{0xFA, 0x55}, keyBytes...)
 	for i := 0; i < len(result); i++ {
-		// Python: v = ...; while v < 0: v += 255
 		v := int(keyBytes[i]^buff[i]) - bitcount(i) - 21
 		for v < 0 {
 			v += 255
@@ -531,28 +490,21 @@ func extractKey(playAuth string) (string, error) {
 	if len(bytesData) < 3 {
 		return "", errors.New("auth data too short")
 	}
-
 	paddingLen := int((bytesData[0] ^ bytesData[1] ^ bytesData[2]) - 48)
 	if len(bytesData) < paddingLen+2 {
 		return "", errors.New("invalid padding length")
 	}
-
 	innerInput := bytesData[1 : len(bytesData)-paddingLen]
 	tmpBuff := decryptSpadeInner(innerInput)
 	if len(tmpBuff) == 0 {
 		return "", errors.New("decryption failed")
 	}
-
 	skipBytes := decodeBase36(tmpBuff[0])
-	decodedLen := len(bytesData) - paddingLen - 2
-	endIndex := 1 + decodedLen - skipBytes
-
+	endIndex := 1 + (len(bytesData) - paddingLen - 2) - skipBytes
 	if endIndex > len(tmpBuff) || endIndex < 1 {
 		return "", errors.New("index out of bounds")
 	}
-
-	finalBytes := tmpBuff[1:endIndex]
-	return string(finalBytes), nil
+	return string(tmpBuff[1:endIndex]), nil
 }
 
 // GetLyric 获取歌词
@@ -569,7 +521,7 @@ func GetLyric(songID string) (string, error) {
 
 	var resp struct {
 		Lyric struct {
-			Content string `json:"content"` // 歌词就在这里
+			Content string `json:"content"` 
 		} `json:"lyric"`
 	}
 
@@ -578,7 +530,7 @@ func GetLyric(songID string) (string, error) {
 	}
 
 	if resp.Lyric.Content == "" {
-		return "", nil // 返回空字符串表示没有歌词
+		return "", nil
 	}
 
 	return resp.Lyric.Content, nil
