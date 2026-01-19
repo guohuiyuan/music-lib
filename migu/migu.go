@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -14,18 +15,13 @@ import (
 )
 
 const (
-	// 对应 Python config.get("ios_useragent")
-	UserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1"
-	Referer   = "http://music.migu.cn/"
-
-	// 硬编码的 UserID，来自 Python 源码
+	UserAgent   = "Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1"
+	Referer     = "http://music.migu.cn/"
 	MagicUserID = "15548614588710179085069"
 )
 
 // Search 搜索歌曲
 func Search(keyword string) ([]model.Song, error) {
-	// 1. 构造参数
-	// Python: searchSwitch='{"song":1,"album":0,"singer":0,"tagSong":0,"mvSong":0,"songlist":0,"bestShow":1}'
 	params := url.Values{}
 	params.Set("ua", "Android_migu")
 	params.Set("version", "5.0.1")
@@ -36,7 +32,6 @@ func Search(keyword string) ([]model.Song, error) {
 
 	apiURL := "http://pd.musicapp.migu.cn/MIGUM2.0/v1.0/content/search_all.do?" + params.Encode()
 
-	// 2. 发送请求
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),
@@ -45,29 +40,32 @@ func Search(keyword string) ([]model.Song, error) {
 		return nil, err
 	}
 
-	// 3. 解析 JSON
-	// 结构比较深，定义所需的字段
 	var resp struct {
 		SongResultData struct {
 			Result []struct {
-				ID       string `json:"id"`
-				Name     string `json:"name"`
-				Singers  []struct {
+				ID              string `json:"id"`
+				Name            string `json:"name"`
+				Singers         []struct {
 					Name string `json:"name"`
 				} `json:"singers"`
 				Albums []struct {
 					Name string `json:"name"`
 				} `json:"albums"`
-				ContentID   string `json:"contentId"` // 核心ID
-				ImgItems    []struct {
+				ContentID       string `json:"contentId"`
+				ChargeAuditions string `json:"chargeAuditions"` // 0:免费 1:收费
+				ImgItems        []struct {
 					Img string `json:"img"`
 				} `json:"imgItems"`
-				// 音质列表
+				
 				RateFormats []struct {
-					FormatType   string `json:"formatType"`   // SQ, HQ...
-					ResourceType string `json:"resourceType"` // E, Z...
-					Size         string `json:"size"`         // 注意 API 返回的是字符串
-					FileType     string `json:"fileType"`     // flac, mp3
+					FormatType      string   `json:"formatType"`
+					ResourceType    string   `json:"resourceType"`
+					Size            string   `json:"size"`            // 通用大小
+					AndroidSize     string   `json:"androidSize"`     // [重点] 安卓端实际大小
+					FileType        string   `json:"fileType"`
+					AndroidFileType string   `json:"androidFileType"` // [重点] 安卓端文件后缀
+					Price           string   `json:"price"`
+					ShowTag         []string `json:"showTag"`
 				} `json:"rateFormats"`
 			} `json:"result"`
 		} `json:"songResultData"`
@@ -77,74 +75,124 @@ func Search(keyword string) ([]model.Song, error) {
 		return nil, fmt.Errorf("migu json parse error: %w", err)
 	}
 
-	// 4. 转换模型
 	var songs []model.Song
 	for _, item := range resp.SongResultData.Result {
-		// 拼接歌手
 		var artistNames []string
 		for _, s := range item.Singers {
 			artistNames = append(artistNames, s.Name)
 		}
 		
-		// 获取专辑名
 		albumName := ""
 		if len(item.Albums) > 0 {
 			albumName = item.Albums[0].Name
 		}
 
-		// --- 核心逻辑：选择最佳音质 ---
-		// Python: sorted(rate_list, key=lambda x: int(x["size"]), reverse=True)
-		// 如果没有音质列表，跳过
 		if len(item.RateFormats) == 0 {
 			continue
 		}
 
-		// 排序，找最大的文件
-		sort.Slice(item.RateFormats, func(i, j int) bool {
-			sizeI, _ := strconv.ParseInt(item.RateFormats[i].Size, 10, 64)
-			sizeJ, _ := strconv.ParseInt(item.RateFormats[j].Size, 10, 64)
-			return sizeI > sizeJ // 降序
+		// 定义候选结构
+		type validFormat struct {
+			index int
+			size  int64
+			ext   string
+		}
+		var candidates []validFormat
+		var duration int64 = 0
+
+		for i, fmtItem := range item.RateFormats {
+			// --- [修改点] 优先使用 AndroidSize ---
+			// 这里的逻辑是：如果 androidSize 存在且不为0，就用它；否则回退到通用 size
+			sizeStr := fmtItem.AndroidSize
+			if sizeStr == "" || sizeStr == "0" {
+				sizeStr = fmtItem.Size
+			}
+			sizeVal, _ := strconv.ParseInt(sizeStr, 10, 64)
+
+			// --- [修改点] 优先使用 AndroidFileType ---
+			ext := fmtItem.AndroidFileType
+			if ext == "" {
+				ext = fmtItem.FileType
+			}
+
+			// 计算时长 (PQ 码率最准，但这只是估算，显示用)
+			if duration == 0 && sizeVal > 0 {
+				var bitrate int64 = 0
+				switch fmtItem.FormatType {
+				case "PQ": bitrate = 128000
+				case "HQ": bitrate = 320000
+				case "LQ": bitrate = 64000
+				}
+				if bitrate > 0 {
+					duration = (sizeVal * 8) / bitrate
+				}
+			}
+
+			// --- 过滤逻辑 (保持之前的优化) ---
+			priceVal, _ := strconv.Atoi(fmtItem.Price)
+			
+			// 1. VIP 标签过滤
+			isVipTag := false
+			for _, tag := range fmtItem.ShowTag {
+				if tag == "vip" {
+					isVipTag = true
+					break
+				}
+			}
+
+			// 2. 隐形收费过滤 (针对周杰伦等歌曲: 试听收费且价格>=200)
+			isHiddenPaid := (item.ChargeAuditions == "1" && priceVal >= 200)
+
+			if !isVipTag && !isHiddenPaid {
+				candidates = append(candidates, validFormat{
+					index: i, 
+					size:  sizeVal, // 这里存入的就是 androidSize
+					ext:   ext,
+				})
+			}
+		}
+
+		if len(candidates) == 0 {
+			continue 
+		}
+
+		// 选择最佳音质 (Size 最大)
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].size > candidates[j].size
 		})
-
-		bestFormat := item.RateFormats[0]
 		
-		// 技巧：我们将 contentId, resourceType, formatType 组合存入 ID
-		// 这样 GetDownloadURL 就不需要再次请求，也不需要改动通用的 Song 结构体
-		// 格式: ContentID|ResourceType|FormatType
+		bestInfo := candidates[0]
+		bestFormat := item.RateFormats[bestInfo.index]
+
 		compoundID := fmt.Sprintf("%s|%s|%s", item.ContentID, bestFormat.ResourceType, bestFormat.FormatType)
-
-		// 计算大小 (MB)
-		sizeBytes, _ := strconv.ParseInt(bestFormat.Size, 10, 64)
 		
-		// 获取封面
 		var coverURL string
 		if len(item.ImgItems) > 0 {
 			coverURL = item.ImgItems[0].Img
 		}
-		
+
 		songs = append(songs, model.Song{
 			Source:   "migu",
-			ID:       compoundID, // 复合 ID
+			ID:       compoundID,
 			Name:     item.Name,
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    albumName,
-			Size:     sizeBytes, // 字节数
-			Duration: 0,         // 搜索接口未直接返回时长，暂置0
+			Size:     bestInfo.size,   // [确认] 这里使用的是优先取到的 AndroidSize
+			Duration: int(duration),
 			Cover:    coverURL,
+			Ext:      bestInfo.ext,    // 记录正确后缀
 		})
 	}
 
 	return songs, nil
 }
 
-// GetDownloadURL 获取真实下载链接
+// GetDownloadURL 保持带重定向解析的逻辑
 func GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "migu" {
 		return "", errors.New("source mismatch")
 	}
 
-	// 1. 解包复合 ID
-	// 格式: ContentID|ResourceType|FormatType
 	parts := strings.Split(s.ID, "|")
 	if len(parts) != 3 {
 		return "", errors.New("invalid migu song id format")
@@ -153,12 +201,10 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	resourceType := parts[1]
 	formatType := parts[2]
 
-	// 2. 构造请求 URL
-	// Python: http://app.pd.nf.migu.cn/MIGUM2.0/v1.0/content/sub/listenSong.do?...
 	params := url.Values{}
 	params.Set("toneFlag", formatType)
 	params.Set("netType", "00")
-	params.Set("userId", MagicUserID) // 必须带上这个
+	params.Set("userId", MagicUserID)
 	params.Set("ua", "Android_migu")
 	params.Set("version", "5.1")
 	params.Set("copyrightId", "0")
@@ -166,17 +212,34 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	params.Set("resourceType", resourceType)
 	params.Set("channel", "0")
 
-	// 注意：Migu 这个接口生成的 URL 往往就是最终重定向的地址
-	// 或者本身就是 mp3/flac 流地址。
-	// Python 代码是直接把它当作 song_url。
-	// 我们这里直接返回构造好的 URL 即可，因为这是一个 API 接口，不是最终文件地址
-	// 但通常客户端直接访问这个 API 会被重定向到 CDN 文件。
-	
-	finalAPI := "http://app.pd.nf.migu.cn/MIGUM2.0/v1.0/content/sub/listenSong.do?" + params.Encode()
-	
-	// 可选：为了确保链接有效，我们可以发一个 HEAD 请求，或者获取重定向后的真实 URL
-	// 这里为了简单和速度，直接返回 API 地址 (许多播放器能处理重定向)
-	// 如果需要真实 CDN 地址，可以使用 utils.Get 获取 Header Location，但 Migu 这个通常直接能用。
-	
-	return finalAPI, nil
+	apiURL := "http://app.pd.nf.migu.cn/MIGUM2.0/v1.0/content/sub/listenSong.do?" + params.Encode()
+
+	// 使用不自动跳转的 Client 获取 Location
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Referer", Referer)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 302 {
+		location := resp.Header.Get("Location")
+		if location != "" {
+			return location, nil
+		}
+	}
+
+	return apiURL, nil
 }
