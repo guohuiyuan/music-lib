@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/guohuiyuan/music-lib/model"
@@ -57,10 +59,10 @@ func Search(keyword string) ([]model.Song, error) {
 							Name     string `json:"name"`
 							UrlCover struct {
 								Urls []string `json:"urls"`
-								// [新增] 必须获取 URI 才能拼接出完整的图片地址
-								Uri  string   `json:"uri"` 
+								Uri  string   `json:"uri"`
 							} `json:"url_cover"`
 						} `json:"album"`
+						// 权限信息字段
 						LabelInfo struct {
 							OnlyVipDownload bool `json:"only_vip_download"`
 						} `json:"label_info"`
@@ -93,13 +95,10 @@ func Search(keyword string) ([]model.Song, error) {
 			artistNames = append(artistNames, ar.Name)
 		}
 
-		// [核心修复] 拼接完整的封面链接
-		// Python逻辑: urls[0] + uri + "~c5_375x375.jpg"
 		var cover string
 		if len(track.Album.UrlCover.Urls) > 0 {
 			domain := track.Album.UrlCover.Urls[0]
 			uri := track.Album.UrlCover.Uri
-			// 只有当 domain 和 uri 都不为空时拼接
 			if domain != "" && uri != "" {
 				cover = domain + uri + "~c5_375x375.jpg"
 			}
@@ -118,9 +117,9 @@ func Search(keyword string) ([]model.Song, error) {
 			Name:     track.Name,
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    track.Album.Name,
-			Duration: track.Duration / 1000, // 毫秒转秒
+			Duration: track.Duration / 1000,
 			Size:     maxSize,
-			Cover:    cover, // 此时 cover 才是有效的完整 URL
+			Cover:    cover,
 		})
 	}
 
@@ -193,7 +192,6 @@ func GetDownloadInfo(s *model.Song) (*DownloadInfo, error) {
 		return nil, errors.New("no audio stream found")
 	}
 
-	// 按 Size 和 Bitrate 降序排序，和 Python 逻辑对齐
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Size != list[j].Size {
 			return list[i].Size > list[j].Size
@@ -228,7 +226,7 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	return info.URL + "#auth=" + url.QueryEscape(info.PlayAuth), nil
 }
 
-// Download 下载并解密歌曲 (专供 Core 调用)
+// Download 下载并解密歌曲
 func Download(s *model.Song, outputPath string) error {
 	info, err := GetDownloadInfo(s)
 	if err != nil {
@@ -270,7 +268,7 @@ func Download(s *model.Song, outputPath string) error {
 	return nil
 }
 
-// DecryptAudio 解密逻辑 (保持之前修复后的位运算优先级)
+// DecryptAudio 解密逻辑
 func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 	hexKey, err := extractKey(playAuth)
 	if err != nil {
@@ -286,7 +284,7 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 		return nil, errors.New("moov box not found")
 	}
 
-	stbl, err := findBox(fileData, "stbl", moov.offset, moov.offset+moov.size) 
+	stbl, err := findBox(fileData, "stbl", moov.offset, moov.offset+moov.size)
 	if err != nil {
 		trak, _ := findBox(fileData, "trak", moov.offset+8, moov.offset+moov.size)
 		if trak != nil {
@@ -454,7 +452,6 @@ func bitcount(n int) int {
 	u = u & 0xFFFFFFFF
 	u = u - ((u >> 1) & 0x55555555)
 	u = (u & 0x33333333) + ((u >> 2) & 0x33333333)
-	// Go Fix: 增加括号处理优先级问题
 	return int((((u + (u >> 4)) & 0xF0F0F0F) * 0x1010101) >> 24)
 }
 
@@ -537,5 +534,47 @@ func GetLyrics(s *model.Song) (string, error) {
 		return "", nil
 	}
 
-	return resp.Lyric.Content, nil
+	// [修复] 将 Soda 的 KRC 变种格式转换为标准 LRC 格式
+	// 原始格式: [start_ms, duration_ms]<offset...words...>
+	// 转换目标: [mm:ss.xx]words
+	return parseSodaLyric(resp.Lyric.Content), nil
+}
+
+// parseSodaLyric 将 Soda 歌词格式转换为标准 LRC
+func parseSodaLyric(raw string) string {
+	var sb strings.Builder
+	// 匹配行首的时间标签 [start, duration]
+	// 例如: [16500,2270] -> start=16500ms
+	lineRegex := regexp.MustCompile(`^\[(\d+),(\d+)\](.*)$`)
+	
+	// 匹配内部的字标签 <offset, duration, ?>
+	// 例如: <0,340,0>
+	wordRegex := regexp.MustCompile(`<[^>]+>`)
+
+	lines := strings.Split(raw, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		matches := lineRegex.FindStringSubmatch(line)
+		if len(matches) >= 4 {
+			startTimeStr := matches[1]
+			content := matches[3]
+
+			// 清除字标签，只保留歌词文本
+			// <0,340,0>抓 -> 抓
+			cleanContent := wordRegex.ReplaceAllString(content, "")
+
+			// 转换时间戳 ms -> mm:ss.xx
+			startTime, _ := strconv.Atoi(startTimeStr)
+			minutes := startTime / 60000
+			seconds := (startTime % 60000) / 1000
+			millis := (startTime % 1000) / 10 // 取两位小数
+
+			sb.WriteString(fmt.Sprintf("[%02d:%02d.%02d]%s\n", minutes, seconds, millis, cleanContent))
+		}
+	}
+	return sb.String()
 }

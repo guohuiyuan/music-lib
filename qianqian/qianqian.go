@@ -203,22 +203,26 @@ func GetLyrics(s *model.Song) (string, error) {
 	}
 
 	// 4. 解析 JSON 获取歌词 URL
+	// [核心修改] Data 是一个数组 []struct，而不是对象 struct
 	var resp struct {
-		Data struct {
+		Data []struct {
 			Lyric string `json:"lyric"` // 歌词文件的 URL
 		} `json:"data"`
 	}
 
+	// fmt.Println(string(body)) // 调试用
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("qianqian song info parse error: %w", err)
 	}
 
-	if resp.Data.Lyric == "" {
+	if len(resp.Data) == 0 || resp.Data[0].Lyric == "" {
 		return "", errors.New("lyric url not found")
 	}
 
+	lyricURL := resp.Data[0].Lyric
+
 	// 5. 下载歌词文件内容
-	lrcBody, err := utils.Get(resp.Data.Lyric,
+	lrcBody, err := utils.Get(lyricURL,
 		utils.WithHeader("User-Agent", UserAgent),
 	)
 	if err != nil {

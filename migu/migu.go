@@ -280,9 +280,12 @@ func GetLyrics(s *model.Song) (string, error) {
 		return "", err
 	}
 
+	// [核心修改] 修复字段名解析问题
+	// 根据 test.json，字段名应为 lrcUrl
 	var resp struct {
 		Resource []struct {
-			LyricUrl string `json:"lyricUrl"`
+			LrcUrl   string `json:"lrcUrl"`   // 新版字段名
+			LyricUrl string `json:"lyricUrl"` // 旧版字段名 (保留兼容)
 		} `json:"resource"`
 	}
 
@@ -290,15 +293,21 @@ func GetLyrics(s *model.Song) (string, error) {
 		return "", fmt.Errorf("migu resource info parse error: %w", err)
 	}
 
-	if len(resp.Resource) == 0 || resp.Resource[0].LyricUrl == "" {
+	if len(resp.Resource) == 0 {
+		return "", errors.New("resource info not found")
+	}
+
+	// 优先取 LrcUrl，如果没有则尝试 LyricUrl
+	lyricUrl := resp.Resource[0].LrcUrl
+	if lyricUrl == "" {
+		lyricUrl = resp.Resource[0].LyricUrl
+	}
+
+	if lyricUrl == "" {
 		return "", errors.New("lyric url not found")
 	}
 
-	lyricUrl := resp.Resource[0].LyricUrl
-
 	// 2. 下载歌词
-	// Python: lyric_url = ... .replace('http://', 'https://')
-	// Python Headers: Referer: https://y.migu.cn/
 	lyricUrl = strings.Replace(lyricUrl, "http://", "https://", 1)
 
 	// 使用 Python 代码中针对歌词下载的 Header，确保成功率
