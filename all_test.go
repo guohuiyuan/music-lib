@@ -783,6 +783,8 @@ func TestLyricsInterfaces(t *testing.T) {
 		{"soda", soda.Search, soda.GetLyrics},
 		{"qq", qq.Search, qq.GetLyrics},
 		{"kugou", kugou.Search, kugou.GetLyrics},
+		{"qianqian", qianqian.Search, qianqian.GetLyrics},
+		{"migu", migu.Search, migu.GetLyrics},
 	}
 
 	for _, src := range supportedSources {
@@ -888,6 +890,8 @@ func TestLyricsSourceMismatch(t *testing.T) {
 		{"soda", soda.GetLyrics},
 		{"qq", qq.GetLyrics},
 		{"kugou", kugou.GetLyrics},
+		{"qianqian", qianqian.GetLyrics},
+		{"migu", migu.GetLyrics},
 		{"bilibili", bilibili.GetLyrics},
 		{"fivesing", fivesing.GetLyrics},
 		{"jamendo", jamendo.GetLyrics},

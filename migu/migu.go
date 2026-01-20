@@ -98,7 +98,7 @@ func Search(keyword string) ([]model.Song, error) {
 		}
 		var candidates []validFormat
 		var duration int64 = 0
-		var pqSize int64 = 0 // [新增] 专门记录标准音质大小
+		var pqSize int64 = 0 // 记录标准音质大小
 
 		for i, fmtItem := range item.RateFormats {
 			// 解析大小：优先 AndroidSize
@@ -114,7 +114,7 @@ func Search(keyword string) ([]model.Song, error) {
 				ext = fmtItem.FileType
 			}
 
-			// [新增] 如果是标准音质(PQ)，记录其大小用于展示
+			// 如果是标准音质(PQ)，记录其大小用于展示
 			if fmtItem.FormatType == "PQ" {
 				pqSize = sizeVal
 			}
@@ -158,16 +158,14 @@ func Search(keyword string) ([]model.Song, error) {
 		}
 
 		// 2. 选择最佳音质 (用于下载)
-		// 保持原逻辑：按大小排序，取最大的作为下载目标（尽力而为）
 		sort.Slice(candidates, func(i, j int) bool {
 			return candidates[i].size > candidates[j].size
 		})
 		
-		bestInfo := candidates[0] // 用于 ID 生成的格式信息 (通常是 SQ/HQ)
+		bestInfo := candidates[0]
 		bestFormat := item.RateFormats[bestInfo.index]
 
 		// 3. 确定展示大小
-		// [修改] 如果找到了 PQ 大小，强制使用 PQ 大小进行展示；否则使用最佳格式的大小
 		displaySize := bestInfo.size
 		if pqSize > 0 {
 			displaySize = pqSize
@@ -186,7 +184,7 @@ func Search(keyword string) ([]model.Song, error) {
 			Name:     item.Name,
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    albumName,
-			Size:     displaySize, // 展示标准音质大小 (解决货不对板问题)
+			Size:     displaySize,
 			Duration: int(duration),
 			Cover:    coverURL,
 			Ext:      bestInfo.ext, 
@@ -196,7 +194,7 @@ func Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// GetDownloadURL 保持不变 (继续尝试请求 search 中选定的 bestFormat)
+// GetDownloadURL 获取下载链接
 func GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "migu" {
 		return "", errors.New("source mismatch")
@@ -251,4 +249,66 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	}
 
 	return apiURL, nil
+}
+
+// GetLyrics 获取歌词
+// 模仿 Python 逻辑，通过 ContentID 获取详情后下载歌词
+func GetLyrics(s *model.Song) (string, error) {
+	if s.Source != "migu" {
+		return "", errors.New("source mismatch")
+	}
+
+	parts := strings.Split(s.ID, "|")
+	if len(parts) < 1 {
+		return "", errors.New("invalid migu song id")
+	}
+	contentID := parts[0]
+
+	// 1. 获取歌曲详情以拿到歌词 URL
+	// API: http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do
+	params := url.Values{}
+	params.Set("resourceId", contentID)
+	params.Set("resourceType", "2") // 2 代表歌曲
+
+	apiURL := "http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	var resp struct {
+		Resource []struct {
+			LyricUrl string `json:"lyricUrl"`
+		} `json:"resource"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("migu resource info parse error: %w", err)
+	}
+
+	if len(resp.Resource) == 0 || resp.Resource[0].LyricUrl == "" {
+		return "", errors.New("lyric url not found")
+	}
+
+	lyricUrl := resp.Resource[0].LyricUrl
+
+	// 2. 下载歌词
+	// Python: lyric_url = ... .replace('http://', 'https://')
+	// Python Headers: Referer: https://y.migu.cn/
+	lyricUrl = strings.Replace(lyricUrl, "http://", "https://", 1)
+
+	// 使用 Python 代码中针对歌词下载的 Header，确保成功率
+	lrcBody, err := utils.Get(lyricUrl,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"),
+		utils.WithHeader("Referer", "https://y.migu.cn/"),
+	)
+	if err != nil {
+		return "", fmt.Errorf("download lyric failed: %w", err)
+	}
+
+	return string(lrcBody), nil
 }

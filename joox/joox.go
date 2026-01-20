@@ -1,6 +1,7 @@
 package joox
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,7 +53,7 @@ func Search(keyword string) ([]model.Song, error) {
 							Name string `json:"name"`
 						} `json:"artist_list"`
 						
-						// [新增] 补充字段
+						// 补充字段
 						PlayDuration int `json:"play_duration"` // 时长 (秒)
 						Images       []struct {
 							Width int    `json:"width"`
@@ -85,7 +86,7 @@ func Search(keyword string) ([]model.Song, error) {
 					artistNames = append(artistNames, ar.Name)
 				}
 
-				// [新增] 提取封面
+				// 提取封面
 				// 优先取 300x300 的图片，如果没有则取第一张
 				var cover string
 				for _, img := range info.Images {
@@ -104,9 +105,9 @@ func Search(keyword string) ([]model.Song, error) {
 					Name:     info.Name,
 					Artist:   strings.Join(artistNames, "、"),
 					Album:    info.AlbumName,
-					Duration: info.PlayDuration, // [新增] 填充时长
-					Cover:    cover,             // [新增] 填充封面
-					Size:     0,                 // 搜索结果 JSON 中未提供文件大小
+					Duration: info.PlayDuration,
+					Cover:    cover,
+					Size:     0, // 搜索结果 JSON 中未提供文件大小
 				})
 			}
 		}
@@ -201,4 +202,61 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	}
 
 	return "", errors.New("no valid download url found")
+}
+
+// GetLyrics 获取歌词
+// 对应 Python: _search 中的 lyric results 部分
+func GetLyrics(s *model.Song) (string, error) {
+	if s.Source != "joox" {
+		return "", errors.New("source mismatch")
+	}
+
+	// 1. 构造请求参数
+	// Python: params = {'musicid': search_result['song_info']['id'], 'country': country, 'lang': lang}
+	params := url.Values{}
+	params.Set("musicid", s.ID)
+	params.Set("country", "sg") // 保持与 Search 一致
+	params.Set("lang", "zh_cn")
+
+	apiURL := "https://api.joox.com/web-fcgi-bin/web_lyric?" + params.Encode()
+
+	// 2. 发送请求
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", Cookie),
+		utils.WithHeader("X-Forwarded-For", XForwardedFor),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	// 3. 处理 JSONP
+	// Python: resp.text.replace('MusicJsonCallback(', '')[:-1]
+	bodyStr := string(body)
+	if idx := strings.Index(bodyStr, "MusicJsonCallback("); idx >= 0 {
+		bodyStr = strings.TrimPrefix(bodyStr[idx:], "MusicJsonCallback(")
+		bodyStr = strings.TrimSuffix(bodyStr, ")")
+	}
+
+	// 4. 解析 JSON
+	var resp struct {
+		Lyric string `json:"lyric"` // Base64 编码的歌词
+	}
+
+	if err := json.Unmarshal([]byte(bodyStr), &resp); err != nil {
+		return "", fmt.Errorf("joox lyric json parse error: %w", err)
+	}
+
+	if resp.Lyric == "" {
+		return "", errors.New("lyric not found or empty")
+	}
+
+	// 5. Base64 解码
+	// Python: base64.b64decode(lyric_result.get('lyric', '')).decode('utf-8')
+	decodedBytes, err := base64.StdEncoding.DecodeString(resp.Lyric)
+	if err != nil {
+		return "", fmt.Errorf("base64 decode error: %w", err)
+	}
+
+	return string(decodedBytes), nil
 }

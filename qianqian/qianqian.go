@@ -88,7 +88,7 @@ func Search(keyword string) ([]model.Song, error) {
 			artistNames = append(artistNames, ar.Name)
 		}
 
-		// 计算文件大小
+		// 计算文件大小 (优先寻找高音质)
 		var size int64
 		rates := []string{"3000", "320", "128", "64"}
 		for _, r := range rates {
@@ -121,6 +121,7 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	}
 
 	// 定义音质列表 (从高到低尝试)
+	// 3000=无损, 320=高品, 128=标准
 	qualities := []string{"3000", "320", "128", "64"}
 
 	for _, rate := range qualities {
@@ -154,7 +155,6 @@ func GetDownloadURL(s *model.Song) (string, error) {
 				TrailAudioInfo struct {
 					Path string `json:"path"`
 				} `json:"trail_audio_info"`
-				IsVip int `json:"isVip"`
 			} `json:"data"`
 		}
 
@@ -177,13 +177,13 @@ func GetDownloadURL(s *model.Song) (string, error) {
 }
 
 // GetLyrics 获取歌词
-// 模仿 Baidu/QianQian 逻辑：获取歌曲详情 -> 提取 Lyric URL -> 下载内容
+// 逻辑：调用 song/info 接口获取歌词 URL，然后下载内容
 func GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "qianqian" {
 		return "", errors.New("source mismatch")
 	}
 
-	// 1. 构造参数 (获取歌曲详情接口)
+	// 1. 构造参数获取歌曲详情
 	params := url.Values{}
 	params.Set("TSID", s.ID)
 	params.Set("appid", AppID)
@@ -193,7 +193,7 @@ func GetLyrics(s *model.Song) (string, error) {
 
 	apiURL := "https://music.91q.com/v1/song/info?" + params.Encode()
 
-	// 3. 发送请求
+	// 3. 发送请求获取详情
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),
@@ -202,22 +202,22 @@ func GetLyrics(s *model.Song) (string, error) {
 		return "", err
 	}
 
-	// 4. 解析响应
+	// 4. 解析 JSON 获取歌词 URL
 	var resp struct {
 		Data struct {
-			Lyric string `json:"lyric"` // 这是一个 .lrc 文件的 URL
+			Lyric string `json:"lyric"` // 歌词文件的 URL
 		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("json parse error: %w", err)
+		return "", fmt.Errorf("qianqian song info parse error: %w", err)
 	}
 
 	if resp.Data.Lyric == "" {
 		return "", errors.New("lyric url not found")
 	}
 
-	// 5. 下载歌词内容
+	// 5. 下载歌词文件内容
 	lrcBody, err := utils.Get(resp.Data.Lyric,
 		utils.WithHeader("User-Agent", UserAgent),
 	)

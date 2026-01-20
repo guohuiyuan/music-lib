@@ -45,7 +45,7 @@ func Search(keyword string) ([]model.Song, error) {
 			SongID    int64  `json:"songId"`
 			SongName  string `json:"songName"`
 			Singer    string `json:"singer"`
-			SingerID  int64  `json:"singerId"`  // 歌手ID，用于构造封面
+			SingerID  int64  `json:"singerId"`  // 歌手ID
 			SongSize  int64  `json:"songSize"`  // 文件大小
 			TypeEname string `json:"typeEname"` // 关键字段：歌曲类型 (yc, fc 等)
 		} `json:"list"`
@@ -66,13 +66,9 @@ func Search(keyword string) ([]model.Song, error) {
 		artist := html.UnescapeString(item.Singer)
 		artist = removeEmTags(artist)
 
-		// [修改] 估算时长
-		// 5sing 搜索结果不直接包含时长，但包含文件大小(songSize)。
-		// 根据样本数据 (9.8MB MP3)，通常对应 320kbps 码率。
-		// 公式: 时长(秒) = 文件大小(字节) * 8 / 码率(bps)
+		// 估算时长: 时长(秒) = 文件大小(字节) * 8 / 码率(bps, 假设320k)
 		var duration int
 		if item.SongSize > 0 {
-			// 假设平均码率为 320kbps (320000 bps)
 			duration = int((item.SongSize * 8) / 320000)
 		}
 
@@ -81,8 +77,8 @@ func Search(keyword string) ([]model.Song, error) {
 			ID:       compoundID,
 			Name:     name,
 			Artist:   artist,
-			Album:    "",    // 搜索结果无专辑信息
-			Duration: duration, // [新增] 填充估算时长
+			Album:    "", // 搜索结果无专辑信息
+			Duration: duration,
 			Size:     item.SongSize,
 		})
 	}
@@ -155,6 +151,59 @@ func GetDownloadURL(s *model.Song) (string, error) {
 	return "", errors.New("no valid download url found")
 }
 
+// GetLyrics 获取歌词
+// 对应 Python: http://mobileapi.5sing.kugou.com/song/newget
+func GetLyrics(s *model.Song) (string, error) {
+	if s.Source != "fivesing" {
+		return "", errors.New("source mismatch")
+	}
+
+	// 1. 解析复合 ID (SongID|TypeEname)
+	parts := strings.Split(s.ID, "|")
+	if len(parts) != 2 {
+		return "", errors.New("invalid fivesing id format")
+	}
+	songID := parts[0]
+	songType := parts[1]
+
+	// 2. 构造请求参数
+	// Python: params = {'songid': ..., 'songtype': ..., 'songfields': '', 'userfields': ''}
+	params := url.Values{}
+	params.Set("songid", songID)
+	params.Set("songtype", songType)
+	params.Set("songfields", "")
+	params.Set("userfields", "")
+
+	apiURL := "http://mobileapi.5sing.kugou.com/song/newget?" + params.Encode()
+
+	// 3. 发送请求
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	// 4. 解析 JSON
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			DynamicWords string `json:"dynamicWords"` // 歌词字段
+			AlbumName    string `json:"albumName"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("json parse error: %w", err)
+	}
+
+	if resp.Data.DynamicWords == "" {
+		return "", errors.New("lyrics not found")
+	}
+
+	return resp.Data.DynamicWords, nil
+}
+
 // 辅助函数：返回第一个非空字符串
 func getFirstValid(urls ...string) string {
 	for _, u := range urls {
@@ -173,13 +222,4 @@ func removeEmTags(s string) string {
 	s = strings.ReplaceAll(s, "<em>", "")
 	s = strings.ReplaceAll(s, "</em>", "")
 	return strings.TrimSpace(s)
-}
-
-// GetLyrics 获取歌词 (5sing暂不支持歌词接口)
-func GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "fivesing" {
-		return "", errors.New("source mismatch")
-	}
-	// 5sing歌词接口暂未实现
-	return "", nil
 }
