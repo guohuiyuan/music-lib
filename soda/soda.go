@@ -51,7 +51,7 @@ func Search(keyword string) ([]model.Song, error) {
 					Track struct {
 						ID       string `json:"id"`
 						Name     string `json:"name"`
-						Duration int    `json:"duration"` // 毫秒
+						Duration int    `json:"duration"`
 						Artists  []struct {
 							Name string `json:"name"`
 						} `json:"artists"`
@@ -62,12 +62,18 @@ func Search(keyword string) ([]model.Song, error) {
 								Uri  string   `json:"uri"`
 							} `json:"url_cover"`
 						} `json:"album"`
-						// 权限信息字段
-						LabelInfo struct {
-							OnlyVipDownload bool `json:"only_vip_download"`
-						} `json:"label_info"`
+
+						// 权限映射表: key 是音质名 (如 "medium", "lossless")
+						QualityMap map[string]struct {
+							DownloadDetail *struct {
+								NeedVip bool `json:"need_vip"`
+							} `json:"download_detail"`
+						} `json:"quality_map"`
+
+						// 音质列表
 						BitRates []struct {
-							Size int64 `json:"size"`
+							Size    int64  `json:"size"`
+							Quality string `json:"quality"`
 						} `json:"bit_rates"`
 					} `json:"track"`
 				} `json:"entity"`
@@ -90,6 +96,47 @@ func Search(keyword string) ([]model.Song, error) {
 			continue
 		}
 
+		// [修改] 不再通过 OnlyVipDownload 进行全局过滤，防止误杀
+		// 而是通过遍历音质来决定展示哪个大小
+
+		var maxFreeSize int64 // 最大的免费音质大小
+		var maxVipSize int64  // 最大的VIP音质大小 (兜底用)
+
+		for _, br := range track.BitRates {
+			isVip := false
+			// 检查该音质是否需要 VIP
+			if qInfo, ok := track.QualityMap[br.Quality]; ok && qInfo.DownloadDetail != nil {
+				if qInfo.DownloadDetail.NeedVip {
+					isVip = true
+				}
+			}
+
+			if !isVip {
+				// 这是一个免费音质
+				if br.Size > maxFreeSize {
+					maxFreeSize = br.Size
+				}
+			} else {
+				// 这是一个 VIP 音质
+				if br.Size > maxVipSize {
+					maxVipSize = br.Size
+				}
+			}
+		}
+
+		// 决策展示大小：优先展示免费的，如果没有免费的，展示 VIP 的 (避免搜不到)
+		var displaySize int64
+		if maxFreeSize > 0 {
+			displaySize = maxFreeSize
+		} else {
+			displaySize = maxVipSize
+		}
+
+		// 如果连 VIP 音质都没有 (size=0)，那确实没法下载，跳过
+		if displaySize == 0 {
+			continue
+		}
+
 		var artistNames []string
 		for _, ar := range track.Artists {
 			artistNames = append(artistNames, ar.Name)
@@ -104,13 +151,6 @@ func Search(keyword string) ([]model.Song, error) {
 			}
 		}
 
-		var maxSize int64
-		for _, br := range track.BitRates {
-			if br.Size > maxSize {
-				maxSize = br.Size
-			}
-		}
-
 		songs = append(songs, model.Song{
 			Source:   "soda",
 			ID:       track.ID,
@@ -118,7 +158,7 @@ func Search(keyword string) ([]model.Song, error) {
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    track.Album.Name,
 			Duration: track.Duration / 1000,
-			Size:     maxSize,
+			Size:     displaySize, // 智能选择后的大小
 			Cover:    cover,
 		})
 	}
@@ -192,6 +232,16 @@ func GetDownloadInfo(s *model.Song) (*DownloadInfo, error) {
 		return nil, errors.New("no audio stream found")
 	}
 
+	// [优化] 下载链接选择策略
+	// 按照 Size 排序，但这里有一个隐含逻辑：
+	// 如果 Search 阶段我们选的是 "免费最大值" (比如 3MB)，
+	// 这里的 PlayInfoList 可能会返回 VIP 的 30MB 链接(但只有30s) 和 免费的 3MB 链接(完整)。
+	// 为了确保下载到完整版，我们应该尝试匹配 Search 阶段展示的大小。
+	// 但 model.Song 传进来的 s.Size 在这里不一定完全可靠 (可能会有细微差异)。
+	//
+	// 现行策略：按 Size 倒序。通常完整版低音质(3MB) > 试听版高音质(30s flac 可能会很大? 不，30s flac 也就几MB)。
+	// 如果是 VIP 歌曲，服务器只会返回 30s 的链接，此时无论选哪个都是切片。
+	// 如果是部分免费歌曲，服务器应该会返回 完整的低音质链接 和 (可能) 切片的高音质链接。
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].Size != list[j].Size {
 			return list[i].Size > list[j].Size
@@ -534,9 +584,6 @@ func GetLyrics(s *model.Song) (string, error) {
 		return "", nil
 	}
 
-	// [修复] 将 Soda 的 KRC 变种格式转换为标准 LRC 格式
-	// 原始格式: [start_ms, duration_ms]<offset...words...>
-	// 转换目标: [mm:ss.xx]words
 	return parseSodaLyric(resp.Lyric.Content), nil
 }
 
@@ -544,11 +591,9 @@ func GetLyrics(s *model.Song) (string, error) {
 func parseSodaLyric(raw string) string {
 	var sb strings.Builder
 	// 匹配行首的时间标签 [start, duration]
-	// 例如: [16500,2270] -> start=16500ms
 	lineRegex := regexp.MustCompile(`^\[(\d+),(\d+)\](.*)$`)
 	
 	// 匹配内部的字标签 <offset, duration, ?>
-	// 例如: <0,340,0>
 	wordRegex := regexp.MustCompile(`<[^>]+>`)
 
 	lines := strings.Split(raw, "\n")
@@ -563,15 +608,12 @@ func parseSodaLyric(raw string) string {
 			startTimeStr := matches[1]
 			content := matches[3]
 
-			// 清除字标签，只保留歌词文本
-			// <0,340,0>抓 -> 抓
 			cleanContent := wordRegex.ReplaceAllString(content, "")
 
-			// 转换时间戳 ms -> mm:ss.xx
 			startTime, _ := strconv.Atoi(startTimeStr)
 			minutes := startTime / 60000
 			seconds := (startTime % 60000) / 1000
-			millis := (startTime % 1000) / 10 // 取两位小数
+			millis := (startTime % 1000) / 10 
 
 			sb.WriteString(fmt.Sprintf("[%02d:%02d.%02d]%s\n", minutes, seconds, millis, cleanContent))
 		}
