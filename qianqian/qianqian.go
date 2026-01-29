@@ -259,7 +259,6 @@ func (q *Qianqian) GetLyrics(s *model.Song) (string, error) {
 		} `json:"data"`
 	}
 
-	// fmt.Println(string(body)) // 调试用
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("qianqian song info parse error: %w", err)
 	}
