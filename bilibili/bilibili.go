@@ -79,6 +79,7 @@ func (b *Bilibili) Search(keyword string) ([]model.Song, error) {
 	for _, item := range searchResp.Data.Result {
 		rootTitle := strings.ReplaceAll(strings.ReplaceAll(item.Title, "<em class=\"keyword\">", ""), "</em>", "")
 
+		// 必须保留 view 接口调用，因为我们需要 CID 来生成唯一的 Song ID
 		viewURL := fmt.Sprintf("https://api.bilibili.com/x/web-interface/view?bvid=%s", item.BVID)
 		viewBody, err := utils.Get(viewURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Cookie", b.cookie))
 		if err != nil {
@@ -98,68 +99,27 @@ func (b *Bilibili) Search(keyword string) ([]model.Song, error) {
 			continue
 		}
 
+		cover := item.Pic
+		if strings.HasPrefix(cover, "//") { cover = "https:" + cover }
+
 		for _, page := range viewResp.Data.Pages {
-			// [核心修改] 调用 PlayURL 获取带宽以计算 Size
-			playURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=16&bvid=%s&cid=%d", item.BVID, page.CID)
-			playBody, err := utils.Get(playURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Referer", Referer), utils.WithHeader("Cookie", b.cookie))
+			// 已移除：在此处循环调用 playurl 获取大小的逻辑
 			
-			var estimatedSize int64 = 0
-			var bitrate int = 0 // [新增] 码率变量
-			actualDuration := page.Duration
-
-			if err == nil {
-				var playResp struct {
-					Data struct {
-						Dash struct {
-							Audio []DashStream `json:"audio"`
-							Flac  struct {
-								Audio []DashStream `json:"audio"`
-							} `json:"flac"`
-							Duration int `json:"duration"` // DASH 提供的时长通常更准
-						} `json:"dash"`
-					} `json:"data"`
-				}
-				if json.Unmarshal(playBody, &playResp) == nil {
-					if playResp.Data.Dash.Duration > 0 {
-						actualDuration = playResp.Data.Dash.Duration
-					}
-					// 寻找最高带宽
-					var bestBandwidth int = 0
-					if len(playResp.Data.Dash.Flac.Audio) > 0 {
-						bestBandwidth = playResp.Data.Dash.Flac.Audio[0].Bandwidth
-					} else if len(playResp.Data.Dash.Audio) > 0 {
-						bestBandwidth = playResp.Data.Dash.Audio[0].Bandwidth
-					}
-					
-					// [新增] 计算逻辑
-					if bestBandwidth > 0 {
-						// Size = Bandwidth(bps) * Duration(s) / 8
-						estimatedSize = int64(bestBandwidth) * int64(actualDuration) / 8
-						// Bitrate = Bandwidth(bps) / 1000
-						bitrate = bestBandwidth / 1000
-					}
-				}
-			}
-
 			displayTitle := page.Part
 			if len(viewResp.Data.Pages) == 1 && displayTitle == "" {
 				displayTitle = rootTitle
 			} else if displayTitle != rootTitle {
 				displayTitle = fmt.Sprintf("%s - %s", rootTitle, displayTitle)
 			}
-
-			cover := item.Pic
-			if strings.HasPrefix(cover, "//") { cover = "https:" + cover }
-
 			songs = append(songs, model.Song{
 				Source:   "bilibili",
 				ID:       fmt.Sprintf("%s|%d", item.BVID, page.CID),
 				Name:     displayTitle,
 				Artist:   item.Author,
 				Album:    item.BVID,
-				Duration: actualDuration,
-				Size:     estimatedSize, // 现在有了计算后的 Size
-				Bitrate:  bitrate, // [新增] 赋值码率
+				Duration: page.Duration, // 使用 view 接口提供的基础时长
+				Size:     0,             // Search 不再请求 size，由 Inspect 或 Download 处理
+				Bitrate:  0,
 				Cover:    cover,
 			})
 		}
