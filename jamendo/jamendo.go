@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
+
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
 )
@@ -18,6 +19,8 @@ const (
 	XJamVersion   = "4gvfvv"
 	SearchAPI     = "https://www.jamendo.com/api/search"
 	SearchApiPath = "/api/search" // 用于签名计算
+	TrackAPI      = "https://www.jamendo.com/api/tracks" // 新增：单曲查询接口
+	TrackApiPath  = "/api/tracks" // 新增：单曲接口路径用于签名
 )
 
 // Jamendo 结构体
@@ -100,7 +103,6 @@ func (j *Jamendo) Search(keyword string) ([]model.Song, error) {
 		Stream   map[string]string `json:"stream"`
 	}
 
-	// fmt.Println(string(body)) // 调试用
 	if err := json.Unmarshal(body, &results); err != nil {
 		return nil, fmt.Errorf("jamendo json parse error: %w", err)
 	}
@@ -117,36 +119,24 @@ func (j *Jamendo) Search(keyword string) ([]model.Song, error) {
 			continue
 		}
 
-		// 音质选择策略: flac > mp3 > ogg
-		// 这里的顺序决定了下载的优先格式
-		var downloadURL string
-		var ext string
-
-		if url := streams["flac"]; url != "" {
-			downloadURL = url
-			ext = "flac"
-		} else if url := streams["mp3"]; url != "" {
-			downloadURL = url
-			ext = "mp3"
-		} else if url := streams["ogg"]; url != "" {
-			downloadURL = url
-			ext = "ogg"
-		} else {
-			continue // 没有有效链接
+		// 挑选链接
+		downloadURL, ext := pickBestQuality(streams)
+		if downloadURL == "" {
+			continue
 		}
 
 		songs = append(songs, model.Song{
 			Source:   "jamendo",
-			ID:       fmt.Sprintf("%d", item.ID), // 使用纯 ID
+			ID:       fmt.Sprintf("%d", item.ID),
 			Name:     item.Name,
 			Artist:   item.Artist.Name,
 			Album:    item.Album.Name,
 			Duration: item.Duration,
-			Ext:      ext,                    // 明确指定后缀
-			Cover:    item.Cover.Big.Size300, // 填充封面
-			URL:      downloadURL,            // 直接填充到 URL 字段
-			Size:     0, // 无大小信息
-			Bitrate:  0, // [新增] 无大小信息，无法计算真实码率，置为 0
+			Ext:      ext,
+			Cover:    item.Cover.Big.Size300,
+			URL:      downloadURL,
+			Size:     0,
+			Bitrate:  0,
 		})
 	}
 
@@ -154,17 +144,82 @@ func (j *Jamendo) Search(keyword string) ([]model.Song, error) {
 }
 
 // GetDownloadURL 获取下载链接
+// 修改逻辑：如果 s.URL 为空，则主动调用 API 通过 ID 获取
 func (j *Jamendo) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "jamendo" {
 		return "", errors.New("source mismatch")
 	}
 
-	// 直接从 URL 字段获取，不再尝试从 ID 解析
-	if s.URL == "" {
-		return "", errors.New("download url missing in song")
+	// 1. 如果 URL 已经存在，直接返回 (优化)
+	if s.URL != "" {
+		return s.URL, nil
 	}
 
-	return s.URL, nil
+	// 2. URL 为空，需要通过 ID 重新获取
+	if s.ID == "" {
+		return "", errors.New("id missing")
+	}
+
+	// 构造针对 /api/tracks 的请求
+	params := url.Values{}
+	params.Set("id", s.ID) // 使用 ID 查询
+
+	apiURL := TrackAPI + "?" + params.Encode()
+	xJamCall := makeXJamCall(TrackApiPath) // 这里的 path 必须对应
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("x-jam-call", xJamCall),
+		utils.WithHeader("x-jam-version", XJamVersion),
+		utils.WithHeader("x-requested-with", "XMLHttpRequest"),
+		utils.WithHeader("Cookie", j.cookie),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	// 解析结构 (与 Search 类似)
+	var results []struct {
+		Download map[string]string `json:"download"`
+		Stream   map[string]string `json:"stream"`
+	}
+
+	if err := json.Unmarshal(body, &results); err != nil {
+		return "", fmt.Errorf("jamendo track json error: %w", err)
+	}
+
+	if len(results) == 0 {
+		return "", errors.New("track not found")
+	}
+
+	// 3. 提取链接
+	item := results[0]
+	streams := item.Download
+	if len(streams) == 0 {
+		streams = item.Stream
+	}
+
+	downloadURL, _ := pickBestQuality(streams)
+	if downloadURL == "" {
+		return "", errors.New("no valid stream found")
+	}
+
+	return downloadURL, nil
+}
+
+// 辅助函数：挑选最佳音质
+func pickBestQuality(streams map[string]string) (string, string) {
+	if url := streams["flac"]; url != "" {
+		return url, "flac"
+	}
+	if url := streams["mp3"]; url != "" {
+		return url, "mp3"
+	}
+	if url := streams["ogg"]; url != "" {
+		return url, "ogg"
+	}
+	return "", ""
 }
 
 // makeXJamCall 生成动态签名
@@ -184,6 +239,5 @@ func (j *Jamendo) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "jamendo" {
 		return "", errors.New("source mismatch")
 	}
-	// Jamendo歌词接口暂未实现
 	return "", nil
 }

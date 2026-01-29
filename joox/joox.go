@@ -26,6 +26,9 @@ type Joox struct {
 
 // New 初始化函数
 func New(cookie string) *Joox {
+	if cookie == "" {
+		cookie = Cookie
+	}
 	return &Joox{
 		cookie: cookie,
 	}
