@@ -25,7 +25,7 @@
 | 千千音乐 | `qianqian` | ✅ | ✅ | ✅ | |
 | 汽水音乐 | `soda` | ✅ | ✅ | ✅ | 支持音频解密 |
 | 5sing | `fivesing` | ✅ | ✅ | ✅ | |
-| Jamendo | `jamendo` | ✅ | ✅ | ✅ | |
+| Jamendo | `jamendo` | ✅ | ✅ | ❌ | |
 | JOOX | `joox` | ✅ | ✅ | ✅ | |
 | Bilibili | `bilibili` | ✅ | ✅ | ✅ | |
 
