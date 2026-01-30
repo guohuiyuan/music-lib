@@ -23,7 +23,6 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
-// ... (常量和结构体保持不变)
 const (
 	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 )
@@ -39,10 +38,10 @@ func GetDownloadInfo(s *model.Song) (*DownloadInfo, error) { return defaultSoda.
 func GetDownloadURL(s *model.Song) (string, error) { return defaultSoda.GetDownloadURL(s) }
 func Download(s *model.Song, outputPath string) error { return defaultSoda.Download(s, outputPath) }
 func GetLyrics(s *model.Song) (string, error) { return defaultSoda.GetLyrics(s) }
+func Parse(link string) (*model.Song, error) { return defaultSoda.Parse(link) }
 
 // Search 搜索歌曲
 func (s *Soda) Search(keyword string) ([]model.Song, error) {
-	// ... (参数构造保持不变)
 	params := url.Values{}
 	params.Set("q", keyword)
 	params.Set("cursor", "0")
@@ -132,8 +131,7 @@ func (s *Soda) Search(keyword string) ([]model.Song, error) {
 			Size:     displaySize,
 			Bitrate:  bitrate,
 			Cover:    cover,
-			Link:     fmt.Sprintf("https://www.qishui.com/track/%s", track.ID), // [新增]
-			// 核心修改：存入 Extra
+			Link:     fmt.Sprintf("https://www.qishui.com/track/%s", track.ID),
 			Extra: map[string]string{
 				"track_id": track.ID,
 			},
@@ -142,7 +140,96 @@ func (s *Soda) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// ... (DownloadInfo 结构体保持不变)
+// Parse 解析链接并获取完整信息
+func (s *Soda) Parse(link string) (*model.Song, error) {
+	// 1. 提取 TrackID
+	// 支持格式: https://www.qishui.com/track/7132890123
+	re := regexp.MustCompile(`track/(\d+)`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) < 2 {
+		return nil, errors.New("invalid soda link")
+	}
+	trackID := matches[1]
+
+	// 2. 调用内部方法获取详情 (Metadata + DownloadInfo)
+	return s.fetchSongDetail(trackID)
+}
+
+// fetchSongDetail 内部方法：获取详情
+func (s *Soda) fetchSongDetail(trackID string) (*model.Song, error) {
+	params := url.Values{}
+	params.Set("track_id", trackID)
+	params.Set("media_type", "track")
+
+	v2URL := "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
+	v2Body, err := utils.Get(v2URL, 
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", s.cookie),
+	)
+	if err != nil { return nil, err }
+
+	var v2Resp struct {
+		TrackInfo struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Duration int    `json:"duration"`
+			Artists  []struct { Name string `json:"name"` } `json:"artists"`
+			Album    struct {
+				Name     string `json:"name"`
+				UrlCover struct { Urls []string `json:"urls"`; Uri string `json:"uri"` } `json:"url_cover"`
+			} `json:"album"`
+		} `json:"track_info"`
+		TrackPlayer struct { URLPlayerInfo string `json:"url_player_info"` } `json:"track_player"`
+	}
+	if err := json.Unmarshal(v2Body, &v2Resp); err != nil { return nil, fmt.Errorf("parse track_v2 response error: %w", err) }
+	
+	if v2Resp.TrackInfo.ID == "" {
+		return nil, errors.New("track info not found")
+	}
+
+	// 构造基本 Song
+	info := v2Resp.TrackInfo
+	var artistNames []string
+	for _, ar := range info.Artists { artistNames = append(artistNames, ar.Name) }
+
+	var cover string
+	if len(info.Album.UrlCover.Urls) > 0 {
+		domain := info.Album.UrlCover.Urls[0]
+		uri := info.Album.UrlCover.Uri
+		if domain != "" && uri != "" { cover = domain + uri + "~c5_375x375.jpg" }
+	}
+
+	song := &model.Song{
+		Source:   "soda",
+		ID:       info.ID,
+		Name:     info.Name,
+		Artist:   strings.Join(artistNames, "、"),
+		Album:    info.Album.Name,
+		Duration: info.Duration / 1000,
+		Cover:    cover,
+		Link:     fmt.Sprintf("https://www.qishui.com/track/%s", info.ID),
+		Extra: map[string]string{
+			"track_id": info.ID,
+		},
+	}
+
+	// 尝试获取 URL
+	// 这里不直接调用 GetDownloadInfo，因为 v2Resp 已经包含了 url_player_info，可以减少一次 API 调用
+	if v2Resp.TrackPlayer.URLPlayerInfo != "" {
+		dInfo, err := s.fetchPlayerInfo(v2Resp.TrackPlayer.URLPlayerInfo)
+		if err == nil {
+			song.URL = dInfo.URL + "#auth=" + url.QueryEscape(dInfo.PlayAuth)
+			song.Size = dInfo.Size
+			song.Ext = dInfo.Format
+			if song.Duration > 0 && dInfo.Size > 0 {
+				song.Bitrate = int(dInfo.Size * 8 / 1000 / int64(song.Duration))
+			}
+		}
+	}
+
+	return song, nil
+}
+
 type DownloadInfo struct {
 	URL      string
 	PlayAuth string
@@ -154,14 +241,13 @@ type DownloadInfo struct {
 func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 	if song.Source != "soda" { return nil, errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	trackID := song.ID
 	if song.Extra != nil && song.Extra["track_id"] != "" {
 		trackID = song.Extra["track_id"]
 	}
 
 	params := url.Values{}
-	params.Set("track_id", trackID) // 使用 trackID
+	params.Set("track_id", trackID)
 	params.Set("media_type", "track")
 
 	v2URL := "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
@@ -177,7 +263,12 @@ func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 	if err := json.Unmarshal(v2Body, &v2Resp); err != nil { return nil, fmt.Errorf("parse track_v2 response error: %w", err) }
 	if v2Resp.TrackPlayer.URLPlayerInfo == "" { return nil, errors.New("player info url not found") }
 
-	infoBody, err := utils.Get(v2Resp.TrackPlayer.URLPlayerInfo, 
+	return s.fetchPlayerInfo(v2Resp.TrackPlayer.URLPlayerInfo)
+}
+
+// fetchPlayerInfo 内部辅助：解析 url_player_info
+func (s *Soda) fetchPlayerInfo(playerInfoURL string) (*DownloadInfo, error) {
+	infoBody, err := utils.Get(playerInfoURL, 
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", s.cookie),
 	)
@@ -488,7 +579,6 @@ func extractKey(playAuth string) (string, error) {
 func (s *Soda) GetLyrics(song *model.Song) (string, error) {
 	if song.Source != "soda" { return "", errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	trackID := song.ID
 	if song.Extra != nil && song.Extra["track_id"] != "" {
 		trackID = song.Extra["track_id"]
@@ -514,13 +604,9 @@ func (s *Soda) GetLyrics(song *model.Song) (string, error) {
 	return parseSodaLyric(resp.Lyric.Content), nil
 }
 
-// parseSodaLyric 将 Soda 歌词格式转换为标准 LRC
 func parseSodaLyric(raw string) string {
 	var sb strings.Builder
-	// 匹配行首的时间标签 [start, duration]
 	lineRegex := regexp.MustCompile(`^\[(\d+),(\d+)\](.*)$`)
-	
-	// 匹配内部的字标签 <offset, duration, ?>
 	wordRegex := regexp.MustCompile(`<[^>]+>`)
 
 	lines := strings.Split(raw, "\n")

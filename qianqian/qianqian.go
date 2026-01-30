@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
-// ... (常量和结构体保持不变)
 const (
 	AppID     = "16073360"
 	Secret    = "0b50b02fd0d73a9c4c8c3a781c30845f"
@@ -33,10 +33,10 @@ var defaultQianqian = New("")
 func Search(keyword string) ([]model.Song, error) { return defaultQianqian.Search(keyword) }
 func GetDownloadURL(s *model.Song) (string, error) { return defaultQianqian.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error) { return defaultQianqian.GetLyrics(s) }
+func Parse(link string) (*model.Song, error) { return defaultQianqian.Parse(link) }
 
 // Search 搜索歌曲
 func (q *Qianqian) Search(keyword string) ([]model.Song, error) {
-	// ... (参数构造保持不变)
 	params := url.Values{}
 	params.Set("word", keyword)
 	params.Set("type", "1")
@@ -105,8 +105,7 @@ func (q *Qianqian) Search(keyword string) ([]model.Song, error) {
 			Size:     size,
 			Bitrate:  bitrate,
 			Cover:    item.Pic,
-			Link:     fmt.Sprintf("https://music.91q.com/song/%s", item.TSID), // [新增]
-			// 核心修改：存入 Extra
+			Link:     fmt.Sprintf("https://music.91q.com/song/%s", item.TSID),
 			Extra: map[string]string{
 				"tsid": item.TSID,
 			},
@@ -115,20 +114,50 @@ func (q *Qianqian) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
+// Parse 解析链接并获取完整信息
+func (q *Qianqian) Parse(link string) (*model.Song, error) {
+	// 1. 提取 TSID
+	re := regexp.MustCompile(`music\.91q\.com/song/(\w+)`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) < 2 {
+		return nil, errors.New("invalid qianqian link")
+	}
+	tsid := matches[1]
+
+	// 2. 获取 Metadata (通过 song/info 接口)
+	song, err := q.fetchSongInfo(tsid)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 获取下载链接 (直接调用 fetchDownloadURL)
+	url, err := q.fetchDownloadURL(tsid)
+	if err == nil {
+		song.URL = url
+	}
+	
+	return song, nil
+}
+
 // GetDownloadURL 获取下载链接
 func (q *Qianqian) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "qianqian" { return "", errors.New("source mismatch") }
+	if s.URL != "" { return s.URL, nil }
 
-	// 核心修改：优先从 Extra 获取
 	tsid := s.ID
 	if s.Extra != nil && s.Extra["tsid"] != "" {
 		tsid = s.Extra["tsid"]
 	}
 
+	return q.fetchDownloadURL(tsid)
+}
+
+// fetchDownloadURL 内部方法：获取下载链接
+func (q *Qianqian) fetchDownloadURL(tsid string) (string, error) {
 	qualities := []string{"3000", "320", "128", "64"}
 	for _, rate := range qualities {
 		params := url.Values{}
-		params.Set("TSID", tsid) // 使用 tsid
+		params.Set("TSID", tsid)
 		params.Set("appid", AppID)
 		params.Set("rate", rate)
 		signParams(params)
@@ -158,11 +187,62 @@ func (q *Qianqian) GetDownloadURL(s *model.Song) (string, error) {
 	return "", errors.New("download url not found")
 }
 
+// fetchSongInfo 内部方法：获取元数据
+func (q *Qianqian) fetchSongInfo(tsid string) (*model.Song, error) {
+	params := url.Values{}
+	params.Set("TSID", tsid)
+	params.Set("appid", AppID)
+	signParams(params)
+	apiURL := "https://music.91q.com/v1/song/info?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", q.cookie),
+	)
+	if err != nil { return nil, err }
+
+	// 该接口不仅返回 lyric，还返回歌曲基本信息，虽然结构体需要扩展
+	var resp struct {
+		Data []struct {
+			Title      string `json:"title"`
+			AlbumTitle string `json:"albumTitle"`
+			Pic        string `json:"pic"`
+			Duration   int    `json:"duration"`
+			Artist     []struct { Name string `json:"name"` } `json:"artist"`
+			Lyric      string `json:"lyric"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qianqian song info parse error: %w", err)
+	}
+	if len(resp.Data) == 0 {
+		return nil, errors.New("song info not found")
+	}
+
+	item := resp.Data[0]
+	var artistNames []string
+	for _, ar := range item.Artist { artistNames = append(artistNames, ar.Name) }
+
+	return &model.Song{
+		Source:   "qianqian",
+		ID:       tsid,
+		Name:     item.Title,
+		Artist:   strings.Join(artistNames, "、"),
+		Album:    item.AlbumTitle,
+		Duration: item.Duration,
+		Cover:    item.Pic,
+		Link:     fmt.Sprintf("https://music.91q.com/song/%s", tsid),
+		Extra: map[string]string{
+			"tsid": tsid,
+		},
+	}, nil
+}
+
 // GetLyrics 获取歌词
 func (q *Qianqian) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "qianqian" { return "", errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	tsid := s.ID
 	if s.Extra != nil && s.Extra["tsid"] != "" {
 		tsid = s.Extra["tsid"]
@@ -196,7 +276,6 @@ func (q *Qianqian) GetLyrics(s *model.Song) (string, error) {
 	return string(lrcBody), nil
 }
 
-// ... (辅助函数 signParams 保持不变)
 func signParams(v url.Values) {
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	v.Set("timestamp", timestamp)

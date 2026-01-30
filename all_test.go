@@ -948,3 +948,91 @@ func TestLyricsSourceMismatch(t *testing.T) {
 		})
 	}
 }
+
+// TestParseFunctionality 测试链接解析功能
+func TestParseFunctionality(t *testing.T) {
+	// 定义要测试的平台
+	// 注意：如果某个平台没有实现 Parse (package-level wrapper)，会导致编译错误。
+	// 请确保对应包中导出了 Parse 函数。
+	tests := []struct {
+		name   string
+		search func(string) ([]model.Song, error)
+		parse  func(string) (*model.Song, error)
+	}{
+		{"kugou", kugou.Search, kugou.Parse},
+		{"qq", qq.Search, qq.Parse},
+		{"netease", netease.Search, netease.Parse},
+		{"kuwo", kuwo.Search, kuwo.Parse},
+		{"bilibili", bilibili.Search, bilibili.Parse},
+		{"fivesing", fivesing.Search, fivesing.Parse},
+		{"jamendo", jamendo.Search, jamendo.Parse},
+		{"qianqian", qianqian.Search, qianqian.Parse},
+		
+		// 这三个渠道没有测试例子
+		// {"migu", migu.Search, migu.Parse},
+		// {"soda", soda.Search, soda.Parse},
+		// {"joox", joox.Search, joox.Parse},
+	}
+
+	defaultKeyword := testSongKeyword
+
+	for _, tt := range tests {
+		tt := tt // 捕获循环变量
+		t.Run(tt.name, func(t *testing.T) {
+			// 针对特定平台调整关键词以确保能搜索到结果
+			keyword := defaultKeyword
+			if tt.name == "jamendo" {
+				keyword = "acoustic"
+			} else if tt.name == "fivesing" {
+				keyword = "河图"
+			}
+
+			// 1. 搜索以获取一个有效的链接
+			songs, err := tt.search(keyword)
+			if err != nil {
+				t.Skipf("%s search failed: %v", tt.name, err)
+			}
+			if len(songs) == 0 {
+				t.Skipf("%s search returned no songs", tt.name)
+			}
+
+			// 2. 选取第一首有 Link 的歌曲
+			var originSong *model.Song
+			for i := range songs {
+				if songs[i].Link != "" {
+					originSong = &songs[i]
+					break
+				}
+			}
+
+			if originSong == nil {
+				t.Skip("Search results have no links, cannot test Parse")
+			}
+
+			t.Logf("Testing Parse with link: %s", originSong.Link)
+
+			// 3. 解析链接
+			parsedSong, err := tt.parse(originSong.Link)
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+
+			// 4. 验证解析结果
+			if parsedSong.Source != tt.name {
+				t.Errorf("Expected source %s, got %s", tt.name, parsedSong.Source)
+			}
+			if parsedSong.ID == "" {
+				t.Error("Parsed song has empty ID")
+			}
+			if parsedSong.Name == "" {
+				t.Error("Parsed song has empty Name")
+			}
+			if parsedSong.URL == "" {
+				t.Logf("Warning: Parsed song has empty download URL (Parse usually fetches metadata+url)")
+			}
+
+			// 记录结果
+			t.Logf("Parse success: %s -> %s (ID: %s)", originSong.Name, parsedSong.Name, parsedSong.ID)
+		})
+	}
+}

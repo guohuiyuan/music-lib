@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -12,11 +13,11 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
-// ... (常量和结构体保持不变)
 const (
 	Referer     = "http://music.163.com/"
 	SearchAPI   = "http://music.163.com/api/linux/forward"
 	DownloadAPI = "http://music.163.com/weapi/song/enhance/player/url"
+	DetailAPI   = "https://music.163.com/weapi/v3/song/detail"
 )
 
 type Netease struct {
@@ -28,10 +29,10 @@ var defaultNetease = New("")
 func Search(keyword string) ([]model.Song, error) { return defaultNetease.Search(keyword) }
 func GetDownloadURL(s *model.Song) (string, error) { return defaultNetease.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error) { return defaultNetease.GetLyrics(s) }
+func Parse(link string) (*model.Song, error) { return defaultNetease.Parse(link) }
 
 // Search 搜索歌曲
 func (n *Netease) Search(keyword string) ([]model.Song, error) {
-	// ... (参数构造和请求发送保持不变)
 	eparams := map[string]interface{}{
 		"method": "POST",
 		"url":    "http://music.163.com/api/cloudsearch/pc",
@@ -97,8 +98,7 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 			Size:     size,
 			Bitrate:  bitrate,
 			Cover:    item.Al.PicURL,
-			Link:     fmt.Sprintf("https://music.163.com/#/song?id=%d", item.ID), // [新增]
-			// 核心修改：存入 Extra
+			Link:     fmt.Sprintf("https://music.163.com/#/song?id=%d", item.ID),
 			Extra: map[string]string{
 				"song_id": strconv.Itoa(item.ID),
 			},
@@ -107,18 +107,109 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
+// Parse 解析链接并获取完整信息
+func (n *Netease) Parse(link string) (*model.Song, error) {
+	// 1. 提取 ID
+	re := regexp.MustCompile(`id=(\d+)`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) < 2 {
+		return nil, errors.New("invalid netease link")
+	}
+	songID := matches[1]
+
+	// 2. 获取 Metadata
+	song, err := n.fetchSongDetail(songID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 获取下载链接
+	downloadURL, err := n.GetDownloadURL(song)
+	if err == nil {
+		song.URL = downloadURL
+	}
+	
+	return song, nil
+}
+
+// fetchSongDetail 内部方法：调用 detail 接口获取详情
+func (n *Netease) fetchSongDetail(songID string) (*model.Song, error) {
+	reqData := map[string]interface{}{
+		"c":   fmt.Sprintf(`[{"id":%s}]`, songID),
+		"ids": fmt.Sprintf(`[%s]`, songID),
+	}
+	reqJSON, _ := json.Marshal(reqData)
+	params, encSecKey := EncryptWeApi(string(reqJSON))
+	form := url.Values{}
+	form.Set("params", params)
+	form.Set("encSecKey", encSecKey)
+
+	headers := []utils.RequestOption{
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
+		utils.WithHeader("Cookie", n.cookie),
+	}
+
+	body, err := utils.Post(DetailAPI, strings.NewReader(form.Encode()), headers...)
+	if err != nil { return nil, err }
+
+	var resp struct {
+		Songs []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+			Ar   []struct { Name string `json:"name"` } `json:"ar"`
+			Al   struct { Name string `json:"name"`; PicURL string `json:"picUrl"` } `json:"al"`
+			Dt   int `json:"dt"`
+		} `json:"songs"`
+		Privileges []struct {
+			ID int `json:"id"`
+			Fl int `json:"fl"`
+			Pl int `json:"pl"`
+		} `json:"privileges"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("netease detail json error: %w", err)
+	}
+
+	if len(resp.Songs) == 0 {
+		return nil, errors.New("song not found")
+	}
+
+	item := resp.Songs[0]
+	var artistNames []string
+	for _, ar := range item.Ar { artistNames = append(artistNames, ar.Name) }
+
+	// 简单估算比特率/大小，因为 Detail 接口不像 Search 接口那样直接返回 Size 结构
+	// 这里做保守处理
+	duration := item.Dt / 1000
+	
+	return &model.Song{
+		Source:   "netease",
+		ID:       strconv.Itoa(item.ID),
+		Name:     item.Name,
+		Artist:   strings.Join(artistNames, "、"),
+		Album:    item.Al.Name,
+		Duration: duration,
+		Cover:    item.Al.PicURL,
+		Link:     fmt.Sprintf("https://music.163.com/#/song?id=%d", item.ID),
+		Extra: map[string]string{
+			"song_id": strconv.Itoa(item.ID),
+		},
+	}, nil
+}
+
 // GetDownloadURL 获取下载链接
 func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "netease" { return "", errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	songID := s.ID
 	if s.Extra != nil && s.Extra["song_id"] != "" {
 		songID = s.Extra["song_id"]
 	}
 
 	reqData := map[string]interface{}{
-		"ids": []string{songID}, 
+		"ids": []string{songID},
 		"br":  320000,
 	}
 	reqJSON, _ := json.Marshal(reqData)
@@ -150,7 +241,6 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "netease" { return "", errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	songID := s.ID
 	if s.Extra != nil && s.Extra["song_id"] != "" {
 		songID = s.Extra["song_id"]

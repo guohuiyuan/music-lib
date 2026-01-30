@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
-// ... (常量和结构体保持不变)
 const (
 	MobileUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1"
 	MobileReferer   = "http://m.kugou.com"
@@ -28,6 +28,7 @@ var defaultKugou = New("")
 func Search(keyword string) ([]model.Song, error) { return defaultKugou.Search(keyword) }
 func GetDownloadURL(s *model.Song) (string, error) { return defaultKugou.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error) { return defaultKugou.GetLyrics(s) }
+func Parse(link string) (*model.Song, error) { return defaultKugou.Parse(link) }
 
 // Search 搜索歌曲
 func (k *Kugou) Search(keyword string) ([]model.Song, error) {
@@ -106,8 +107,7 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 			Size:     size,
 			Bitrate:  bitrate,
 			Cover:    coverURL,
-			Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", finalHash), // [新增]
-			// 核心修改：存入 Extra
+			Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", finalHash),
 			Extra: map[string]string{
 				"hash": finalHash,
 			},
@@ -116,16 +116,42 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
+// Parse 解析链接
+func (k *Kugou) Parse(link string) (*model.Song, error) {
+	// 1. 提取 Hash
+	// 支持格式: https://www.kugou.com/song/#hash=3C3D... 或 &hash=...
+	re := regexp.MustCompile(`(?i)hash=([a-f0-9]{32})`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) < 2 {
+		return nil, errors.New("invalid kugou link or hash not found")
+	}
+	hash := matches[1]
+
+	// 2. 调用核心逻辑获取详情
+	return k.fetchSongInfo(hash)
+}
+
 // GetDownloadURL 获取下载链接
 func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "kugou" { return "", errors.New("source mismatch") }
+	if s.URL != "" {
+		return s.URL, nil
+	}
 
-	// 核心修改：优先从 Extra 获取
 	hash := s.ID
 	if s.Extra != nil && s.Extra["hash"] != "" {
 		hash = s.Extra["hash"]
 	}
 
+	info, err := k.fetchSongInfo(hash)
+	if err != nil {
+		return "", err
+	}
+	return info.URL, nil
+}
+
+// fetchSongInfo 内部核心逻辑：获取详情和 URL
+func (k *Kugou) fetchSongInfo(hash string) (*model.Song, error) {
 	params := url.Values{}
 	params.Set("cmd", "playInfo")
 	params.Set("hash", hash)
@@ -137,32 +163,53 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
 	)
-	if err != nil { return "", err }
+	if err != nil { return nil, err }
 
 	var resp struct {
-		URL      string      `json:"url"`
-		BitRate  int         `json:"bitRate"`
-		ExtName  string      `json:"extName"`
-		AlbumImg string      `json:"album_img"`
-		Error    interface{} `json:"error"`
+		URL        string      `json:"url"`
+		BitRate    int         `json:"bitRate"`
+		ExtName    string      `json:"extName"`
+		AlbumImg   string      `json:"album_img"`
+		SongName   string      `json:"songName"`    // 扩展字段
+		AuthorName string      `json:"author_name"` // 扩展字段
+		TimeLength int         `json:"timeLength"`  // 扩展字段
+		FileSize   int64       `json:"fileSize"`
+		Error      interface{} `json:"error"`
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("json parse error: %w", err)
+		return nil, fmt.Errorf("json parse error: %w", err)
 	}
 
 	if resp.URL == "" {
-		return "", errors.New("download url not found (might be paid song)")
+		return nil, errors.New("download url not found (might be paid song)")
 	}
 
-	return resp.URL, nil
+	// 封面图处理
+	cover := strings.Replace(resp.AlbumImg, "{size}", "240", 1)
+
+	return &model.Song{
+		Source:   "kugou",
+		ID:       hash,
+		Name:     resp.SongName,
+		Artist:   resp.AuthorName,
+		Duration: resp.TimeLength,
+		Size:     resp.FileSize,
+		Bitrate:  resp.BitRate / 1000,
+		Ext:      resp.ExtName,
+		Cover:    cover,
+		URL:      resp.URL,
+		Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
+		Extra: map[string]string{
+			"hash": hash,
+		},
+	}, nil
 }
 
 // GetLyrics 获取歌词
 func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "kugou" { return "", errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	hash := s.ID
 	if s.Extra != nil && s.Extra["hash"] != "" {
 		hash = s.Extra["hash"]
@@ -218,7 +265,6 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 	return string(decodedBytes), nil
 }
 
-// ... (辅助函数保持不变)
 func isValidHash(h string) bool {
 	return h != "" && h != "00000000000000000000000000000000"
 }

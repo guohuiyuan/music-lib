@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
-// ... (常量和结构体保持不变)
 const (
 	UserAgent       = "Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1"
 	SearchReferer   = "http://m.y.qq.com"
@@ -32,10 +32,10 @@ var defaultQQ = New("")
 func Search(keyword string) ([]model.Song, error) { return defaultQQ.Search(keyword) }
 func GetDownloadURL(s *model.Song) (string, error) { return defaultQQ.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error) { return defaultQQ.GetLyrics(s) }
+func Parse(link string) (*model.Song, error) { return defaultQQ.Parse(link) }
 
 // Search 搜索歌曲
 func (q *QQ) Search(keyword string) ([]model.Song, error) {
-	// ... (参数构造保持不变)
 	params := url.Values{}
 	params.Set("w", keyword)
 	params.Set("format", "json")
@@ -60,11 +60,15 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 					AlbumName string `json:"albumname"`
 					AlbumMID  string `json:"albummid"`
 					Interval  int    `json:"interval"`
-					Size128  int64 `json:"size128"`
-					Size320  int64 `json:"size320"`
-					SizeFlac int64 `json:"sizeflac"`
-					Singer []struct { Name string `json:"name"` } `json:"singer"`
-					Pay struct { PayDownload int `json:"paydownload"`; PayPlay int `json:"payplay"`; PayTrackPrice int `json:"paytrackprice"` } `json:"pay"`
+					Size128   int64  `json:"size128"`
+					Size320   int64  `json:"size320"`
+					SizeFlac  int64  `json:"sizeflac"`
+					Singer    []struct{ Name string `json:"name"` } `json:"singer"`
+					Pay       struct {
+						PayDownload   int `json:"paydownload"`
+						PayPlay       int `json:"payplay"`
+						PayTrackPrice int `json:"paytrackprice"`
+					} `json:"pay"`
 				} `json:"list"`
 			} `json:"song"`
 		} `json:"data"`
@@ -105,8 +109,7 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 			Size:     fileSize,
 			Bitrate:  bitrate,
 			Cover:    coverURL,
-			Link:     fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", item.SongMID), // [新增]
-			// 核心修改：存入 Extra
+			Link:     fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", item.SongMID),
 			Extra: map[string]string{
 				"songmid": item.SongMID,
 			},
@@ -115,11 +118,36 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
+// Parse 解析链接并获取完整信息
+func (q *QQ) Parse(link string) (*model.Song, error) {
+	// 1. 提取 SongMID
+	// 支持格式: https://y.qq.com/n/ryqq/songDetail/001ZaC524c9EAp
+	re := regexp.MustCompile(`songDetail/(\w+)`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) < 2 {
+		return nil, errors.New("invalid qq music link")
+	}
+	songMID := matches[1]
+
+	// 2. 获取详情 (Metadata)
+	song, err := q.fetchSongDetail(songMID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. 获取下载链接
+	downloadURL, err := q.GetDownloadURL(song)
+	if err == nil {
+		song.URL = downloadURL
+	}
+	
+	return song, nil
+}
+
 // GetDownloadURL 获取下载链接
 func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "qq" { return "", errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	songMID := s.ID
 	if s.Extra != nil && s.Extra["songmid"] != "" {
 		songMID = s.Extra["songmid"]
@@ -132,7 +160,7 @@ func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 	var lastErr string
 
 	for _, rate := range rates {
-		filename := fmt.Sprintf("%s%s%s.%s", rate.Prefix, songMID, songMID, rate.Ext) // 使用 songMID
+		filename := fmt.Sprintf("%s%s%s.%s", rate.Prefix, songMID, songMID, rate.Ext)
 
 		reqData := map[string]interface{}{
 			"comm": map[string]interface{}{ "cv": 4747474, "ct": 24, "format": "json", "inCharset": "utf-8", "outCharset": "utf-8", "notice": 0, "platform": "yqq.json", "needNewCode": 1, "uin": 0, "g_tk_new_20200303": 5381, "g_tk": 5381 },
@@ -168,18 +196,75 @@ func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 	return "", fmt.Errorf("download url not found: %s", lastErr)
 }
 
+// fetchSongDetail 内部方法：通过 songmid 获取详情
+func (q *QQ) fetchSongDetail(songMID string) (*model.Song, error) {
+	params := url.Values{}
+	params.Set("songmid", songMID)
+	params.Set("format", "json")
+	
+	// 使用播放详情接口获取元数据
+	apiURL := "https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?" + params.Encode()
+	body, err := utils.Get(apiURL, 
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", SearchReferer),
+		utils.WithHeader("Cookie", q.cookie),
+	)
+	if err != nil { return nil, err }
+
+	var resp struct {
+		Data []struct {
+			ID        int64  `json:"id"`
+			Name      string `json:"name"`
+			Mid       string `json:"mid"`
+			Album     struct { Name string `json:"name"`; Mid string `json:"mid"` } `json:"album"`
+			Singer    []struct { Name string `json:"name"` } `json:"singer"`
+			Interval  int `json:"interval"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq detail json parse error: %w", err)
+	}
+
+	if len(resp.Data) == 0 {
+		return nil, errors.New("song detail not found")
+	}
+
+	item := resp.Data[0]
+	var artistNames []string
+	for _, s := range item.Singer { artistNames = append(artistNames, s.Name) }
+
+	var coverURL string
+	if item.Album.Mid != "" {
+		coverURL = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", item.Album.Mid)
+	}
+
+	return &model.Song{
+		Source:   "qq",
+		ID:       item.Mid,
+		Name:     item.Name,
+		Artist:   strings.Join(artistNames, "、"),
+		Album:    item.Album.Name,
+		Duration: item.Interval,
+		Cover:    coverURL,
+		Link:     fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", item.Mid),
+		Extra: map[string]string{
+			"songmid": item.Mid,
+		},
+	}, nil
+}
+
 // GetLyrics 获取歌词
 func (q *QQ) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "qq" { return "", errors.New("source mismatch") }
 
-	// 核心修改：优先从 Extra 获取
 	songMID := s.ID
 	if s.Extra != nil && s.Extra["songmid"] != "" {
 		songMID = s.Extra["songmid"]
 	}
 
 	params := url.Values{}
-	params.Set("songmid", songMID) // 使用 songMID
+	params.Set("songmid", songMID)
 	params.Set("loginUin", "0")
 	params.Set("hostUin", "0")
 	params.Set("format", "json")
@@ -201,6 +286,7 @@ func (q *QQ) GetLyrics(s *model.Song) (string, error) {
 
 	var resp struct { Retcode int `json:"retcode"`; Lyric string `json:"lyric"`; Trans string `json:"trans"` }
 	sBody := string(body)
+	// 处理 JSONP 包装
 	if idx := strings.Index(sBody, "("); idx >= 0 {
 		sBody = sBody[idx+1:]
 		if idx2 := strings.LastIndex(sBody, ")"); idx2 >= 0 { sBody = sBody[:idx2] }
