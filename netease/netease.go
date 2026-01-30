@@ -5,77 +5,43 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
+// ... (常量和结构体保持不变)
 const (
-	Referer = "http://music.163.com/"
-	// 搜索接口 (通过 linux forward 转发)
-	SearchAPI = "http://music.163.com/api/linux/forward"
-	// 下载接口 (WeApi)
+	Referer     = "http://music.163.com/"
+	SearchAPI   = "http://music.163.com/api/linux/forward"
 	DownloadAPI = "http://music.163.com/weapi/song/enhance/player/url"
 )
 
-// Netease 结构体
 type Netease struct {
 	cookie string
 }
 
-// New 初始化函数
-func New(cookie string) *Netease {
-	return &Netease{
-		cookie: cookie,
-	}
-}
-
-// 全局默认实例（向后兼容）
+func New(cookie string) *Netease { return &Netease{cookie: cookie} }
 var defaultNetease = New("")
-
-// Search 搜索歌曲（向后兼容）
-func Search(keyword string) ([]model.Song, error) {
-	return defaultNetease.Search(keyword)
-}
-
-// GetDownloadURL 获取下载链接（向后兼容）
-func GetDownloadURL(s *model.Song) (string, error) {
-	return defaultNetease.GetDownloadURL(s)
-}
-
-// GetLyrics 获取歌词（向后兼容）
-func GetLyrics(s *model.Song) (string, error) {
-	return defaultNetease.GetLyrics(s)
-}
+func Search(keyword string) ([]model.Song, error) { return defaultNetease.Search(keyword) }
+func GetDownloadURL(s *model.Song) (string, error) { return defaultNetease.GetDownloadURL(s) }
+func GetLyrics(s *model.Song) (string, error) { return defaultNetease.GetLyrics(s) }
 
 // Search 搜索歌曲
-// Python: netease_search
 func (n *Netease) Search(keyword string) ([]model.Song, error) {
-	// 1. 构造内部 eparams (将被 AES-ECB 加密)
+	// ... (参数构造和请求发送保持不变)
 	eparams := map[string]interface{}{
 		"method": "POST",
 		"url":    "http://music.163.com/api/cloudsearch/pc",
-		"params": map[string]interface{}{
-			"s":      keyword,
-			"type":   1,
-			"offset": 0,
-			"limit":  10, // 默认 10 条
-		},
+		"params": map[string]interface{}{"s": keyword, "type": 1, "offset": 0, "limit": 10},
 	}
-	eparamsJSON, err := json.Marshal(eparams)
-	if err != nil {
-		return nil, fmt.Errorf("json marshal error: %w", err)
-	}
-
-	// 2. 加密参数
+	eparamsJSON, _ := json.Marshal(eparams)
 	encryptedParam := EncryptLinux(string(eparamsJSON))
-
-	// 3. 构造 POST 表单数据
 	form := url.Values{}
 	form.Set("eparams", encryptedParam)
 
-	// 4. 发送请求
 	headers := []utils.RequestOption{
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
@@ -83,38 +49,20 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	}
 
 	body, err := utils.Post(SearchAPI, strings.NewReader(form.Encode()), headers...)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 
-	// 5. 解析 JSON
 	var resp struct {
 		Result struct {
 			Songs []struct {
-				ID   int    `json:"id"`
-				Name string `json:"name"`
-				Ar   []struct {
-					Name string `json:"name"`
-				} `json:"ar"` // 歌手
-				Al struct {
-					Name   string `json:"name"`
-					PicURL string `json:"picUrl"`
-				} `json:"al"` // 专辑
-				Dt        int `json:"dt"` // 时长 (ms)
-				Privilege struct {
-					Fl int `json:"fl"` // 版权标记
-					Pl int `json:"pl"` // 播放等级
-				} `json:"privilege"`
-				// 不同音质信息，用于计算大小
-				H struct {
-					Size int64 `json:"size"`
-				} `json:"h"`
-				M struct {
-					Size int64 `json:"size"`
-				} `json:"m"`
-				L struct {
-					Size int64 `json:"size"`
-				} `json:"l"`
+				ID        int `json:"id"`
+				Name      string `json:"name"`
+				Ar        []struct { Name string `json:"name"` } `json:"ar"`
+				Al        struct { Name string `json:"name"`; PicURL string `json:"picUrl"` } `json:"al"`
+				Dt        int `json:"dt"`
+				Privilege struct { Fl int `json:"fl"`; Pl int `json:"pl"` } `json:"privilege"`
+				H         struct { Size int64 `json:"size"` } `json:"h"`
+				M         struct { Size int64 `json:"size"` } `json:"m"`
+				L         struct { Size int64 `json:"size"` } `json:"l"`
 			} `json:"songs"`
 		} `json:"result"`
 	}
@@ -123,44 +71,25 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 		return nil, fmt.Errorf("netease json parse error: %w", err)
 	}
 
-	// 6. 转换模型
 	var songs []model.Song
 	for _, item := range resp.Result.Songs {
-		// --- 核心过滤逻辑 (参考 Python 代码) ---
-		
-		// 1. 过滤无版权 (fl == 0 通常表示无版权)
-		if item.Privilege.Fl == 0 {
-			continue
-		}
+		if item.Privilege.Fl == 0 { continue }
 
-		// 2. 计算文件大小 (优先高品质)
 		var size int64
-		// 这里的 bitrate 仅作为 fallback 或者标准值，下面会重新计算
-		if item.Privilege.Fl >= 320000 && item.H.Size > 0 {
-			size = item.H.Size
-		} else if item.Privilege.Fl >= 192000 && item.M.Size > 0 {
-			size = item.M.Size
-		} else {
-			size = item.L.Size
-		}
+		if item.Privilege.Fl >= 320000 && item.H.Size > 0 { size = item.H.Size
+		} else if item.Privilege.Fl >= 192000 && item.M.Size > 0 { size = item.M.Size
+		} else { size = item.L.Size }
 
 		duration := item.Dt / 1000
-		
-		// [修改] 动态计算码率: (Size * 8) / Duration / 1000
-		// 避免使用 "999" 这种魔术数字，直接展示真实计算值 (e.g. 945 kbps)
 		bitrate := 128
-		if duration > 0 && size > 0 {
-			bitrate = int(size * 8 / 1000 / int64(duration))
-		}
+		if duration > 0 && size > 0 { bitrate = int(size * 8 / 1000 / int64(duration)) }
 
 		var artistNames []string
-		for _, ar := range item.Ar {
-			artistNames = append(artistNames, ar.Name)
-		}
+		for _, ar := range item.Ar { artistNames = append(artistNames, ar.Name) }
 
 		songs = append(songs, model.Song{
 			Source:   "netease",
-			ID:       fmt.Sprintf("%d", item.ID),
+			ID:       strconv.Itoa(item.ID),
 			Name:     item.Name,
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    item.Al.Name,
@@ -168,38 +97,35 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 			Size:     size,
 			Bitrate:  bitrate,
 			Cover:    item.Al.PicURL,
+			// 核心修改：存入 Extra
+			Extra: map[string]string{
+				"song_id": strconv.Itoa(item.ID),
+			},
 		})
 	}
-
 	return songs, nil
 }
 
 // GetDownloadURL 获取下载链接
-// Python: NeteaseSong.download
 func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
-	if s.Source != "netease" {
-		return "", errors.New("source mismatch")
+	if s.Source != "netease" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取
+	songID := s.ID
+	if s.Extra != nil && s.Extra["song_id"] != "" {
+		songID = s.Extra["song_id"]
 	}
 
-	// 1. 构造原始参数
 	reqData := map[string]interface{}{
-		"ids": []string{s.ID}, // 注意 ID 要放在数组里
-		"br":  320000,         // 320k 码率
+		"ids": []string{songID}, 
+		"br":  320000,
 	}
-	reqJSON, err := json.Marshal(reqData)
-	if err != nil {
-		return "", fmt.Errorf("json marshal error: %w", err)
-	}
-
-	// 2. WeApi 加密 (AES-CBC + RSA)
+	reqJSON, _ := json.Marshal(reqData)
 	params, encSecKey := EncryptWeApi(string(reqJSON))
-
-	// 3. 构造 POST 表单
 	form := url.Values{}
 	form.Set("params", params)
 	form.Set("encSecKey", encSecKey)
 
-	// 4. 发送请求
 	headers := []utils.RequestOption{
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
@@ -207,91 +133,55 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	}
 
 	body, err := utils.Post(DownloadAPI, strings.NewReader(form.Encode()), headers...)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
-	// 5. 解析响应
 	var resp struct {
-		Data []struct {
-			URL  string `json:"url"`
-			Code int    `json:"code"`
-			Br   int    `json:"br"` // 实际码率
-		} `json:"data"`
+		Data []struct { URL string `json:"url"`; Code int `json:"code"`; Br int `json:"br"` } `json:"data"`
 	}
-
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("json parse error: %w", err)
-	}
-
+	if err := json.Unmarshal(body, &resp); err != nil { return "", fmt.Errorf("json parse error: %w", err) }
 	if len(resp.Data) == 0 || resp.Data[0].URL == "" {
 		return "", errors.New("download url not found (might be vip or copyright restricted)")
 	}
-
 	return resp.Data[0].URL, nil
 }
 
 // GetLyrics 获取歌词
 func (n *Netease) GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "netease" {
-		return "", errors.New("source mismatch")
+	if s.Source != "netease" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取
+	songID := s.ID
+	if s.Extra != nil && s.Extra["song_id"] != "" {
+		songID = s.Extra["song_id"]
 	}
 
-	// 1. 构造参数
 	reqData := map[string]interface{}{
 		"csrf_token": "",
-		"id":         s.ID, // model 中 ID 为 string，网易云接口通常兼容
-		"lv":         -1,   // 版本号，-1 表示获取最新
-		"tv":         -1,   // 翻译版本号
+		"id":         songID,
+		"lv":         -1,
+		"tv":         -1,
 	}
-
-	reqJSON, err := json.Marshal(reqData)
-	if err != nil {
-		return "", fmt.Errorf("json marshal error: %w", err)
-	}
-
-	// 2. WeApi 加密
+	reqJSON, _ := json.Marshal(reqData)
 	params, encSecKey := EncryptWeApi(string(reqJSON))
-
-	// 3. 构造 POST 表单
 	form := url.Values{}
 	form.Set("params", params)
 	form.Set("encSecKey", encSecKey)
 
-	// 4. 发送请求
 	headers := []utils.RequestOption{
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
 		utils.WithHeader("Cookie", n.cookie),
 	}
 
-	// 接口地址
 	lyricAPI := "https://music.163.com/weapi/song/lyric"
-
 	body, err := utils.Post(lyricAPI, strings.NewReader(form.Encode()), headers...)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
-	// 5. 解析响应
 	var resp struct {
 		Code int `json:"code"`
-		Lrc  struct {
-			Lyric string `json:"lyric"`
-		} `json:"lrc"`
-		// 如果需要翻译歌词，可以解析 tlyric 字段
-		// Tlyric struct {
-		// 	Lyric string `json:"lyric"`
-		// } `json:"tlyric"`
+		Lrc  struct { Lyric string `json:"lyric"` } `json:"lrc"`
 	}
-
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("json parse error: %w", err)
-	}
-
-	if resp.Code != 200 {
-		return "", fmt.Errorf("netease api error code: %d", resp.Code)
-	}
-
+	if err := json.Unmarshal(body, &resp); err != nil { return "", fmt.Errorf("json parse error: %w", err) }
+	if resp.Code != 200 { return "", fmt.Errorf("netease api error code: %d", resp.Code) }
 	return resp.Lrc.Lyric, nil
 }

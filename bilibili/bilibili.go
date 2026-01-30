@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/guohuiyuan/music-lib/model"
@@ -79,7 +80,7 @@ func (b *Bilibili) Search(keyword string) ([]model.Song, error) {
 	for _, item := range searchResp.Data.Result {
 		rootTitle := strings.ReplaceAll(strings.ReplaceAll(item.Title, "<em class=\"keyword\">", ""), "</em>", "")
 
-		// 必须保留 view 接口调用，因为我们需要 CID 来生成唯一的 Song ID
+		// 必须保留 view 接口调用，因为我们需要 CID
 		viewURL := fmt.Sprintf("https://api.bilibili.com/x/web-interface/view?bvid=%s", item.BVID)
 		viewBody, err := utils.Get(viewURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Cookie", b.cookie))
 		if err != nil {
@@ -100,27 +101,34 @@ func (b *Bilibili) Search(keyword string) ([]model.Song, error) {
 		}
 
 		cover := item.Pic
-		if strings.HasPrefix(cover, "//") { cover = "https:" + cover }
+		if strings.HasPrefix(cover, "//") {
+			cover = "https:" + cover
+		}
 
 		for _, page := range viewResp.Data.Pages {
-			// 已移除：在此处循环调用 playurl 获取大小的逻辑
-			
 			displayTitle := page.Part
 			if len(viewResp.Data.Pages) == 1 && displayTitle == "" {
 				displayTitle = rootTitle
 			} else if displayTitle != rootTitle {
 				displayTitle = fmt.Sprintf("%s - %s", rootTitle, displayTitle)
 			}
+			
+			// 填充 Song 结构体
 			songs = append(songs, model.Song{
 				Source:   "bilibili",
-				ID:       fmt.Sprintf("%s|%d", item.BVID, page.CID),
+				ID:       fmt.Sprintf("%s|%d", item.BVID, page.CID), // ID 仍保持唯一性，但不用于逻辑处理
 				Name:     displayTitle,
 				Artist:   item.Author,
 				Album:    item.BVID,
-				Duration: page.Duration, // 使用 view 接口提供的基础时长
-				Size:     0,             // Search 不再请求 size，由 Inspect 或 Download 处理
+				Duration: page.Duration,
+				Size:     0,
 				Bitrate:  0,
 				Cover:    cover,
+				// 核心修改：将 bvid 和 cid 存入 Extra
+				Extra: map[string]string{
+					"bvid": item.BVID,
+					"cid":  strconv.FormatInt(page.CID, 10),
+				},
 			})
 		}
 	}
@@ -132,30 +140,58 @@ func (b *Bilibili) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "bilibili" {
 		return "", errors.New("source mismatch")
 	}
-	
-	parts := strings.Split(s.ID, "|")
-	if len(parts) != 2 { return "", errors.New("invalid id") }
-	apiURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=16&bvid=%s&cid=%s", parts[0], parts[1])
+
+	// 核心修改：优先从 Extra 获取，无需 Split ID
+	var bvid, cid string
+	if s.Extra != nil {
+		bvid = s.Extra["bvid"]
+		cid = s.Extra["cid"]
+	}
+
+	// 兼容性兜底：如果 Extra 为空（比如旧数据），尝试解析 ID
+	if bvid == "" || cid == "" {
+		parts := strings.Split(s.ID, "|")
+		if len(parts) == 2 {
+			bvid = parts[0]
+			cid = parts[1]
+		} else {
+			return "", errors.New("invalid id structure and missing extra data")
+		}
+	}
+
+	apiURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=16&bvid=%s&cid=%s", bvid, cid)
 
 	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Referer", Referer), utils.WithHeader("Cookie", b.cookie))
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 
 	var resp struct {
 		Data struct {
-			Durl []struct { URL string `json:"url"` } `json:"durl"`
+			Durl []struct {
+				URL string `json:"url"`
+			} `json:"durl"`
 			Dash struct {
 				Audio []DashStream `json:"audio"`
-				Flac  struct { Audio []DashStream `json:"audio"` } `json:"flac"`
+				Flac  struct {
+					Audio []DashStream `json:"audio"`
+				} `json:"flac"`
 			} `json:"dash"`
 		} `json:"data"`
 	}
 	json.Unmarshal(body, &resp)
 
 	// 优先 DASH
-	if len(resp.Data.Dash.Flac.Audio) > 0 { return resp.Data.Dash.Flac.Audio[0].BaseURL, nil }
-	if len(resp.Data.Dash.Audio) > 0 { return resp.Data.Dash.Audio[0].BaseURL, nil }
+	if len(resp.Data.Dash.Flac.Audio) > 0 {
+		return resp.Data.Dash.Flac.Audio[0].BaseURL, nil
+	}
+	if len(resp.Data.Dash.Audio) > 0 {
+		return resp.Data.Dash.Audio[0].BaseURL, nil
+	}
 	// 兜底 Durl
-	if len(resp.Data.Durl) > 0 { return resp.Data.Durl[0].URL, nil }
+	if len(resp.Data.Durl) > 0 {
+		return resp.Data.Durl[0].URL, nil
+	}
 
 	return "", errors.New("no audio found")
 }
@@ -165,11 +201,10 @@ type DashStream struct {
 	Bandwidth int    `json:"bandwidth"`
 }
 
-// GetLyrics 获取歌词 (B站暂不支持歌词接口)
+// GetLyrics 获取歌词
 func (b *Bilibili) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "bilibili" {
 		return "", errors.New("source mismatch")
 	}
-	// B站歌词接口暂未实现
 	return "", nil
 }

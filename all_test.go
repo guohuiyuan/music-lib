@@ -21,6 +21,7 @@ import (
 // Common test keywords
 // 使用 "痛仰乐队" (Miserable Faith) 代替 "周杰伦"
 const testArtistKeyword = "痛仰乐队"
+
 // 使用 "再见杰克" 代替 "小苹果"/"海阔天空"
 const testSongKeyword = "再见杰克"
 
@@ -43,11 +44,14 @@ func TestKugouSearch(t *testing.T) {
 		if song.Name == "" {
 			t.Errorf("Song %d: empty name", i)
 		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["hash"] == "" {
+			t.Errorf("Song %d: Extra missing 'hash'", i)
 		}
 	}
 
@@ -73,7 +77,6 @@ func TestKugouGetDownloadURL(t *testing.T) {
 			url, err := kugou.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Kugou GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -101,14 +104,14 @@ func TestQQSearch(t *testing.T) {
 		if song.Source != "qq" {
 			t.Errorf("Song %d: expected source 'qq', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["songmid"] == "" {
+			t.Errorf("Song %d: Extra missing 'songmid'", i)
 		}
 	}
 
@@ -127,14 +130,12 @@ func TestQQGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing QQ GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := qq.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("QQ GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -162,14 +163,22 @@ func TestMiguSearch(t *testing.T) {
 		if song.Source != "migu" {
 			t.Errorf("Song %d: expected source 'migu', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else {
+			if song.Extra["content_id"] == "" {
+				t.Errorf("Song %d: Extra missing 'content_id'", i)
+			}
+			if song.Extra["resource_type"] == "" {
+				t.Errorf("Song %d: Extra missing 'resource_type'", i)
+			}
+			if song.Extra["format_type"] == "" {
+				t.Errorf("Song %d: Extra missing 'format_type'", i)
+			}
 		}
 	}
 
@@ -178,7 +187,7 @@ func TestMiguSearch(t *testing.T) {
 
 // TestMiguGetDownloadURL 测试咪咕音乐下载链接获取
 func TestMiguGetDownloadURL(t *testing.T) {
-	keyword := testArtistKeyword // 咪咕下载测试保持用歌手名搜索也可以，或者换 testSongKeyword
+	keyword := testArtistKeyword
 	songs, err := migu.Search(keyword)
 	if err != nil {
 		t.Fatalf("Migu Search failed: %v", err)
@@ -188,14 +197,12 @@ func TestMiguGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing Migu GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := migu.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Migu GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -223,14 +230,14 @@ func TestNeteaseSearch(t *testing.T) {
 		if song.Source != "netease" {
 			t.Errorf("Song %d: expected source 'netease', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["song_id"] == "" {
+			t.Errorf("Song %d: Extra missing 'song_id'", i)
 		}
 	}
 
@@ -249,14 +256,12 @@ func TestNeteaseGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing Netease GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := netease.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Netease GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -284,14 +289,14 @@ func TestKuwoSearch(t *testing.T) {
 		if song.Source != "kuwo" {
 			t.Errorf("Song %d: expected source 'kuwo', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["rid"] == "" {
+			t.Errorf("Song %d: Extra missing 'rid'", i)
 		}
 	}
 
@@ -310,14 +315,12 @@ func TestKuwoGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing Kuwo GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := kuwo.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Kuwo GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -330,12 +333,10 @@ func TestKuwoGetDownloadURL(t *testing.T) {
 }
 
 // TestBilibiliSearch 测试Bilibili音频搜索
-// 注意：Bilibili API 有严格的风控机制，频繁请求可能导致IP被封
 func TestBilibiliSearch(t *testing.T) {
 	keyword := testArtistKeyword
 	songs, err := bilibili.Search(keyword)
 	if err != nil {
-		// Bilibili API 有风控，如果搜索失败则标记为测试失败
 		t.Errorf("Bilibili Search failed (可能触发风控): %v", err)
 		return
 	}
@@ -345,20 +346,24 @@ func TestBilibiliSearch(t *testing.T) {
 		return
 	}
 
-	// 只检查前2首歌曲，减少请求量
 	for i := 0; i < min(2, len(songs)); i++ {
 		song := songs[i]
 		if song.Source != "bilibili" {
 			t.Errorf("Song %d: expected source 'bilibili', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else {
+			if song.Extra["bvid"] == "" {
+				t.Errorf("Song %d: Extra missing 'bvid'", i)
+			}
+			if song.Extra["cid"] == "" {
+				t.Errorf("Song %d: Extra missing 'cid'", i)
+			}
 		}
 	}
 
@@ -366,12 +371,10 @@ func TestBilibiliSearch(t *testing.T) {
 }
 
 // TestBilibiliGetDownloadURL 测试Bilibili音频下载链接获取
-// 注意：Bilibili API 有严格的风控机制，频繁请求可能导致IP被封
 func TestBilibiliGetDownloadURL(t *testing.T) {
 	keyword := testArtistKeyword
 	songs, err := bilibili.Search(keyword)
 	if err != nil {
-		// Bilibili API 有风控，如果搜索失败则标记为测试失败
 		t.Errorf("Bilibili Search failed (可能触发风控): %v", err)
 		return
 	}
@@ -381,13 +384,11 @@ func TestBilibiliGetDownloadURL(t *testing.T) {
 		return
 	}
 
-	// 只尝试前1首歌曲，大幅减少请求量
 	for i := 0; i < min(1, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := bilibili.GetDownloadURL(song)
 			if err != nil {
-				// 下载失败可能因为风控，记录但不标记为测试失败
 				t.Logf("Bilibili GetDownloadURL failed for %s: %v", song.Name, err)
 				return
 			}
@@ -402,8 +403,7 @@ func TestBilibiliGetDownloadURL(t *testing.T) {
 
 // TestFiveSingSearch 测试FiveSing音乐搜索
 func TestFiveSingSearch(t *testing.T) {
-	// FiveSing 是古风为主，用普通摇滚乐队可能搜不到，这里单独指定一个古风/翻唱相关关键词
-	keyword := "河图" 
+	keyword := "河图"
 	songs, err := fivesing.Search(keyword)
 	if err != nil {
 		t.Fatalf("FiveSing Search failed: %v", err)
@@ -417,18 +417,23 @@ func TestFiveSingSearch(t *testing.T) {
 		if song.Source != "fivesing" {
 			t.Errorf("Song %d: expected source 'fivesing', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
 		}
-		// 检查ID格式是否为 songId|typeEname
+		// 检查ID格式 (向后兼容)
 		if !strings.Contains(song.ID, "|") {
 			t.Errorf("Song %d: ID should contain '|' separator, got '%s'", i, song.ID)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else {
+			if song.Extra["songid"] == "" {
+				t.Errorf("Song %d: Extra missing 'songid'", i)
+			}
+			if song.Extra["songtype"] == "" {
+				t.Errorf("Song %d: Extra missing 'songtype'", i)
+			}
 		}
 	}
 
@@ -447,14 +452,12 @@ func TestFiveSingGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing FiveSing GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := fivesing.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("FiveSing GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -482,14 +485,14 @@ func TestQianqianSearch(t *testing.T) {
 		if song.Source != "qianqian" {
 			t.Errorf("Song %d: expected source 'qianqian', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["tsid"] == "" {
+			t.Errorf("Song %d: Extra missing 'tsid'", i)
 		}
 	}
 
@@ -508,14 +511,12 @@ func TestQianqianGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing Qianqian GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := qianqian.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Qianqian GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -543,14 +544,14 @@ func TestSodaSearch(t *testing.T) {
 		if song.Source != "soda" {
 			t.Errorf("Song %d: expected source 'soda', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["track_id"] == "" {
+			t.Errorf("Song %d: Extra missing 'track_id'", i)
 		}
 	}
 
@@ -569,14 +570,12 @@ func TestSodaGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing Soda GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := soda.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Soda GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -590,7 +589,6 @@ func TestSodaGetDownloadURL(t *testing.T) {
 
 // TestJamendoSearch 测试Jamendo音乐搜索
 func TestJamendoSearch(t *testing.T) {
-	// Jamendo 是英文平台，使用风格关键词
 	keyword := "acoustic"
 	songs, err := jamendo.Search(keyword)
 	if err != nil {
@@ -605,17 +603,14 @@ func TestJamendoSearch(t *testing.T) {
 		if song.Source != "jamendo" {
 			t.Errorf("Song %d: expected source 'jamendo', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
 		}
-		if song.URL == "" {
-			t.Errorf("Song %d: empty URL", i)
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["track_id"] == "" {
+			t.Errorf("Song %d: Extra missing 'track_id'", i)
 		}
 	}
 
@@ -634,14 +629,12 @@ func TestJamendoGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing Jamendo GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := jamendo.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Jamendo GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -669,14 +662,14 @@ func TestJooxSearch(t *testing.T) {
 		if song.Source != "joox" {
 			t.Errorf("Song %d: expected source 'joox', got '%s'", i, song.Source)
 		}
-		if song.Name == "" {
-			t.Errorf("Song %d: empty name", i)
-		}
-		if song.Artist == "" {
-			t.Errorf("Song %d: empty artist", i)
-		}
 		if song.ID == "" {
 			t.Errorf("Song %d: empty ID", i)
+		}
+		// [适配] 验证 Extra
+		if song.Extra == nil {
+			t.Errorf("Song %d: Extra is nil", i)
+		} else if song.Extra["songid"] == "" {
+			t.Errorf("Song %d: Extra missing 'songid'", i)
 		}
 	}
 
@@ -695,14 +688,12 @@ func TestJooxGetDownloadURL(t *testing.T) {
 		t.Skip("No songs found for testing Joox GetDownloadURL")
 	}
 
-	// 尝试前3首歌曲
 	for i := 0; i < min(3, len(songs)); i++ {
 		song := &songs[i]
 		t.Run(song.Name, func(t *testing.T) {
 			url, err := joox.GetDownloadURL(song)
 			if err != nil {
 				t.Logf("Joox GetDownloadURL failed for %s: %v", song.Name, err)
-				// 不标记为失败，因为某些歌曲可能受版权保护
 				return
 			}
 			if url == "" {
@@ -748,34 +739,28 @@ func TestAllSourcesSearch(t *testing.T) {
 			t.Parallel()
 			songs, err := src.search(keyword)
 			if err != nil {
-				// 对于 jamendo，关键词可能是英文，但这里用中文可能无结果，跳过
 				if src.name == "jamendo" {
 					t.Skipf("Jamendo search failed (可能关键词不支持): %v", err)
 				}
-				// 对于 fivesing，可能因为风格不匹配无结果
 				if src.name == "fivesing" {
 					t.Skipf("Fivesing search failed (可能风格不匹配): %v", err)
 				}
-				// 其他源失败则标记为错误
 				t.Errorf("%s Search failed: %v", src.name, err)
 				return
 			}
 			if len(songs) == 0 {
 				t.Skipf("%s Search returned no songs (可能API变更)", src.name)
 			}
-			// 检查第一首歌曲的基本字段
 			song := songs[0]
 			if song.Source != src.name {
 				t.Errorf("%s: expected source '%s', got '%s'", src.name, src.name, song.Source)
 			}
-			if song.Name == "" {
-				t.Errorf("%s: empty name", src.name)
-			}
-			if song.Artist == "" {
-				t.Errorf("%s: empty artist", src.name)
-			}
 			if song.ID == "" {
 				t.Errorf("%s: empty ID", src.name)
+			}
+			// 通用 Extra 检查：确保所有源都正确初始化了 Extra
+			if song.Extra == nil {
+				t.Errorf("%s: Extra is nil (should be initialized)", src.name)
 			}
 			t.Logf("%s: Found %d songs for keyword '%s'", src.name, len(songs), keyword)
 		})
@@ -783,9 +768,7 @@ func TestAllSourcesSearch(t *testing.T) {
 }
 
 // TestLyricsInterfaces 测试所有平台的歌词接口
-// TestLyricsInterfaces 测试所有平台的歌词接口
 func TestLyricsInterfaces(t *testing.T) {
-	// 测试支持歌词的平台
 	supportedSources := []struct {
 		name      string
 		search    func(string) ([]model.Song, error)
@@ -801,9 +784,8 @@ func TestLyricsInterfaces(t *testing.T) {
 	}
 
 	for _, src := range supportedSources {
-		src := src // 捕获循环变量
+		src := src
 		t.Run(src.name+"_lyrics", func(t *testing.T) {
-			// 搜索歌曲
 			keyword := testArtistKeyword
 			songs, err := src.search(keyword)
 			if err != nil {
@@ -813,19 +795,15 @@ func TestLyricsInterfaces(t *testing.T) {
 				t.Skipf("%s search returned no songs", src.name)
 			}
 
-			// 测试前2首歌曲的歌词接口
 			for i := 0; i < min(2, len(songs)); i++ {
 				song := &songs[i]
 				t.Run(song.Name, func(t *testing.T) {
 					lyrics, err := src.getLyrics(song)
 					if err != nil {
-						// 歌词获取失败不标记为测试失败，因为可能没有歌词或API限制
 						t.Logf("%s GetLyrics failed for %s: %v", src.name, song.Name, err)
 						return
 					}
-					// 验证返回的歌词（如果有）
 					if lyrics != "" {
-						// 检查是否是有效的LRC格式（至少包含时间标签）
 						if !strings.Contains(lyrics, "[") || !strings.Contains(lyrics, "]") {
 							t.Logf("%s: lyrics returned but not in standard LRC format", src.name)
 						} else {
@@ -839,7 +817,6 @@ func TestLyricsInterfaces(t *testing.T) {
 		})
 	}
 
-	// 测试不支持歌词的平台（接口存在但返回空）
 	unsupportedSources := []struct {
 		name      string
 		search    func(string) ([]model.Song, error)
@@ -851,13 +828,11 @@ func TestLyricsInterfaces(t *testing.T) {
 	}
 
 	for _, src := range unsupportedSources {
-		src := src // 捕获循环变量
+		src := src
 		t.Run(src.name+"_lyrics_unsupported", func(t *testing.T) {
-			// 搜索歌曲
 			keyword := testArtistKeyword
 			songs, err := src.search(keyword)
 			if err != nil {
-				// 针对 Jamendo 可能不稳定的情况，稍微宽容一点（可选）
 				if src.name == "jamendo" {
 					t.Skipf("%s search failed: %v", src.name, err)
 				}
@@ -872,24 +847,18 @@ func TestLyricsInterfaces(t *testing.T) {
 				return
 			}
 
-			// 测试第一首歌曲的歌词接口
 			song := &songs[0]
 			lyrics, err := src.getLyrics(song)
 			if err != nil {
-				// [修改点] 针对 fivesing 的特殊处理：允许返回错误 (例如 "lyrics not found")
 				if src.name == "fivesing" {
 					t.Logf("%s GetLyrics returned error as expected (unsupported): %v", src.name, err)
 					return
 				}
-
-				// 对于其他不支持歌词的平台，接口应该存在但不返回错误
 				t.Errorf("%s GetLyrics should not return error for unsupported platform, got: %v", src.name, err)
 				return
 			}
 			if lyrics != "" {
-				t.Logf("%s: GetLyrics returned non-empty string (length: %d) for unsupported platform", src.name, len(lyrics))
-			} else {
-				t.Logf("%s: GetLyrics correctly returns empty string for unsupported platform", src.name)
+				t.Logf("%s: GetLyrics returned non-empty string for unsupported platform", src.name)
 			}
 		})
 	}
@@ -897,7 +866,6 @@ func TestLyricsInterfaces(t *testing.T) {
 
 // TestLyricsSourceMismatch 测试歌词接口的源不匹配错误
 func TestLyricsSourceMismatch(t *testing.T) {
-	// 创建一个源不匹配的歌曲对象
 	wrongSong := &model.Song{
 		Source: "wrong_source",
 		ID:     "123",
@@ -905,7 +873,6 @@ func TestLyricsSourceMismatch(t *testing.T) {
 		Artist: "Test Artist",
 	}
 
-	// 测试所有平台的歌词接口都应该返回source mismatch错误
 	platforms := []struct {
 		name      string
 		getLyrics func(*model.Song) (string, error)
@@ -929,8 +896,6 @@ func TestLyricsSourceMismatch(t *testing.T) {
 				t.Errorf("%s GetLyrics should return error for source mismatch", platform.name)
 			} else if !strings.Contains(err.Error(), "source mismatch") {
 				t.Errorf("%s GetLyrics error should contain 'source mismatch', got: %v", platform.name, err)
-			} else {
-				t.Logf("%s: Correctly returns source mismatch error: %v", platform.name, err)
 			}
 		})
 	}

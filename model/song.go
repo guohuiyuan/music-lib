@@ -16,12 +16,15 @@ type Song struct {
 	Duration int    `json:"duration"` // 秒
 	Size     int64  `json:"size"`     // 文件大小 (字节)
 	Bitrate  int    `json:"bitrate"`  // 码率 (kbps)
-	Source   string `json:"source"`   // kugou, netease, qq
+	Source   string `json:"source"`   // kugou, netease, qq, bilibili
 	URL      string `json:"url"`      // 真实下载链接
 	Ext      string `json:"ext"`      // 文件后缀 (mp3, flac...)
+	Cover    string `json:"cover"`    // 封面图片链接
 
-	// 新增字段
-	Cover string `json:"cover"` // 封面图片链接
+	// 新增字段：用于存储源特有的元数据，避免解析 ID
+	// B站: bvid, cid
+	// 其他源: hash, media_mid 等
+	Extra map[string]string `json:"extra,omitempty"` 
 }
 
 // FormatDuration 格式化时长 (e.g. 03:45)
@@ -43,7 +46,7 @@ func (s *Song) FormatSize() string {
 	return fmt.Sprintf("%.2f MB", mb)
 }
 
-// FormatBitrate 格式化码率 (e.g. 320 kbps) <--- 新增方法
+// FormatBitrate 格式化码率 (e.g. 320 kbps)
 func (s *Song) FormatBitrate() string {
 	if s.Bitrate == 0 {
 		return "-"
@@ -57,8 +60,6 @@ func (s *Song) Filename() string {
 	if ext == "" {
 		ext = "mp3" // 默认
 	}
-	// 简单的文件名清洗，防止非法字符
-	// 实际项目中建议使用更严谨的 regex 清洗
 	return utils.SanitizeFilename(fmt.Sprintf("%s - %s.%s", s.Artist, s.Name, ext))
 }
 

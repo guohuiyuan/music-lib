@@ -14,44 +14,26 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
+// ... (常量和结构体保持不变)
 const (
 	UserAgent   = "Mozilla/5.0 (iPhone; CPU iPhone OS 9_1 like Mac OS X) AppleWebKit/601.1.46 (KHTML, like Gecko) Version/9.0 Mobile/13B143 Safari/601.1"
 	Referer     = "http://music.migu.cn/"
 	MagicUserID = "15548614588710179085069"
 )
 
-// Migu 结构体
 type Migu struct {
 	cookie string
 }
 
-// New 初始化函数
-func New(cookie string) *Migu {
-	return &Migu{
-		cookie: cookie,
-	}
-}
-
-// 全局默认实例（向后兼容）
+func New(cookie string) *Migu { return &Migu{cookie: cookie} }
 var defaultMigu = New("")
-
-// Search 搜索歌曲（向后兼容）
-func Search(keyword string) ([]model.Song, error) {
-	return defaultMigu.Search(keyword)
-}
-
-// GetDownloadURL 获取下载链接（向后兼容）
-func GetDownloadURL(s *model.Song) (string, error) {
-	return defaultMigu.GetDownloadURL(s)
-}
-
-// GetLyrics 获取歌词（向后兼容）
-func GetLyrics(s *model.Song) (string, error) {
-	return defaultMigu.GetLyrics(s)
-}
+func Search(keyword string) ([]model.Song, error) { return defaultMigu.Search(keyword) }
+func GetDownloadURL(s *model.Song) (string, error) { return defaultMigu.GetDownloadURL(s) }
+func GetLyrics(s *model.Song) (string, error) { return defaultMigu.GetLyrics(s) }
 
 // Search 搜索歌曲
 func (m *Migu) Search(keyword string) ([]model.Song, error) {
+	// ... (参数构造保持不变)
 	params := url.Values{}
 	params.Set("ua", "Android_migu")
 	params.Set("version", "5.0.1")
@@ -67,32 +49,23 @@ func (m *Migu) Search(keyword string) ([]model.Song, error) {
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Cookie", m.cookie),
 	)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 
 	var resp struct {
 		SongResultData struct {
 			Result []struct {
 				ID              string `json:"id"`
 				Name            string `json:"name"`
-				Singers         []struct {
-					Name string `json:"name"`
-				} `json:"singers"`
-				Albums []struct {
-					Name string `json:"name"`
-				} `json:"albums"`
+				Singers         []struct { Name string `json:"name"` } `json:"singers"`
+				Albums          []struct { Name string `json:"name"` } `json:"albums"`
 				ContentID       string `json:"contentId"`
 				ChargeAuditions string `json:"chargeAuditions"`
-				ImgItems        []struct {
-					Img string `json:"img"`
-				} `json:"imgItems"`
-				
+				ImgItems        []struct { Img string `json:"img"` } `json:"imgItems"`
 				RateFormats []struct {
 					FormatType      string   `json:"formatType"`
 					ResourceType    string   `json:"resourceType"`
 					Size            string   `json:"size"`
-					AndroidSize     string   `json:"androidSize"` // 优先使用
+					AndroidSize     string   `json:"androidSize"`
 					FileType        string   `json:"fileType"`
 					AndroidFileType string   `json:"androidFileType"`
 					Price           string   `json:"price"`
@@ -109,48 +82,28 @@ func (m *Migu) Search(keyword string) ([]model.Song, error) {
 	var songs []model.Song
 	for _, item := range resp.SongResultData.Result {
 		var artistNames []string
-		for _, s := range item.Singers {
-			artistNames = append(artistNames, s.Name)
-		}
+		for _, s := range item.Singers { artistNames = append(artistNames, s.Name) }
 		
 		albumName := ""
-		if len(item.Albums) > 0 {
-			albumName = item.Albums[0].Name
-		}
+		if len(item.Albums) > 0 { albumName = item.Albums[0].Name }
 
-		if len(item.RateFormats) == 0 {
-			continue
-		}
+		if len(item.RateFormats) == 0 { continue }
 
-		type validFormat struct {
-			index int
-			size  int64
-			ext   string
-		}
+		type validFormat struct { index int; size int64; ext string }
 		var candidates []validFormat
 		var duration int64 = 0
-		var pqSize int64 = 0 // 记录标准音质大小
+		var pqSize int64 = 0 
 
 		for i, fmtItem := range item.RateFormats {
-			// 解析大小：优先 AndroidSize
 			sizeStr := fmtItem.AndroidSize
-			if sizeStr == "" || sizeStr == "0" {
-				sizeStr = fmtItem.Size
-			}
+			if sizeStr == "" || sizeStr == "0" { sizeStr = fmtItem.Size }
 			sizeVal, _ := strconv.ParseInt(sizeStr, 10, 64)
 
-			// 解析后缀
 			ext := fmtItem.AndroidFileType
-			if ext == "" {
-				ext = fmtItem.FileType
-			}
+			if ext == "" { ext = fmtItem.FileType }
 
-			// 如果是标准音质(PQ)，记录其大小用于展示
-			if fmtItem.FormatType == "PQ" {
-				pqSize = sizeVal
-			}
+			if fmtItem.FormatType == "PQ" { pqSize = sizeVal }
 
-			// 估算时长 (优先用 PQ 码率 128k 估算)
 			if duration == 0 && sizeVal > 0 {
 				var bitrate int64 = 0
 				switch fmtItem.FormatType {
@@ -158,55 +111,28 @@ func (m *Migu) Search(keyword string) ([]model.Song, error) {
 				case "HQ": bitrate = 320000
 				case "LQ": bitrate = 64000
 				}
-				if bitrate > 0 {
-					duration = (sizeVal * 8) / bitrate
-				}
+				if bitrate > 0 { duration = (sizeVal * 8) / bitrate }
 			}
 
-			// --- 过滤逻辑 ---
 			priceVal, _ := strconv.Atoi(fmtItem.Price)
 			isVipTag := false
-			for _, tag := range fmtItem.ShowTag {
-				if tag == "vip" {
-					isVipTag = true
-					break
-				}
-			}
-			// 隐形收费过滤
+			for _, tag := range fmtItem.ShowTag { if tag == "vip" { isVipTag = true; break } }
 			isHiddenPaid := (item.ChargeAuditions == "1" && priceVal >= 200)
 
 			if !isVipTag && !isHiddenPaid {
-				candidates = append(candidates, validFormat{
-					index: i, 
-					size:  sizeVal,
-					ext:   ext,
-				})
+				candidates = append(candidates, validFormat{index: i, size:  sizeVal, ext:   ext})
 			}
 		}
 
-		if len(candidates) == 0 {
-			continue 
-		}
+		if len(candidates) == 0 { continue }
 
-		// 2. 选择最佳音质 (用于下载)
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].size > candidates[j].size
-		})
-		
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].size > candidates[j].size })
 		bestInfo := candidates[0]
 		bestFormat := item.RateFormats[bestInfo.index]
 
-		// 3. 确定展示大小
 		displaySize := bestInfo.size
-		if pqSize > 0 {
-			displaySize = pqSize
-		}
+		if pqSize > 0 { displaySize = pqSize }
 
-		// [新增] 计算真实码率
-		// 优先使用 displaySize (通常是PQ/HQ) 进行计算，或者使用 bestInfo.size (实际下载的文件)
-		// 这里为了界面展示准确，建议使用 displaySize 计算，
-		// 但如果下载的是无损(bestInfo)，展示无损的码率会更吸引人。
-		// 策略：使用 bestInfo.size (实际能下载到的最大质量) 来计算码率
 		bitrate := 0
 		if duration > 0 && bestInfo.size > 0 {
 			bitrate = int(bestInfo.size * 8 / 1000 / duration)
@@ -215,9 +141,7 @@ func (m *Migu) Search(keyword string) ([]model.Song, error) {
 		compoundID := fmt.Sprintf("%s|%s|%s", item.ContentID, bestFormat.ResourceType, bestFormat.FormatType)
 		
 		var coverURL string
-		if len(item.ImgItems) > 0 {
-			coverURL = item.ImgItems[0].Img
-		}
+		if len(item.ImgItems) > 0 { coverURL = item.ImgItems[0].Img }
 
 		songs = append(songs, model.Song{
 			Source:   "migu",
@@ -227,9 +151,15 @@ func (m *Migu) Search(keyword string) ([]model.Song, error) {
 			Album:    albumName,
 			Size:     displaySize,
 			Duration: int(duration),
-			Bitrate:  bitrate, // [新增]
+			Bitrate:  bitrate,
 			Cover:    coverURL,
 			Ext:      bestInfo.ext, 
+			// 核心修改：存入 Extra
+			Extra: map[string]string{
+				"content_id":    item.ContentID,
+				"resource_type": bestFormat.ResourceType,
+				"format_type":   bestFormat.FormatType,
+			},
 		})
 	}
 
@@ -238,17 +168,27 @@ func (m *Migu) Search(keyword string) ([]model.Song, error) {
 
 // GetDownloadURL 获取下载链接
 func (m *Migu) GetDownloadURL(s *model.Song) (string, error) {
-	if s.Source != "migu" {
-		return "", errors.New("source mismatch")
+	if s.Source != "migu" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取
+	var contentID, resourceType, formatType string
+	if s.Extra != nil {
+		contentID = s.Extra["content_id"]
+		resourceType = s.Extra["resource_type"]
+		formatType = s.Extra["format_type"]
 	}
 
-	parts := strings.Split(s.ID, "|")
-	if len(parts) != 3 {
-		return "", errors.New("invalid migu song id format")
+	// 兼容旧数据
+	if contentID == "" || resourceType == "" || formatType == "" {
+		parts := strings.Split(s.ID, "|")
+		if len(parts) == 3 {
+			contentID = parts[0]
+			resourceType = parts[1]
+			formatType = parts[2]
+		} else {
+			return "", errors.New("invalid id structure and missing extra data")
+		}
 	}
-	contentID := parts[0]
-	resourceType := parts[1]
-	formatType := parts[2]
 
 	params := url.Values{}
 	params.Set("toneFlag", formatType)
@@ -263,7 +203,6 @@ func (m *Migu) GetDownloadURL(s *model.Song) (string, error) {
 
 	apiURL := "http://app.pd.nf.migu.cn/MIGUM2.0/v1.0/content/sub/listenSong.do?" + params.Encode()
 
-	// 使用不自动跳转的 Client 获取 Location
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -271,47 +210,41 @@ func (m *Migu) GetDownloadURL(s *model.Song) (string, error) {
 	}
 
 	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Referer", Referer)
 	req.Header.Set("Cookie", m.cookie)
 
 	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 302 {
 		location := resp.Header.Get("Location")
-		if location != "" {
-			return location, nil
-		}
+		if location != "" { return location, nil }
 	}
 
 	return apiURL, nil
 }
 
 // GetLyrics 获取歌词
-// 模仿 Python 逻辑，通过 ContentID 获取详情后下载歌词
 func (m *Migu) GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "migu" {
-		return "", errors.New("source mismatch")
+	if s.Source != "migu" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取 ContentID
+	contentID := ""
+	if s.Extra != nil && s.Extra["content_id"] != "" {
+		contentID = s.Extra["content_id"]
+	} else {
+		parts := strings.Split(s.ID, "|")
+		if len(parts) >= 1 { contentID = parts[0] }
 	}
 
-	parts := strings.Split(s.ID, "|")
-	if len(parts) < 1 {
-		return "", errors.New("invalid migu song id")
-	}
-	contentID := parts[0]
+	if contentID == "" { return "", errors.New("invalid migu song id") }
 
-	// 1. 获取歌曲详情以拿到歌词 URL
-	// API: http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do
 	params := url.Values{}
 	params.Set("resourceId", contentID)
-	params.Set("resourceType", "2") // 2 代表歌曲
+	params.Set("resourceType", "2") 
 
 	apiURL := "http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
 
@@ -320,16 +253,12 @@ func (m *Migu) GetLyrics(s *model.Song) (string, error) {
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Cookie", m.cookie),
 	)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
-	// [核心修改] 修复字段名解析问题
-	// 根据 test.json，字段名应为 lrcUrl
 	var resp struct {
 		Resource []struct {
-			LrcUrl   string `json:"lrcUrl"`   // 新版字段名
-			LyricUrl string `json:"lyricUrl"` // 旧版字段名 (保留兼容)
+			LrcUrl   string `json:"lrcUrl"`
+			LyricUrl string `json:"lyricUrl"`
 		} `json:"resource"`
 	}
 
@@ -337,32 +266,21 @@ func (m *Migu) GetLyrics(s *model.Song) (string, error) {
 		return "", fmt.Errorf("migu resource info parse error: %w", err)
 	}
 
-	if len(resp.Resource) == 0 {
-		return "", errors.New("resource info not found")
-	}
+	if len(resp.Resource) == 0 { return "", errors.New("resource info not found") }
 
-	// 优先取 LrcUrl，如果没有则尝试 LyricUrl
 	lyricUrl := resp.Resource[0].LrcUrl
-	if lyricUrl == "" {
-		lyricUrl = resp.Resource[0].LyricUrl
-	}
+	if lyricUrl == "" { lyricUrl = resp.Resource[0].LyricUrl }
 
-	if lyricUrl == "" {
-		return "", errors.New("lyric url not found")
-	}
+	if lyricUrl == "" { return "", errors.New("lyric url not found") }
 
-	// 2. 下载歌词
 	lyricUrl = strings.Replace(lyricUrl, "http://", "https://", 1)
 
-	// 使用 Python 代码中针对歌词下载的 Header，确保成功率
 	lrcBody, err := utils.Get(lyricUrl,
 		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"),
 		utils.WithHeader("Referer", "https://y.migu.cn/"),
 		utils.WithHeader("Cookie", m.cookie),
 	)
-	if err != nil {
-		return "", fmt.Errorf("download lyric failed: %w", err)
-	}
+	if err != nil { return "", fmt.Errorf("download lyric failed: %w", err) }
 
 	return string(lrcBody), nil
 }

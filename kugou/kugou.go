@@ -13,47 +13,24 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
-// 酷狗移动端伪装 Header，对应 Python 代码中的 config.get("ios_headers")
+// ... (常量和结构体保持不变)
 const (
 	MobileUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1"
 	MobileReferer   = "http://m.kugou.com"
 )
 
-// Kugou 结构体
 type Kugou struct {
 	cookie string
 }
 
-// New 初始化函数
-func New(cookie string) *Kugou {
-	return &Kugou{
-		cookie: cookie,
-	}
-}
-
-// 全局默认实例（向后兼容）
+func New(cookie string) *Kugou { return &Kugou{cookie: cookie} }
 var defaultKugou = New("")
-
-// Search 搜索歌曲（向后兼容）
-func Search(keyword string) ([]model.Song, error) {
-	return defaultKugou.Search(keyword)
-}
-
-// GetDownloadURL 获取下载链接（向后兼容）
-func GetDownloadURL(s *model.Song) (string, error) {
-	return defaultKugou.GetDownloadURL(s)
-}
-
-// GetLyrics 获取歌词（向后兼容）
-func GetLyrics(s *model.Song) (string, error) {
-	return defaultKugou.GetLyrics(s)
-}
+func Search(keyword string) ([]model.Song, error) { return defaultKugou.Search(keyword) }
+func GetDownloadURL(s *model.Song) (string, error) { return defaultKugou.GetDownloadURL(s) }
+func GetLyrics(s *model.Song) (string, error) { return defaultKugou.GetLyrics(s) }
 
 // Search 搜索歌曲
-// 对应 Python: kugou_search 函数
 func (k *Kugou) Search(keyword string) ([]model.Song, error) {
-	// 1. 构造请求参数
-	// Python: params = dict(keyword=keyword, platform="WebFilter", format="json", page=1, pagesize=number)
 	params := url.Values{}
 	params.Set("keyword", keyword)
 	params.Set("platform", "WebFilter")
@@ -63,33 +40,27 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 
 	apiURL := "http://songsearch.kugou.com/song_search_v2?" + params.Encode()
 
-	// 2. 发送请求
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Cookie", k.cookie),
 	)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 
-	// 3. 解析响应结构
 	var resp struct {
 		Data struct {
 			Lists []struct {
-				Scid       interface{} `json:"Scid"`       // 可能是字符串或数字
+				Scid       interface{} `json:"Scid"`
 				SongName   string      `json:"SongName"`
 				SingerName string      `json:"SingerName"`
 				AlbumName  string      `json:"AlbumName"`
 				Duration   int         `json:"Duration"`
-				FileHash   string      `json:"FileHash"`   // 普通音质 Hash
-				SQFileHash string      `json:"SQFileHash"` // 无损音质 Hash
-				HQFileHash string      `json:"HQFileHash"` // 高频音质 Hash
-				FileSize   interface{} `json:"FileSize"`   // 可能是数字或字符串
-				Image      string      `json:"Image"`      // 封面图片 (包含 {size} 占位符)
-
-				// 支付信息
-				PayType   int `json:"PayType"`   // 关键字段
-				Privilege int `json:"Privilege"` // 权限字段 (10通常是无版权)
+				FileHash   string      `json:"FileHash"`
+				SQFileHash string      `json:"SQFileHash"`
+				HQFileHash string      `json:"HQFileHash"`
+				FileSize   interface{} `json:"FileSize"`
+				Image      string      `json:"Image"`
+				PayType    int         `json:"PayType"`
+				Privilege  int         `json:"Privilege"`
 			} `json:"lists"`
 		} `json:"data"`
 	}
@@ -98,22 +69,11 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 		return nil, fmt.Errorf("json parse error: %w", err)
 	}
 
-	// 4. 转换数据模型
 	var songs []model.Song
 	for _, item := range resp.Data.Lists {
-		// --- 核心过滤逻辑 ---
-		// 1. 过滤无版权 (Privilege == 10 经常出现在无版权歌曲中)
-		if item.Privilege == 10 {
-			continue
-		}
+		if item.Privilege == 10 { continue }
+		if item.FileHash == "" && item.SQFileHash == "" && item.HQFileHash == "" { continue }
 
-		// 2. 确保有 Hash
-		if item.FileHash == "" && item.SQFileHash == "" && item.HQFileHash == "" {
-			continue
-		}
-
-		// --- 核心逻辑移植：音质 Hash 选择 ---
-		// Python: keys_list = ["SQFileHash", "HQFileHash"] 优先选择高品质
 		finalHash := item.FileHash
 		if isValidHash(item.SQFileHash) {
 			finalHash = item.SQFileHash
@@ -121,21 +81,14 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 			finalHash = item.HQFileHash
 		}
 
-		// 处理文件大小
 		var size int64
 		switch v := item.FileSize.(type) {
-		case float64:
-			size = int64(v)
-		case int:
-			size = int64(v)
+		case float64: size = int64(v)
+		case int: size = int64(v)
 		case string:
-			if i, err := strconv.ParseInt(v, 10, 64); err == nil {
-				size = i
-			}
+			if i, err := strconv.ParseInt(v, 10, 64); err == nil { size = i }
 		}
 
-		// [新增] 计算真实码率 (kbps)
-		// 公式: (Size * 8) / Duration / 1000
 		bitrate := 0
 		if item.Duration > 0 && size > 0 {
 			bitrate = int(size * 8 / 1000 / int64(item.Duration))
@@ -145,54 +98,52 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 
 		songs = append(songs, model.Song{
 			Source:   "kugou",
-			ID:       finalHash, // 将计算出的最佳 Hash 作为 ID
+			ID:       finalHash,
 			Name:     item.SongName,
 			Artist:   item.SingerName,
 			Album:    item.AlbumName,
 			Duration: item.Duration,
 			Size:     size,
-			Bitrate:  bitrate, // [新增]
+			Bitrate:  bitrate,
 			Cover:    coverURL,
+			// 核心修改：存入 Extra
+			Extra: map[string]string{
+				"hash": finalHash,
+			},
 		})
 	}
-
 	return songs, nil
 }
 
 // GetDownloadURL 获取下载链接
-// 对应 Python: KugouSong.download 方法
 func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
-	if s.Source != "kugou" {
-		return "", errors.New("source mismatch")
+	if s.Source != "kugou" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取
+	hash := s.ID
+	if s.Extra != nil && s.Extra["hash"] != "" {
+		hash = s.Extra["hash"]
 	}
 
-	// 1. 构造请求
-	// Python: params = dict(cmd="playInfo", hash=self.hash)
-	// API: http://m.kugou.com/app/i/getSongInfo.php
 	params := url.Values{}
 	params.Set("cmd", "playInfo")
-	params.Set("hash", s.ID) // 这里的 ID 就是我们在 Search 中选定的最佳 Hash
+	params.Set("hash", hash)
 
 	apiURL := "http://m.kugou.com/app/i/getSongInfo.php?" + params.Encode()
 
-	// 2. 发送请求 (必须带上特定的 Header)
-	// Python: session.headers.update({"referer": "http://m.kugou.com", "User-Agent": ...})
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
 	)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
-	// 3. 解析响应
 	var resp struct {
 		URL      string      `json:"url"`
 		BitRate  int         `json:"bitRate"`
 		ExtName  string      `json:"extName"`
 		AlbumImg string      `json:"album_img"`
-		Error    interface{} `json:"error"` // 有时会返回错误信息
+		Error    interface{} `json:"error"`
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -207,29 +158,28 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 }
 
 // GetLyrics 获取歌词
-// 对应 Python: KugouSong.download_lyrics
 func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "kugou" {
-		return "", errors.New("source mismatch")
+	if s.Source != "kugou" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取
+	hash := s.ID
+	if s.Extra != nil && s.Extra["hash"] != "" {
+		hash = s.Extra["hash"]
 	}
 
-	// 1. 搜索歌词信息
-	// API: http://krcs.kugou.com/search?ver=1&client=mobi&duration=&hash={hash}&album_audio_id=
-	searchURL := fmt.Sprintf("http://krcs.kugou.com/search?ver=1&client=mobi&duration=&hash=%s&album_audio_id=", s.ID)
+	searchURL := fmt.Sprintf("http://krcs.kugou.com/search?ver=1&client=mobi&duration=&hash=%s&album_audio_id=", hash)
 
 	body, err := utils.Get(searchURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
 	)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
 	var searchResp struct {
 		Status     int `json:"status"`
 		Candidates []struct {
-			ID        interface{} `json:"id"` // ID 可能是数字或字符串
+			ID        interface{} `json:"id"`
 			AccessKey string      `json:"accesskey"`
 			Song      string      `json:"song"`
 		} `json:"candidates"`
@@ -239,15 +189,9 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 		return "", fmt.Errorf("search lyrics json parse error: %w", err)
 	}
 
-	if len(searchResp.Candidates) == 0 {
-		return "", errors.New("lyrics not found")
-	}
+	if len(searchResp.Candidates) == 0 { return "", errors.New("lyrics not found") }
 
-	// 取第一个候选
 	candidate := searchResp.Candidates[0]
-
-	// 2. 下载歌词内容
-	// API: http://lyrics.kugou.com/download?ver=1&client=pc&id={id}&accesskey={accesskey}&fmt=lrc&charset=utf8
 	downloadURL := fmt.Sprintf("http://lyrics.kugou.com/download?ver=1&client=pc&id=%v&accesskey=%s&fmt=lrc&charset=utf8", candidate.ID, candidate.AccessKey)
 
 	lrcBody, err := utils.Get(downloadURL,
@@ -255,35 +199,25 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
 	)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
 	var downloadResp struct {
 		Status  int    `json:"status"`
 		Content string `json:"content"`
 		Fmt     string `json:"fmt"`
 	}
-
 	if err := json.Unmarshal(lrcBody, &downloadResp); err != nil {
 		return "", fmt.Errorf("download lyrics json parse error: %w", err)
 	}
+	if downloadResp.Content == "" { return "", errors.New("lyrics content is empty") }
 
-	if downloadResp.Content == "" {
-		return "", errors.New("lyrics content is empty")
-	}
-
-	// 3. Base64 解码
 	decodedBytes, err := base64.StdEncoding.DecodeString(downloadResp.Content)
-	if err != nil {
-		return "", fmt.Errorf("base64 decode error: %w", err)
-	}
+	if err != nil { return "", fmt.Errorf("base64 decode error: %w", err) }
 
 	return string(decodedBytes), nil
 }
 
-// 辅助函数：判断 Hash 是否有效
-// Python: if hash and hash != "00000000000000000000000000000000":
+// ... (辅助函数保持不变)
 func isValidHash(h string) bool {
 	return h != "" && h != "00000000000000000000000000000000"
 }

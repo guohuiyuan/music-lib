@@ -12,125 +12,82 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
+// ... (常量定义保持不变)
 const (
-	// 关键 Headers，必须带上
 	UserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
 	Cookie        = "wmid=142420656; user_type=1; country=id; session_key=2a5d97d05dc8fe238150184eaf3519ad;"
-	XForwardedFor = "36.73.34.109" // 模拟印尼 IP
+	XForwardedFor = "36.73.34.109" 
 )
 
-// Joox 结构体
+// ... (结构体和 New 方法保持不变)
 type Joox struct {
 	cookie string
 }
 
-// New 初始化函数
 func New(cookie string) *Joox {
-	if cookie == "" {
-		cookie = Cookie
-	}
-	return &Joox{
-		cookie: cookie,
-	}
+	if cookie == "" { cookie = Cookie }
+	return &Joox{cookie: cookie}
 }
 
-// 全局默认实例（向后兼容）
 var defaultJoox = New(Cookie)
 
-// Search 搜索歌曲（向后兼容）
-func Search(keyword string) ([]model.Song, error) {
-	return defaultJoox.Search(keyword)
-}
-
-// GetDownloadURL 获取下载链接（向后兼容）
-func GetDownloadURL(s *model.Song) (string, error) {
-	return defaultJoox.GetDownloadURL(s)
-}
-
-// GetLyrics 获取歌词（向后兼容）
-func GetLyrics(s *model.Song) (string, error) {
-	return defaultJoox.GetLyrics(s)
-}
+func Search(keyword string) ([]model.Song, error) { return defaultJoox.Search(keyword) }
+func GetDownloadURL(s *model.Song) (string, error) { return defaultJoox.GetDownloadURL(s) }
+func GetLyrics(s *model.Song) (string, error) { return defaultJoox.GetLyrics(s) }
 
 // Search 搜索歌曲
-// 对应 Python: _search 方法前半部分
 func (j *Joox) Search(keyword string) ([]model.Song, error) {
-	// 1. 构造参数
+	// ... (参数构造保持不变)
 	params := url.Values{}
 	params.Set("country", "sg")
 	params.Set("lang", "zh_cn")
 	params.Set("keyword", keyword)
-
 	apiURL := "https://cache.api.joox.com/openjoox/v3/search?" + params.Encode()
 
-	// 2. 发送请求
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", j.cookie),
 		utils.WithHeader("X-Forwarded-For", XForwardedFor),
 	)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 
-	// 3. 解析 JSON (更新结构体以支持 Duration 和 Images)
+	// ... (JSON 解析保持不变)
 	var resp struct {
 		SectionList []struct {
 			ItemList []struct {
 				Song []struct {
 					SongInfo struct {
-						ID         string `json:"id"`
-						Name       string `json:"name"`
-						AlbumName  string `json:"album_name"`
-						ArtistList []struct {
-							Name string `json:"name"`
-						} `json:"artist_list"`
-						
-						// 补充字段
-						PlayDuration int `json:"play_duration"` // 时长 (秒)
-						Images       []struct {
-							Width int    `json:"width"`
-							URL   string `json:"url"`
-						} `json:"images"` // 封面列表
-						VipFlag int `json:"vip_flag"`
+						ID           string `json:"id"`
+						Name         string `json:"name"`
+						AlbumName    string `json:"album_name"`
+						ArtistList   []struct { Name string `json:"name"` } `json:"artist_list"`
+						PlayDuration int `json:"play_duration"` 
+						Images       []struct { Width int `json:"width"`; URL string `json:"url"` } `json:"images"`
+						VipFlag      int `json:"vip_flag"`
 					} `json:"song_info"`
 				} `json:"song"`
 			} `json:"item_list"`
 		} `json:"section_list"`
 	}
-
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("joox search json error: %w", err)
 	}
 
-	// 4. 转换模型
 	var songs []model.Song
 	for _, section := range resp.SectionList {
 		for _, items := range section.ItemList {
 			for _, songItem := range items.Song {
 				info := songItem.SongInfo
-				if info.ID == "" {
-					continue
-				}
+				if info.ID == "" { continue }
 
-				// 拼接歌手
 				var artistNames []string
-				for _, ar := range info.ArtistList {
-					artistNames = append(artistNames, ar.Name)
-				}
+				for _, ar := range info.ArtistList { artistNames = append(artistNames, ar.Name) }
 
-				// 提取封面
-				// 优先取 300x300 的图片，如果没有则取第一张
 				var cover string
 				for _, img := range info.Images {
-					if img.Width == 300 {
-						cover = img.URL
-						break
-					}
+					if img.Width == 300 { cover = img.URL; break }
 				}
-				if cover == "" && len(info.Images) > 0 {
-					cover = info.Images[0].URL
-				}
+				if cover == "" && len(info.Images) > 0 { cover = info.Images[0].URL }
 
 				songs = append(songs, model.Song{
 					Source:   "joox",
@@ -140,48 +97,48 @@ func (j *Joox) Search(keyword string) ([]model.Song, error) {
 					Album:    info.AlbumName,
 					Duration: info.PlayDuration,
 					Cover:    cover,
-					Size:     0, // 搜索结果无大小
-					Bitrate:  0, // [新增] 搜索结果无码率信息
+					// 核心修改：存入 Extra
+					Extra: map[string]string{
+						"songid": info.ID,
+					},
 				})
 			}
 		}
 	}
-
 	return songs, nil
 }
 
 // GetDownloadURL 获取下载链接
 func (j *Joox) GetDownloadURL(s *model.Song) (string, error) {
-	if s.Source != "joox" {
-		return "", errors.New("source mismatch")
+	if s.Source != "joox" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取
+	songID := s.ID
+	if s.Extra != nil && s.Extra["songid"] != "" {
+		songID = s.Extra["songid"]
 	}
 
-	// 1. 构造参数
 	params := url.Values{}
-	params.Set("songid", s.ID)
+	params.Set("songid", songID)
 	params.Set("lang", "zh_cn")
 	params.Set("country", "sg")
 
 	apiURL := "https://api.joox.com/web-fcgi-bin/web_get_songinfo?" + params.Encode()
 
-	// 2. 发送请求
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", j.cookie),
 		utils.WithHeader("X-Forwarded-For", XForwardedFor),
 	)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
-	// 3. 处理 JSONP
+	// ... (JSONP 处理及解析保持不变)
 	bodyStr := string(body)
 	if strings.HasPrefix(bodyStr, "MusicInfoCallback(") {
 		bodyStr = strings.TrimPrefix(bodyStr, "MusicInfoCallback(")
 		bodyStr = strings.TrimSuffix(bodyStr, ")")
 	}
 
-	// 4. 解析 JSON
 	var resp struct {
 		R320Url   string      `json:"r320Url"`
 		R192Url   string      `json:"r192Url"`
@@ -190,12 +147,10 @@ func (j *Joox) GetDownloadURL(s *model.Song) (string, error) {
 		MInterval int         `json:"minterval"`
 		KbpsMap   interface{} `json:"kbps_map"`
 	}
-
 	if err := json.Unmarshal([]byte(bodyStr), &resp); err != nil {
 		return "", fmt.Errorf("joox detail json error: %w", err)
 	}
 
-	// 5. 解析 KbpsMap
 	availableQualities := make(map[string]interface{})
 	if kbpsMapStr, ok := resp.KbpsMap.(string); ok {
 		json.Unmarshal([]byte(kbpsMapStr), &availableQualities)
@@ -203,94 +158,62 @@ func (j *Joox) GetDownloadURL(s *model.Song) (string, error) {
 		availableQualities = kbpsMapObj
 	}
 
-	// 6. 音质选择策略
-	type Candidate struct {
-		MapKey string
-		URL    string
-	}
-
+	type Candidate struct { MapKey string; URL string }
 	candidates := []Candidate{
-		{"320", resp.R320Url},
-		{"192", resp.R192Url},
-		{"128", resp.Mp3Url},
-		{"96", resp.M4aUrl},
+		{"320", resp.R320Url}, {"192", resp.R192Url}, {"128", resp.Mp3Url}, {"96", resp.M4aUrl},
 	}
 
 	for _, c := range candidates {
 		if val, ok := availableQualities[c.MapKey]; ok {
-			// 检查是否有大小信息
 			hasSize := false
 			switch v := val.(type) {
-			case string:
-				hasSize = v != "0" && v != ""
-			case float64:
-				hasSize = v > 0
-			case int:
-				hasSize = v > 0
+			case string: hasSize = v != "0" && v != ""
+			case float64: hasSize = v > 0
+			case int: hasSize = v > 0
 			}
-
-			if hasSize && c.URL != "" {
-				return c.URL, nil
-			}
+			if hasSize && c.URL != "" { return c.URL, nil }
 		}
 	}
-
 	return "", errors.New("no valid download url found")
 }
 
 // GetLyrics 获取歌词
-// 对应 Python: _search 中的 lyric results 部分
 func (j *Joox) GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "joox" {
-		return "", errors.New("source mismatch")
+	if s.Source != "joox" { return "", errors.New("source mismatch") }
+
+	// 核心修改：优先从 Extra 获取
+	songID := s.ID
+	if s.Extra != nil && s.Extra["songid"] != "" {
+		songID = s.Extra["songid"]
 	}
 
-	// 1. 构造请求参数
-	// Python: params = {'musicid': search_result['song_info']['id'], 'country': country, 'lang': lang}
 	params := url.Values{}
-	params.Set("musicid", s.ID)
-	params.Set("country", "sg") // 保持与 Search 一致
+	params.Set("musicid", songID)
+	params.Set("country", "sg")
 	params.Set("lang", "zh_cn")
-
 	apiURL := "https://api.joox.com/web-fcgi-bin/web_lyric?" + params.Encode()
 
-	// 2. 发送请求
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", j.cookie),
 		utils.WithHeader("X-Forwarded-For", XForwardedFor),
 	)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 
-	// 3. 处理 JSONP
-	// Python: resp.text.replace('MusicJsonCallback(', '')[:-1]
 	bodyStr := string(body)
 	if idx := strings.Index(bodyStr, "MusicJsonCallback("); idx >= 0 {
 		bodyStr = strings.TrimPrefix(bodyStr[idx:], "MusicJsonCallback(")
 		bodyStr = strings.TrimSuffix(bodyStr, ")")
 	}
 
-	// 4. 解析 JSON
-	var resp struct {
-		Lyric string `json:"lyric"` // Base64 编码的歌词
-	}
-
+	var resp struct { Lyric string `json:"lyric"` }
 	if err := json.Unmarshal([]byte(bodyStr), &resp); err != nil {
 		return "", fmt.Errorf("joox lyric json parse error: %w", err)
 	}
+	if resp.Lyric == "" { return "", errors.New("lyric not found or empty") }
 
-	if resp.Lyric == "" {
-		return "", errors.New("lyric not found or empty")
-	}
-
-	// 5. Base64 解码
-	// Python: base64.b64decode(lyric_result.get('lyric', '')).decode('utf-8')
 	decodedBytes, err := base64.StdEncoding.DecodeString(resp.Lyric)
-	if err != nil {
-		return "", fmt.Errorf("base64 decode error: %w", err)
-	}
+	if err != nil { return "", fmt.Errorf("base64 decode error: %w", err) }
 
 	return string(decodedBytes), nil
 }
