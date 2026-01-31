@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -138,21 +137,19 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// SearchPlaylist 搜索歌单 (使用专用歌单搜索接口 client_music_search_songlist)
+// SearchPlaylist 搜索歌单
 func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("query", keyword)
-	params.Set("page_no", "0") // 注意：这个接口页码从 0 开始
+	params.Set("page_no", "0")
 	params.Set("num_per_page", "20")
-	params.Set("format", "json") // 强制 JSON，避免 JSONP
+	params.Set("format", "json")
 	params.Set("remoteplace", "txt.yqq.playlist")
 	params.Set("flag_qc", "0")
 
-	// 这是一个专门用于搜索歌单的 GET 接口，比通用的 musicu.fcg 更容易拿数据
 	apiURL := "http://c.y.qq.com/soso/fcgi-bin/client_music_search_songlist?" + params.Encode()
 
 	body, err := utils.Get(apiURL,
-		//即使没有 Cookie，这个 User-Agent 和 Referer 组合通常也能工作
 		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"),
 		utils.WithHeader("Referer", "https://y.qq.com/portal/search.html"),
 		utils.WithHeader("Cookie", q.cookie),
@@ -165,60 +162,60 @@ func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 		Code int `json:"code"`
 		Data struct {
 			List []struct {
-				DissID    string `json:"dissid"`
-				DissName  string `json:"dissname"`
-				ImgUrl    string `json:"imgurl"`
-				SongCount int    `json:"song_count"`
-				ListenNum int    `json:"listennum"`
-				Creator   struct {
+				DissID   string `json:"dissid"`
+				DissName string `json:"dissname"`
+				ImgUrl   string `json:"imgurl"`
+
+				// [对应 TrackCount]
+				SongCount int `json:"song_count"`
+
+				// [对应 PlayCount]
+				ListenNum int `json:"listennum"`
+
+				// [对应 Creator]
+				Creator struct {
 					Name string `json:"name"`
 				} `json:"creator"`
+
+				// 搜索结果列表通常没有 description 字段，
+				// 如果有的话通常叫 "introduction" 或 "desc"，但此接口返回中很少包含。
 			} `json:"list"`
-			Sum int `json:"sum"` // 搜索结果总数
 		} `json:"data"`
 		Message string `json:"message"`
 	}
 
-	// 尝试解析
-	if err := json.Unmarshal(body, &resp); err != nil {
-		// 容错处理：有时接口会返回 invalid character ... 可能是 JSONP 格式残留
-		// 如果 json 解析失败，尝试去除首尾可能存在的 callback(...)
-		sBody := string(body)
-		if idx := strings.Index(sBody, "("); idx >= 0 {
-			sBody = sBody[idx+1:]
-			if idx2 := strings.LastIndex(sBody, ")"); idx2 >= 0 {
-				sBody = sBody[:idx2]
-				_ = json.Unmarshal([]byte(sBody), &resp)
-			}
-		} else {
-			return nil, fmt.Errorf("qq playlist special json parse error: %w", err)
+	// 简单的 JSON 容错处理 (去除 JSONP callback)
+	sBody := string(body)
+	if idx := strings.Index(sBody, "("); idx >= 0 {
+		if idx2 := strings.LastIndex(sBody, ")"); idx2 >= 0 {
+			body = []byte(sBody[idx+1 : idx2])
 		}
 	}
 
-	if resp.Code != 0 {
-		return nil, fmt.Errorf("qq api error: %s (code %d)", resp.Message, resp.Code)
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq playlist json parse error: %w", err)
 	}
 
 	var playlists []model.Playlist
 	for _, item := range resp.Data.List {
 		cover := item.ImgUrl
 		if cover != "" {
-			// 协议修复
 			if strings.HasPrefix(cover, "http://") {
 				cover = strings.Replace(cover, "http://", "https://", 1)
 			}
-			// 尝试获取大图：将 /0 结尾替换为 /300 或 /600
-			// cover = strings.TrimSuffix(cover, "/0") + "/300"
+			// 尝试使用 300x300 的封面 (QQ默认为小图)
+			// 如果 URL 结尾是 /0 (小图)，去掉后通常能访问，或者加上 /300
 		}
 
 		playlists = append(playlists, model.Playlist{
-			Source:     "qq",
-			ID:         item.DissID,
-			Name:       item.DissName,
-			Cover:      cover,
-			TrackCount: item.SongCount,
-			PlayCount:  item.ListenNum,
-			Creator:    item.Creator.Name,
+			Source:      "qq",
+			ID:          item.DissID,
+			Name:        item.DissName,
+			Cover:       cover,
+			TrackCount:  item.SongCount,    // 对应 song_count
+			PlayCount:   item.ListenNum,    // 对应 listennum
+			Creator:     item.Creator.Name, // 对应 creator.name
+			Description: "",                // 列表页通常无简介
 		})
 	}
 
@@ -290,7 +287,6 @@ func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
 		} `json:"cdlist"`
 	}
 
-	os.WriteFile(fmt.Sprintf("qq_playlist_%s.json", id), body, 0644)
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("qq playlist detail json error: %w", err)
 	}

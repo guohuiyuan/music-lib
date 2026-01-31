@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/guohuiyuan/music-lib/fivesing"
 	"github.com/guohuiyuan/music-lib/kugou"
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/netease"
@@ -21,7 +22,7 @@ func TestSearchPlaylistOnly(t *testing.T) {
 		{"netease", "经典老歌", netease.SearchPlaylist},
 		{"kugou", "车载音乐", kugou.SearchPlaylist},
 		{"qq", "抖音", qq.SearchPlaylist},
-		// 可以在此处添加其他平台...
+		{"fivesing", "抖音", fivesing.SearchPlaylist},
 	}
 
 	for _, tt := range tests {
@@ -61,7 +62,8 @@ func TestGetPlaylistSongsOnly(t *testing.T) {
 	}{
 		{"netease", "988690134", "netease", netease.GetPlaylistSongs},
 		{"kugou", "3650904", "kugou", kugou.GetPlaylistSongs},
-		{"qq", "9262344645", "qq", qq.GetPlaylistSongs}, // 这里的ID建议定期更新为有效的ID
+		{"qq", "9262344645", "qq", qq.GetPlaylistSongs}, 
+		{"fivesing", "5b163457b0f5ba3ca80628db", "fivesing", fivesing.GetPlaylistSongs},
 	}
 
 	for _, tc := range tests {
@@ -105,11 +107,11 @@ func isConnectivityError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// 使用 strings.Contains 替代原本复杂的逻辑
 	// 忽略大小写判断通常更稳健
 	msg := strings.ToLower(err.Error())
-	
+
 	keywords := []string{
 		"404",
 		"timeout",
