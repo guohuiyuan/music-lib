@@ -28,6 +28,18 @@ type Song struct {
 	Extra map[string]string `json:"extra,omitempty"`
 }
 
+// Playlist 是所有音乐源通用的歌单结构 [新增]
+type Playlist struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Cover       string `json:"cover"`
+	TrackCount  int    `json:"track_count"`
+	PlayCount   int    `json:"play_count"`
+	Creator     string `json:"creator"`
+	Description string `json:"description"`
+	Source      string `json:"source"`
+}
+
 // FormatDuration 格式化时长 (e.g. 03:45)
 func (s *Song) FormatDuration() string {
 	if s.Duration == 0 {

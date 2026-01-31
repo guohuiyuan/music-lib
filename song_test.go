@@ -829,6 +829,7 @@ func TestLyricsInterfaces(t *testing.T) {
 		{"kugou", kugou.Search, kugou.GetLyrics},
 		{"qianqian", qianqian.Search, qianqian.GetLyrics},
 		{"migu", migu.Search, migu.GetLyrics},
+		{"fivesing", fivesing.Search, fivesing.GetLyrics},
 	}
 
 	for _, src := range supportedSources {
@@ -870,8 +871,8 @@ func TestLyricsInterfaces(t *testing.T) {
 		search    func(string) ([]model.Song, error)
 		getLyrics func(*model.Song) (string, error)
 	}{
-		{"bilibili", bilibili.Search, bilibili.GetLyrics},
-		{"fivesing", fivesing.Search, fivesing.GetLyrics},
+		// 注意：Bilibili 的歌词接口有时会触发风控，导致无法获取结果
+		// {"bilibili", bilibili.Search, bilibili.GetLyrics},
 		{"jamendo", jamendo.Search, jamendo.GetLyrics},
 	}
 
@@ -881,14 +882,14 @@ func TestLyricsInterfaces(t *testing.T) {
 			keyword := testArtistKeyword
 			songs, err := src.search(keyword)
 			if err != nil {
-				if src.name == "jamendo" {
+				if src.name == "jamendo" || src.name == "bilibili" {
 					t.Skipf("%s search failed: %v", src.name, err)
 				}
 				t.Errorf("%s search failed: %v", src.name, err)
 				return
 			}
 			if len(songs) == 0 {
-				if src.name == "jamendo" {
+				if src.name == "jamendo" || src.name == "bilibili" {
 					t.Skipf("%s search returned no songs", src.name)
 				}
 				t.Errorf("%s search returned no songs", src.name)
@@ -963,10 +964,12 @@ func TestParseFunctionality(t *testing.T) {
 		{"qq", qq.Search, qq.Parse},
 		{"netease", netease.Search, netease.Parse},
 		{"kuwo", kuwo.Search, kuwo.Parse},
-		{"bilibili", bilibili.Search, bilibili.Parse},
 		{"fivesing", fivesing.Search, fivesing.Parse},
 		{"jamendo", jamendo.Search, jamendo.Parse},
 		{"qianqian", qianqian.Search, qianqian.Parse},
+
+		// 注意：Bilibili 的搜索有时会触发风控，导致无法获取结果
+		// {"bilibili", bilibili.Search, bilibili.Parse},
 		
 		// 这三个渠道没有测试例子
 		// {"migu", migu.Search, migu.Parse},

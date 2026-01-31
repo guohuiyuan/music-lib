@@ -43,7 +43,7 @@ func (b *Bilibili) Search(keyword string) ([]model.Song, error) {
 	params.Set("search_type", "video")
 	params.Set("keyword", keyword)
 	params.Set("page", "1")
-	params.Set("page_size", "10")
+	params.Set("page_size", "50")
 
 	searchURL := "https://api.bilibili.com/x/web-interface/search/type?" + params.Encode()
 	body, err := utils.Get(searchURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Referer", Referer), utils.WithHeader("Cookie", b.cookie))
@@ -243,7 +243,7 @@ func (b *Bilibili) GetDownloadURL(s *model.Song) (string, error) {
 
 // fetchAudioURL 内部逻辑提取
 func (b *Bilibili) fetchAudioURL(bvid, cid string) (string, error) {
-	apiURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=16&bvid=%s&cid=%s", bvid, cid)
+	apiURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=80&qn=127&bvid=%s&cid=%s", bvid, cid)
 	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Referer", Referer), utils.WithHeader("Cookie", b.cookie))
 	if err != nil {
 		return "", err
