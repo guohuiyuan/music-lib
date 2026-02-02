@@ -1,19 +1,15 @@
 # music-lib
 
-music-lib 是一个 Go 音乐搜索下载库，提供统一的音乐数据接口，支持十多个主流音乐平台。
+music-lib 是一个 Go 音乐库，提供统一的搜索、解析与下载接口。它不带 UI，适合嵌进自己的工具里。
 
 ## 特性
 
-- **后端库**: 提供函数接口，不包含 UI 逻辑，易于集成
-- **多平台支持**: 支持网易云、QQ音乐、酷狗等十多个平台
-- **统一数据模型**: 所有平台数据转换为 `model.Song` 结构
-- **模块化设计**: 每个音乐平台都是独立的 `provider`
-- **音源过滤**: 跳过需要 VIP 或付费的歌曲
-- **高级功能**:
-  - 歌词获取
-  - 支持汽水音乐等平台的加密音频解密
-  - 链接解析
-  - 歌单搜索和歌曲获取
+- 多平台搜索与下载
+- 统一的数据模型（`model.Song` / `model.Playlist`）
+- 平台模块化，按需引入
+- 歌词、歌单、链接解析
+- 支持汽水音乐等加密音频
+- 自动过滤部分付费资源
 
 ## 支持平台
 
@@ -31,15 +27,15 @@ music-lib 是一个 Go 音乐搜索下载库，提供统一的音乐数据接口
 | JOOX | `joox` | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | |
 | Bilibili | `bilibili` | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | |
 
-## 开始使用
-
-### 安装
+## 安装
 
 ```bash
 go get github.com/guohuiyuan/music-lib
 ```
 
-### 基本使用
+## 示例
+
+### 搜索 + 下载链接
 
 ```go
 package main
@@ -49,42 +45,22 @@ import (
 	"log"
 
 	"github.com/guohuiyuan/music-lib/kugou"
-	"github.com/guohuiyuan/music-lib/model"
 )
 
 func main() {
-	keyword := "周杰伦"
-
-	// 搜索歌曲
-	songs, err := kugou.Search(keyword)
+	songs, err := kugou.Search("周杰伦")
 	if err != nil {
-		log.Fatalf("搜索失败: %v", err)
+		log.Fatal(err)
 	}
-
 	if len(songs) == 0 {
-		fmt.Println("未找到相关歌曲")
+		fmt.Println("没有结果")
 		return
 	}
-
-	fmt.Printf("在酷狗音乐找到 %d 首歌曲:\n", len(songs))
-
-	// 获取下载链接
-	firstSong := songs[0]
-	downloadURL, err := kugou.GetDownloadURL(&firstSong)
+	url, err := kugou.GetDownloadURL(&songs[0])
 	if err != nil {
-		log.Fatalf("获取下载链接失败: %v", err)
+		log.Fatal(err)
 	}
-
-	fmt.Println("下载链接:", downloadURL)
-
-	// 获取歌词
-	lyrics, err := kugou.GetLyrics(&firstSong)
-	if err != nil {
-		log.Printf("获取歌词失败: %v", err)
-	} else {
-		fmt.Println("\n歌词:")
-		fmt.Println(lyrics)
-	}
+	fmt.Println(url)
 }
 ```
 
@@ -101,20 +77,16 @@ import (
 )
 
 func main() {
-	// 解析网易云音乐分享链接
 	link := "https://music.163.com/#/song?id=123456"
-	
 	song, err := netease.Parse(link)
 	if err != nil {
-		log.Fatalf("解析失败: %v", err)
+		log.Fatal(err)
 	}
-
-	fmt.Printf("解析成功: %s - %s\n", song.Artist, song.Name)
-	fmt.Printf("下载链接: %s\n", song.URL)
+	fmt.Printf("%s - %s\n", song.Artist, song.Name)
 }
 ```
 
-### 歌单功能
+### 歌单搜索
 
 ```go
 package main
@@ -127,116 +99,51 @@ import (
 )
 
 func main() {
-	// 搜索歌单
 	playlists, err := netease.SearchPlaylist("经典老歌")
 	if err != nil {
-		log.Fatalf("搜索歌单失败: %v", err)
+		log.Fatal(err)
 	}
-
 	if len(playlists) == 0 {
-		fmt.Println("未找到相关歌单")
+		fmt.Println("没有结果")
 		return
 	}
-
-	fmt.Printf("找到 %d 个歌单:\n", len(playlists))
-	for _, playlist := range playlists {
-		fmt.Printf("- %s (%d 首歌曲)\n", playlist.Name, playlist.TrackCount)
-	}
-
-	// 获取歌单歌曲
-	firstPlaylist := playlists[0]
-	songs, err := netease.GetPlaylistSongs(firstPlaylist.ID)
+	songs, err := netease.GetPlaylistSongs(playlists[0].ID)
 	if err != nil {
-		log.Fatalf("获取歌单歌曲失败: %v", err)
+		log.Fatal(err)
 	}
-
-	fmt.Printf("\n歌单 '%s' 包含 %d 首歌曲:\n", firstPlaylist.Name, len(songs))
-	for i, song := range songs {
-		if i >= 5 { // 只显示前5首
-			break
-		}
-		fmt.Printf("  %d. %s - %s\n", i+1, song.Artist, song.Name)
-	}
+	fmt.Println("songs:", len(songs))
 }
 ```
 
-## 架构
+## 目录结构
 
 ```
 music-lib/
-├── model/                # 数据结构
-│   └── song.go          # Song 和 Playlist 结构
-├── utils/                # 工具
-│   ├── file.go          # 文件处理
-│   └── request.go       # HTTP 请求
-├── provider/             # 接口定义
-│   └── interface.go     # MusicProvider 接口
-├── netease/              # 网易云音乐
-├── qq/                   # QQ 音乐
-├── kugou/                # 酷狗音乐
-├── kuwo/                 # 酷我音乐
-├── migu/                 # 咪咕音乐
-├── soda/                 # 汽水音乐
-├── bilibili/             # Bilibili
-├── fivesing/             # 5sing
-├── jamendo/              # Jamendo
-├── joox/                 # JOOX
-├── qianqian/             # 千千音乐
-├── go.mod
+├── model/
+├── utils/
+├── provider/
+├── netease/
+├── qq/
+├── kugou/
+├── kuwo/
+├── migu/
+├── soda/
+├── bilibili/
+├── fivesing/
+├── jamendo/
+├── joox/
+├── qianqian/
 └── README.md
 ```
 
-### 数据模型
+## 数据结构要点
 
-```go
-type Song struct {
-	ID       string            // 歌曲ID
-	Name     string            // 歌名
-	Artist   string            // 歌手
-	Album    string            // 专辑
-	AlbumID  string            // 专辑ID
-	Duration int               // 时长（秒）
-	Size     int64             // 文件大小
-	Bitrate  int               // 码率
-	Source   string            // 来源平台
-	URL      string            // 下载链接
-	Ext      string            // 文件后缀
-	Cover    string            // 封面链接
-	Link     string            // 原始链接
-	Extra    map[string]string // 额外数据
-}
+- `Song` 新增了 `Link`、`Extra`、`IsInvalid`
+- `Playlist` 保留来源与原始链接字段
 
-type Playlist struct {
-	ID          string            // 歌单ID
-	Name        string            // 歌单名称
-	Cover       string            // 封面链接
-	TrackCount  int               // 歌曲数量
-	PlayCount   int               // 播放次数
-	Creator     string            // 创建者
-	Description string            // 描述
-	Source      string            // 来源平台
-	Link        string            // 原始链接
-	Extra       map[string]string // 额外数据
-}
-```
+## 说明
 
-### 接口定义
-
-```go
-type MusicProvider interface {
-	// Search 搜索歌曲
-	Search(keyword string) ([]model.Song, error)
-
-	// Parse 解析分享链接
-	Parse(link string) (*model.Song, error)
-
-	// GetDownloadURL 获取下载链接
-	GetDownloadURL(s *model.Song) (string, error)
-
-	// GetLyrics 获取歌词
-	GetLyrics(s *model.Song) (string, error)
-}
-```
+该库不包含 UI 逻辑。具体的播放器、换源与缓存策略建议在上层应用里实现。
 
 ## 设计
 
