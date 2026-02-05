@@ -43,9 +43,9 @@ func GetPlaylistSongs(id string) ([]model.Song, error) {
 func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultQQ.ParsePlaylist(link)
 }
-func GetDownloadURL(s *model.Song) (string, error)     { return defaultQQ.GetDownloadURL(s) }
-func GetLyrics(s *model.Song) (string, error)          { return defaultQQ.GetLyrics(s) }
-func Parse(link string) (*model.Song, error)           { return defaultQQ.Parse(link) }
+func GetDownloadURL(s *model.Song) (string, error) { return defaultQQ.GetDownloadURL(s) }
+func GetLyrics(s *model.Song) (string, error)      { return defaultQQ.GetLyrics(s) }
+func Parse(link string) (*model.Song, error)       { return defaultQQ.Parse(link) }
 
 // GetRecommendedPlaylists 获取推荐歌单
 func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultQQ.GetRecommendedPlaylists() }
@@ -278,7 +278,7 @@ func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 
 	// 响应结构
 	var resp struct {
-		Code int `json:"code"`
+		Code          int `json:"code"`
 		RecomPlaylist struct {
 			Data struct {
 				VHot []struct {
@@ -286,6 +286,8 @@ func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 					Title     string `json:"title"`      // 歌单名
 					Cover     string `json:"cover"`      // 封面
 					ListenNum int    `json:"listen_num"` // 播放量
+					SongCnt   int    `json:"song_cnt"`   // 歌曲数量 (部分接口)
+					SongCount int    `json:"song_count"` // 歌曲数量 (备用字段)
 					Username  string `json:"username"`   // 创建者 (有时为空)
 				} `json:"v_hot"`
 			} `json:"data"`
@@ -309,12 +311,18 @@ func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 
 		playlistID := strconv.FormatInt(item.ContentID, 10)
 
+		trackCount := item.SongCnt
+		if trackCount == 0 {
+			trackCount = item.SongCount
+		}
+
 		playlists = append(playlists, model.Playlist{
 			Source:      "qq",
 			ID:          playlistID,
 			Name:        item.Title,
 			Cover:       cover,
 			PlayCount:   item.ListenNum,
+			TrackCount:  trackCount,
 			Creator:     item.Username,
 			Description: "", // 列表页通常不返回描述
 			Link:        fmt.Sprintf("https://y.qq.com/n/ryqq/playlist/%s", playlistID),

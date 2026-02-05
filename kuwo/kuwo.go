@@ -43,7 +43,9 @@ func GetLyrics(s *model.Song) (string, error)      { return defaultKuwo.GetLyric
 func Parse(link string) (*model.Song, error)       { return defaultKuwo.Parse(link) }
 
 // GetRecommendedPlaylists 获取推荐歌单 (新增)
-func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultKuwo.GetRecommendedPlaylists() }
+func GetRecommendedPlaylists() ([]model.Playlist, error) {
+	return defaultKuwo.GetRecommendedPlaylists()
+}
 
 // Search 搜索歌曲
 func (k *Kuwo) Search(keyword string) ([]model.Song, error) {
@@ -235,6 +237,10 @@ func (k *Kuwo) GetRecommendedPlaylists() ([]model.Playlist, error) {
 				Name      string      `json:"name"`
 				Img       string      `json:"img"`
 				ListenCnt interface{} `json:"listencnt"` // 可能是 string 或 int
+				SongNum   interface{} `json:"songnum"`   // 歌曲数量 (部分接口)
+				Total     interface{} `json:"total"`     // 歌曲数量 (备用字段)
+				Count     interface{} `json:"count"`     // 歌曲数量 (备用字段)
+				MusicNum  interface{} `json:"musicnum"`  // 歌曲数量 (备用字段)
 				UserName  string      `json:"uname"`
 				Desc      string      `json:"desc"`
 			} `json:"data"`
@@ -255,15 +261,31 @@ func (k *Kuwo) GetRecommendedPlaylists() ([]model.Playlist, error) {
 			cover = "http://" + cover
 		}
 
-		// 处理 ListenCnt 多态类型
-		var playCount int
-		switch v := item.ListenCnt.(type) {
-		case float64:
-			playCount = int(v)
-		case string:
-			if v != "" {
-				playCount, _ = strconv.Atoi(v)
+		parseAnyInt := func(val interface{}) int {
+			switch v := val.(type) {
+			case float64:
+				return int(v)
+			case string:
+				if v != "" {
+					if n, err := strconv.Atoi(v); err == nil {
+						return n
+					}
+				}
 			}
+			return 0
+		}
+
+		// 处理 ListenCnt 多态类型
+		playCount := parseAnyInt(item.ListenCnt)
+		trackCount := parseAnyInt(item.SongNum)
+		if trackCount == 0 {
+			trackCount = parseAnyInt(item.Total)
+		}
+		if trackCount == 0 {
+			trackCount = parseAnyInt(item.Count)
+		}
+		if trackCount == 0 {
+			trackCount = parseAnyInt(item.MusicNum)
 		}
 
 		playlists = append(playlists, model.Playlist{
@@ -272,6 +294,7 @@ func (k *Kuwo) GetRecommendedPlaylists() ([]model.Playlist, error) {
 			Name:        item.Name,
 			Cover:       cover,
 			PlayCount:   playCount,
+			TrackCount:  trackCount,
 			Creator:     item.UserName,
 			Description: item.Desc,
 			Link:        fmt.Sprintf("http://www.kuwo.cn/playlist_detail/%s", item.ID),
