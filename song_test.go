@@ -128,99 +128,116 @@ func TestPlatforms(t *testing.T) {
 		t.Run(suite.Name, func(t *testing.T) {
 			t.Parallel() // 启用并行测试
 
+			// -------------------------------------------------------
 			// 1. Search (每个平台只调用一次)
-			t.Logf("[%s] Starting Search...", suite.Name)
+			// -------------------------------------------------------
+			t.Logf("=== [%s] 1. Starting Search (Keyword: %s) ===", suite.Name, suite.Keyword)
 			songs, err := suite.Search(suite.Keyword)
 
 			// 容错处理：对于不稳定或国外的源，允许搜索失败
 			if err != nil {
 				if suite.Name == "jamendo" || suite.Name == "bilibili" || suite.Name == "fivesing" {
-					t.Skipf("[%s] Search failed (allowed): %v", suite.Name, err)
+					t.Skipf("⚠️ [%s] Search failed (allowed): %v", suite.Name, err)
 				}
-				t.Fatalf("[%s] Search failed: %v", suite.Name, err)
+				t.Fatalf("❌ [%s] Search failed: %v", suite.Name, err)
 			}
 			if len(songs) == 0 {
-				t.Skipf("[%s] Search returned no songs", suite.Name)
+				t.Skipf("⚠️ [%s] Search returned no songs", suite.Name)
 			}
 
 			// 选取第一首结果进行后续测试
 			song := &songs[0]
-			t.Logf("[%s] Found song: %s - %s (ID: %s)", suite.Name, song.Name, song.Artist, song.ID)
+			t.Logf("✅ [%s] Found song: %s - %s (ID: %s)", suite.Name, song.Name, song.Artist, song.ID)
 
 			// 基础字段验证
 			if song.Source != suite.Name {
-				t.Errorf("Source mismatch: expected %s, got %s", suite.Name, song.Source)
+				t.Errorf("❌ [%s] Source mismatch: expected %s, got %s", suite.Name, suite.Name, song.Source)
 			}
 			if song.ID == "" {
-				t.Error("ID is empty")
+				t.Errorf("❌ [%s] ID is empty", suite.Name)
 			}
 			if song.Link == "" {
-				t.Error("Link is empty")
+				t.Errorf("❌ [%s] Link is empty", suite.Name)
 			}
 			if song.Extra == nil {
-				t.Error("Extra is nil")
+				t.Errorf("❌ [%s] Extra is nil", suite.Name)
 			}
 
 			// 特殊验证：FiveSing ID 格式
 			if suite.Name == "fivesing" && !strings.Contains(song.ID, "|") {
-				t.Errorf("FiveSing ID format error: expected '|' separator, got %s", song.ID)
+				t.Errorf("❌ [%s] FiveSing ID format error: expected '|' separator, got %s", suite.Name, song.ID)
 			}
 
+			// -------------------------------------------------------
 			// 2. Test GetDownloadURL (复用 Search 结果)
+			// -------------------------------------------------------
 			if suite.GetDownloadURL != nil {
 				t.Run("GetDownloadURL", func(t *testing.T) {
+					t.Logf("=== [%s] 2. Testing GetDownloadURL ===", suite.Name)
 					url, err := suite.GetDownloadURL(song)
 					if err != nil {
-						t.Logf("GetDownloadURL failed: %v", err)
+						t.Logf("⚠️ [%s] GetDownloadURL failed (might be paid/restricted): %v", suite.Name, err)
 						// 不做 Fatal，因为 URL 获取可能因版权/会员限制失败
 					} else if url == "" {
-						t.Error("Returned empty URL")
+						t.Errorf("❌ [%s] Returned empty URL", suite.Name)
 					} else {
-						t.Logf("Got URL: %s...", url[:min(15, len(url))])
+						t.Logf("✅ [%s] Got URL: %s...", suite.Name, url[:min(15, len(url))])
 					}
 				})
+			} else {
+				t.Logf("⏹️ [%s] GetDownloadURL not implemented, skipping.", suite.Name)
 			}
 
+			// -------------------------------------------------------
 			// 3. Test GetLyrics (复用 Search 结果)
+			// -------------------------------------------------------
 			if suite.GetLyrics != nil {
 				t.Run("GetLyrics", func(t *testing.T) {
+					t.Logf("=== [%s] 3. Testing GetLyrics ===", suite.Name)
 					lyric, err := suite.GetLyrics(song)
 					if err != nil {
 						// 某些平台不支持或无歌词是正常的
 						if suite.Name == "jamendo" {
-							t.Logf("GetLyrics failed as expected (unsupported): %v", err)
+							t.Logf("⏹️ [%s] GetLyrics failed as expected (unsupported): %v", suite.Name, err)
 						} else {
-							t.Logf("GetLyrics failed: %v", err)
+							t.Logf("⚠️ [%s] GetLyrics failed: %v", suite.Name, err)
 						}
 					} else {
 						if lyric == "" {
-							t.Log("Lyrics empty")
+							t.Logf("⚠️ [%s] Lyrics empty", suite.Name)
 						} else {
-							t.Logf("Got lyrics (%d chars)", len(lyric))
+							t.Logf("✅ [%s] Got lyrics (%d chars)", suite.Name, len(lyric))
 						}
 					}
 				})
+			} else {
+				t.Logf("⏹️ [%s] GetLyrics not implemented, skipping.", suite.Name)
 			}
 
+			// -------------------------------------------------------
 			// 4. Test Parse (复用 Search 结果中的 Link)
+			// -------------------------------------------------------
 			if suite.Parse != nil && song.Link != "" {
 				t.Run("Parse", func(t *testing.T) {
+					t.Logf("=== [%s] 4. Testing Parse (Link: %s) ===", suite.Name, song.Link)
 					parsedSong, err := suite.Parse(song.Link)
 					if err != nil {
-						t.Errorf("Parse failed: %v", err)
+						t.Errorf("❌ [%s] Parse failed: %v", suite.Name, err)
 					} else {
 						if parsedSong.ID == "" {
-							t.Error("Parsed song ID is empty")
+							t.Errorf("❌ [%s] Parsed song ID is empty", suite.Name)
 						}
 						if parsedSong.Name == "" {
-							t.Error("Parsed song Name is empty")
+							t.Errorf("❌ [%s] Parsed song Name is empty", suite.Name)
 						}
 						if parsedSong.Source != suite.Name {
-							t.Errorf("Parsed source mismatch: expected %s, got %s", suite.Name, parsedSong.Source)
+							t.Errorf("❌ [%s] Parsed source mismatch: expected %s, got %s", suite.Name, suite.Name, parsedSong.Source)
 						}
-						t.Logf("Parse success: %s", parsedSong.Name)
+						t.Logf("✅ [%s] Parse success: %s", suite.Name, parsedSong.Name)
 					}
 				})
+			} else {
+				t.Logf("⏹️ [%s] Parse not implemented or Link empty, skipping.", suite.Name)
 			}
 		})
 	}
@@ -255,9 +272,11 @@ func TestLyricsSourceMismatch(t *testing.T) {
 		t.Run(p.name, func(t *testing.T) {
 			_, err := p.getLyrics(wrongSong)
 			if err == nil {
-				t.Errorf("%s GetLyrics should return error for source mismatch", p.name)
+				t.Errorf("❌ [%s] GetLyrics should return error for source mismatch", p.name)
 			} else if !strings.Contains(err.Error(), "source mismatch") {
-				t.Errorf("%s GetLyrics error should contain 'source mismatch', got: %v", p.name, err)
+				t.Errorf("❌ [%s] GetLyrics error should contain 'source mismatch', got: %v", p.name, err)
+			} else {
+				t.Logf("✅ [%s] Correctly rejected wrong source.", p.name)
 			}
 		})
 	}

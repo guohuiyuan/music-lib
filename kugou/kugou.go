@@ -36,12 +36,15 @@ func GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := defaultKugou.fetchPlaylistDetail(id)
 	return songs, err
 }
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) { // [新增]
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultKugou.ParsePlaylist(link)
 }
 func GetDownloadURL(s *model.Song) (string, error) { return defaultKugou.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error)      { return defaultKugou.GetLyrics(s) }
 func Parse(link string) (*model.Song, error)       { return defaultKugou.Parse(link) }
+
+// GetRecommendedPlaylists 获取推荐歌单
+func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultKugou.GetRecommendedPlaylists() }
 
 // Search 搜索歌曲
 func (k *Kugou) Search(keyword string) ([]model.Song, error) {
@@ -139,7 +142,7 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// SearchPlaylist 搜索歌单 (酷狗概念中的 "歌单" 通常指 "special")
+// SearchPlaylist 搜索歌单
 func (k *Kugou) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("keyword", keyword)
@@ -189,8 +192,7 @@ func (k *Kugou) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 			PlayCount:   item.PlayCount,
 			Creator:     item.NickName,
 			Description: item.Intro,
-			// [修改] 填充 Link 字段
-			Link: fmt.Sprintf("https://www.kugou.com/yy/special/single/%d.html", item.SpecialID),
+			Link:        fmt.Sprintf("https://www.kugou.com/yy/special/single/%d.html", item.SpecialID),
 		})
 	}
 	return playlists, nil
@@ -202,7 +204,7 @@ func (k *Kugou) GetPlaylistSongs(id string) ([]model.Song, error) {
 	return songs, err
 }
 
-// ParsePlaylist [新增] 解析歌单链接
+// ParsePlaylist 解析歌单链接
 func (k *Kugou) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	// 链接格式: https://www.kugou.com/yy/special/single/546903.html
 	re := regexp.MustCompile(`special/single/(\d+)\.html`)
@@ -215,11 +217,73 @@ func (k *Kugou) ParsePlaylist(link string) (*model.Playlist, []model.Song, error
 	return k.fetchPlaylistDetail(specialID)
 }
 
+// GetRecommendedPlaylists 获取推荐歌单
+func (k *Kugou) GetRecommendedPlaylists() ([]model.Playlist, error) {
+	// [修改] 使用 m.kugou.com 的 plist 接口，这个接口对 MobileUserAgent 更友好
+	// json=true 返回 JSON 数据
+	apiURL := "http://m.kugou.com/plist/index&json=true"
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", MobileUserAgent),
+		utils.WithHeader("Referer", MobileReferer),
+		utils.WithHeader("Cookie", k.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 检查 Body 是否是 JSON 格式 (简单的开头检查)
+	// 如果酷狗返回 HTML 错误页，这里可以拦截到
+	if len(body) == 0 || body[0] != '{' {
+		return nil, fmt.Errorf("kugou api returned invalid json: %s", string(body))
+	}
+
+	var resp struct {
+		Plist struct {
+			List struct {
+				Info []struct {
+					SpecialID   int    `json:"specialid"`
+					SpecialName string `json:"specialname"`
+					ImgURL      string `json:"imgurl"`
+					PlayCount   int    `json:"playcount"`
+					SongCount   int    `json:"songcount"`
+					Username    string `json:"username"`
+					Intro       string `json:"intro"`
+				} `json:"info"`
+			} `json:"list"`
+		} `json:"plist"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kugou recommended playlist json parse error: %w", err)
+	}
+
+	var playlists []model.Playlist
+	for _, item := range resp.Plist.List.Info {
+		cover := strings.Replace(item.ImgURL, "{size}", "240", 1)
+		
+		playlists = append(playlists, model.Playlist{
+			Source:      "kugou",
+			ID:          strconv.Itoa(item.SpecialID),
+			Name:        item.SpecialName,
+			Cover:       cover,
+			TrackCount:  item.SongCount,
+			PlayCount:   item.PlayCount,
+			Creator:     item.Username,
+			Description: item.Intro,
+			Link:        fmt.Sprintf("https://www.kugou.com/yy/special/single/%d.html", item.SpecialID),
+		})
+	}
+
+	if len(playlists) == 0 {
+		return nil, errors.New("no recommended playlists found")
+	}
+
+	return playlists, nil
+}
+
 // fetchPlaylistDetail [内部复用] 获取歌单详情 (Metadata + Songs)
-// 酷狗的接口比较特殊，song 接口只返回歌曲列表，元数据需要单独请求 (或者从 search 中获取)
-// 这里我们尝试从 song 接口的返回中拼凑，或者直接忽略元数据(如果接口没返回)
 func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
-	// 酷狗获取歌单歌曲的接口
 	apiURL := fmt.Sprintf("http://mobilecdn.kugou.com/api/v3/special/song?specialid=%s&page=1&pagesize=300&version=9108&area_code=1", id)
 
 	body, err := utils.Get(apiURL,
@@ -232,8 +296,6 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 
 	var resp struct {
 		Data struct {
-			// 酷狗这个接口有时也会返回 info 对象包含歌单信息，但结构不一定稳定
-			// 我们主要关注歌曲列表
 			Info []struct {
 				Hash       string `json:"hash"`
 				FileName   string `json:"filename"`
@@ -243,7 +305,6 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 				SingerName string `json:"singername"`
 				SongName   string `json:"songname"`
 			} `json:"info"`
-			// 如果有 extra 字段可能包含歌单名，暂且忽略，只返回基础 Playlist 对象
 		} `json:"data"`
 	}
 
@@ -251,13 +312,10 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 		return nil, nil, fmt.Errorf("kugou playlist detail json error: %w", err)
 	}
 
-	// 构造 Playlist 元数据 (该接口未返回详细元数据，只能填基础 ID 和 Link)
-	// 如果需要详细元数据，需要调用另一个接口 http://mobilecdn.kugou.com/api/v3/special/get_special?specialid=...
 	playlist := &model.Playlist{
 		Source: "kugou",
 		ID:     id,
 		Link:   fmt.Sprintf("https://www.kugou.com/yy/special/single/%s.html", id),
-		// Name, Cover 等字段因为接口限制暂为空，如果前端需要展示，建议在调用 ParsePlaylist 后手动补全或调用额外接口
 	}
 
 	var songs []model.Song
@@ -289,7 +347,6 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 		})
 	}
 	
-	// 更新歌曲数
 	playlist.TrackCount = len(songs)
 	
 	return playlist, songs, nil
@@ -297,15 +354,12 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 
 // Parse 解析链接
 func (k *Kugou) Parse(link string) (*model.Song, error) {
-	// 1. 提取 Hash
 	re := regexp.MustCompile(`(?i)hash=([a-f0-9]{32})`)
 	matches := re.FindStringSubmatch(link)
 	if len(matches) < 2 {
 		return nil, errors.New("invalid kugou link or hash not found")
 	}
 	hash := matches[1]
-
-	// 2. 调用核心逻辑获取详情
 	return k.fetchSongInfo(hash)
 }
 

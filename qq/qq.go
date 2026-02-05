@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,16 +36,19 @@ func Search(keyword string) ([]model.Song, error) { return defaultQQ.Search(keyw
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultQQ.SearchPlaylist(keyword)
 }
-func GetPlaylistSongs(id string) ([]model.Song, error) { 
+func GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := defaultQQ.fetchPlaylistDetail(id)
 	return songs, err
-} 
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) { // [新增]
+}
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultQQ.ParsePlaylist(link)
 }
 func GetDownloadURL(s *model.Song) (string, error)     { return defaultQQ.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error)          { return defaultQQ.GetLyrics(s) }
 func Parse(link string) (*model.Song, error)           { return defaultQQ.Parse(link) }
+
+// GetRecommendedPlaylists 获取推荐歌单
+func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultQQ.GetRecommendedPlaylists() }
 
 // Search 搜索歌曲
 func (q *QQ) Search(keyword string) ([]model.Song, error) {
@@ -168,12 +172,12 @@ func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 		Code int `json:"code"`
 		Data struct {
 			List []struct {
-				DissID   string `json:"dissid"`
-				DissName string `json:"dissname"`
-				ImgUrl   string `json:"imgurl"`
-				SongCount int `json:"song_count"`
-				ListenNum int `json:"listennum"`
-				Creator struct {
+				DissID    string `json:"dissid"`
+				DissName  string `json:"dissname"`
+				ImgUrl    string `json:"imgurl"`
+				SongCount int    `json:"song_count"`
+				ListenNum int    `json:"listennum"`
+				Creator   struct {
 					Name string `json:"name"`
 				} `json:"creator"`
 			} `json:"list"`
@@ -210,8 +214,7 @@ func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 			PlayCount:   item.ListenNum,
 			Creator:     item.Creator.Name,
 			Description: "",
-			// [新增] 填充 Link
-			Link: fmt.Sprintf("https://y.qq.com/n/ryqq/playlist/%s", item.DissID),
+			Link:        fmt.Sprintf("https://y.qq.com/n/ryqq/playlist/%s", item.DissID),
 		})
 	}
 
@@ -228,7 +231,7 @@ func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
 	return songs, err
 }
 
-// ParsePlaylist [新增] 解析歌单链接并返回详情
+// ParsePlaylist 解析歌单链接并返回详情
 func (q *QQ) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	// 链接格式如: https://y.qq.com/n/ryqq/playlist/8825279434
 	re := regexp.MustCompile(`playlist/(\d+)`)
@@ -239,6 +242,90 @@ func (q *QQ) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	dissid := matches[1]
 
 	return q.fetchPlaylistDetail(dissid)
+}
+
+// GetRecommendedPlaylists 获取推荐歌单 (QQ音乐每日推荐/热门歌单)
+func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
+	// 构造 musicu.fcg 的请求体
+	reqData := map[string]interface{}{
+		"comm": map[string]interface{}{
+			"ct": 24,
+		},
+		"recomPlaylist": map[string]interface{}{
+			"method": "get_hot_recommend",
+			"module": "playlist.HotRecommendServer",
+			"param": map[string]interface{}{
+				"async": 1,
+				"cmd":   2,
+			},
+		},
+	}
+
+	jsonData, _ := json.Marshal(reqData)
+
+	headers := []utils.RequestOption{
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/"),
+		utils.WithHeader("Content-Type", "application/json"),
+		// 推荐接口通常不需要严格的 Cookie，但如果有则带上
+		utils.WithHeader("Cookie", q.cookie),
+	}
+
+	body, err := utils.Post("https://u.y.qq.com/cgi-bin/musicu.fcg", bytes.NewReader(jsonData), headers...)
+	if err != nil {
+		return nil, err
+	}
+
+	// 响应结构
+	var resp struct {
+		Code int `json:"code"`
+		RecomPlaylist struct {
+			Data struct {
+				VHot []struct {
+					ContentID int64  `json:"content_id"` // 歌单ID
+					Title     string `json:"title"`      // 歌单名
+					Cover     string `json:"cover"`      // 封面
+					ListenNum int    `json:"listen_num"` // 播放量
+					Username  string `json:"username"`   // 创建者 (有时为空)
+				} `json:"v_hot"`
+			} `json:"data"`
+		} `json:"recomPlaylist"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq recommended playlist json parse error: %w", err)
+	}
+
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("qq api error code: %d", resp.Code)
+	}
+
+	var playlists []model.Playlist
+	for _, item := range resp.RecomPlaylist.Data.VHot {
+		cover := item.Cover
+		if cover != "" && strings.HasPrefix(cover, "http://") {
+			cover = strings.Replace(cover, "http://", "https://", 1)
+		}
+
+		playlistID := strconv.FormatInt(item.ContentID, 10)
+
+		playlists = append(playlists, model.Playlist{
+			Source:      "qq",
+			ID:          playlistID,
+			Name:        item.Title,
+			Cover:       cover,
+			PlayCount:   item.ListenNum,
+			Creator:     item.Username,
+			Description: "", // 列表页通常不返回描述
+			Link:        fmt.Sprintf("https://y.qq.com/n/ryqq/playlist/%s", playlistID),
+		})
+	}
+
+	if len(playlists) == 0 {
+		return nil, errors.New("no recommended playlists found")
+	}
+
+	return playlists, nil
 }
 
 // fetchPlaylistDetail [内部复用] 获取歌单详情（元数据+歌曲）
@@ -314,7 +401,7 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 	}
 
 	info := resp.Cdlist[0]
-	
+
 	// 构造 Playlist 元数据
 	playlist := &model.Playlist{
 		Source:      "qq",

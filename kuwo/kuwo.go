@@ -35,12 +35,15 @@ func GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := defaultKuwo.fetchPlaylistDetail(id)
 	return songs, err
 }
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) { // [新增]
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultKuwo.ParsePlaylist(link)
 }
 func GetDownloadURL(s *model.Song) (string, error) { return defaultKuwo.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error)      { return defaultKuwo.GetLyrics(s) }
 func Parse(link string) (*model.Song, error)       { return defaultKuwo.Parse(link) }
+
+// GetRecommendedPlaylists 获取推荐歌单 (新增)
+func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultKuwo.GetRecommendedPlaylists() }
 
 // Search 搜索歌曲
 func (k *Kuwo) Search(keyword string) ([]model.Song, error) {
@@ -193,7 +196,7 @@ func (k *Kuwo) GetPlaylistSongs(id string) ([]model.Song, error) {
 	return songs, err
 }
 
-// ParsePlaylist [新增] 解析歌单链接
+// ParsePlaylist 解析歌单链接
 func (k *Kuwo) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	// 链接格式: http://www.kuwo.cn/playlist_detail/1082685103
 	re := regexp.MustCompile(`playlist_detail/(\d+)`)
@@ -204,6 +207,82 @@ func (k *Kuwo) ParsePlaylist(link string) (*model.Playlist, []model.Song, error)
 	playlistID := matches[1]
 
 	return k.fetchPlaylistDetail(playlistID)
+}
+
+// GetRecommendedPlaylists 获取推荐歌单 (酷我热门歌单)
+func (k *Kuwo) GetRecommendedPlaylists() ([]model.Playlist, error) {
+	// 使用 wapi 接口获取热门推荐歌单，不需要复杂 Token
+	params := url.Values{}
+	params.Set("pn", "0")
+	params.Set("rn", "30")
+	params.Set("order", "hot")
+
+	apiURL := "http://wapi.kuwo.cn/api/pc/classify/playlist/getRcmPlayList?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			Data []struct {
+				ID        string      `json:"id"`
+				Name      string      `json:"name"`
+				Img       string      `json:"img"`
+				ListenCnt interface{} `json:"listencnt"` // 可能是 string 或 int
+				UserName  string      `json:"uname"`
+				Desc      string      `json:"desc"`
+			} `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kuwo recommend json parse error: %w", err)
+	}
+
+	if resp.Code != 200 {
+		return nil, fmt.Errorf("kuwo api error code: %d", resp.Code)
+	}
+
+	var playlists []model.Playlist
+	for _, item := range resp.Data.Data {
+		cover := item.Img
+		if cover != "" && !strings.HasPrefix(cover, "http") {
+			cover = "http://" + cover
+		}
+
+		// 处理 ListenCnt 多态类型
+		var playCount int
+		switch v := item.ListenCnt.(type) {
+		case float64:
+			playCount = int(v)
+		case string:
+			if v != "" {
+				playCount, _ = strconv.Atoi(v)
+			}
+		}
+
+		playlists = append(playlists, model.Playlist{
+			Source:      "kuwo",
+			ID:          item.ID,
+			Name:        item.Name,
+			Cover:       cover,
+			PlayCount:   playCount,
+			Creator:     item.UserName,
+			Description: item.Desc,
+			Link:        fmt.Sprintf("http://www.kuwo.cn/playlist_detail/%s", item.ID),
+		})
+	}
+
+	if len(playlists) == 0 {
+		return nil, errors.New("no recommended playlists found")
+	}
+
+	return playlists, nil
 }
 
 // fetchPlaylistDetail [内部复用] 获取歌单详情 (Metadata + Songs)
@@ -241,8 +320,6 @@ func (k *Kuwo) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 			SongName   string      `json:"song_name"`
 			ArtistName string      `json:"artist_name"`
 		} `json:"musiclist"`
-		// 注意: 这个接口可能也返回 title, pic 等歌单信息，但往往不全
-		// 这里暂且构造一个基础 Playlist 对象
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -258,7 +335,6 @@ func (k *Kuwo) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 		ID:         id,
 		Link:       fmt.Sprintf("http://www.kuwo.cn/playlist_detail/%s", id),
 		TrackCount: len(resp.MusicList),
-		// Name, Cover 等字段因为接口限制暂为空
 	}
 
 	var songs []model.Song

@@ -39,7 +39,7 @@ func GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := defaultSoda.fetchPlaylistDetail(id)
 	return songs, err
 }
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) { // [新增]
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultSoda.ParsePlaylist(link)
 }
 func GetDownloadInfo(s *model.Song) (*DownloadInfo, error) { return defaultSoda.GetDownloadInfo(s) }
@@ -47,6 +47,9 @@ func GetDownloadURL(s *model.Song) (string, error)         { return defaultSoda.
 func Download(s *model.Song, outputPath string) error      { return defaultSoda.Download(s, outputPath) }
 func GetLyrics(s *model.Song) (string, error)              { return defaultSoda.GetLyrics(s) }
 func Parse(link string) (*model.Song, error)               { return defaultSoda.Parse(link) }
+
+// GetRecommendedPlaylists [新增] 获取推荐歌单 (空实现)
+func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultSoda.GetRecommendedPlaylists() }
 
 // Search 搜索歌曲 (PC API)
 func (s *Soda) Search(keyword string) ([]model.Song, error) {
@@ -188,7 +191,7 @@ func (s *Soda) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 							Nickname   string `json:"nickname"`
 							PublicName string `json:"public_name"`
 						} `json:"owner"`
-						CountTracks int `json:"count_tracks"` // Added count_tracks
+						CountTracks int `json:"count_tracks"`
 						UrlCover    struct {
 							Urls []string `json:"urls"`
 							Uri  string   `json:"uri"`
@@ -240,40 +243,41 @@ func (s *Soda) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 			TrackCount:  pl.CountTracks,
 			Creator:     creator,
 			Description: pl.Desc,
-			// [新增] 填充 Link 字段
-			Link: fmt.Sprintf("https://www.qishui.com/playlist/%s", pl.ID),
+			Link:        fmt.Sprintf("https://www.qishui.com/playlist/%s", pl.ID),
 		})
 	}
 	return playlists, nil
 }
 
-// GetPlaylistSongs [新增] 获取歌单所有歌曲
+// GetRecommendedPlaylists [新增] 获取推荐歌单 (空实现)
+func (s *Soda) GetRecommendedPlaylists() ([]model.Playlist, error) {
+	// 汽水音乐目前没有公开的每日推荐歌单 PC 接口
+	return nil, errors.New("soda daily recommendation not supported")
+}
+
+// GetPlaylistSongs 获取歌单所有歌曲
 func (s *Soda) GetPlaylistSongs(id string) ([]model.Song, error) {
-	// 复用 fetchPlaylistDetail，只返回歌曲列表
 	_, songs, err := s.fetchPlaylistDetail(id)
 	return songs, err
 }
 
-// ParsePlaylist [新增] 解析歌单链接
+// ParsePlaylist 解析歌单链接
 func (s *Soda) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	// 链接格式如: https://www.qishui.com/playlist/7200303561195061287
 	re := regexp.MustCompile(`playlist/(\d+)`)
 	matches := re.FindStringSubmatch(link)
 	if len(matches) < 2 {
 		return nil, nil, errors.New("invalid soda playlist link")
 	}
 	playlistID := matches[1]
-
-	// 复用 fetchPlaylistDetail
 	return s.fetchPlaylistDetail(playlistID)
 }
 
-// fetchPlaylistDetail [内部通用] 获取歌单详情 (Metadata + Songs)
+// fetchPlaylistDetail [内部通用] 获取歌单详情
 func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
 	params := url.Values{}
 	params.Set("playlist_id", id)
 	params.Set("cursor", "0")
-	params.Set("cnt", "20") // PC端通常限制20，需翻页可在此扩展
+	params.Set("cnt", "20")
 	params.Set("aid", "386088")
 	params.Set("device_platform", "web")
 	params.Set("channel", "pc_web")
@@ -288,7 +292,6 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 		return nil, nil, err
 	}
 
-	// 新的结构体定义匹配实际 API 返回
 	var resp struct {
 		Playlist struct {
 			ID    string `json:"id"`
@@ -345,7 +348,6 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 		return nil, nil, fmt.Errorf("soda playlist detail json error: %w", err)
 	}
 
-	// 1. 构造 Playlist 元数据
 	pl := &model.Playlist{
 		Source:      "soda",
 		ID:          id,
@@ -355,7 +357,6 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 		TrackCount:  resp.Playlist.CountTracks,
 		Link:        fmt.Sprintf("https://www.qishui.com/playlist/%s", id),
 	}
-	// 封面处理
 	if len(resp.Playlist.UrlCover.Urls) > 0 {
 		cover := resp.Playlist.UrlCover.Urls[0]
 		if resp.Playlist.UrlCover.Uri != "" && !strings.Contains(cover, resp.Playlist.UrlCover.Uri) {
@@ -367,7 +368,6 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 		pl.Cover = cover
 	}
 
-	// 2. 构造 Songs 列表
 	var songs []model.Song
 	for _, item := range resp.MediaResources {
 		if item.Type != "track" {
@@ -378,15 +378,12 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 			continue
 		}
 
-		// 计算最大文件大小
 		var displaySize int64
-		// 优先从 BitRates 获取
 		for _, br := range track.BitRates {
 			if br.Size > displaySize {
 				displaySize = br.Size
 			}
 		}
-		// 也可以尝试从 PlayInfoList 获取
 		for _, pi := range track.AudioInfo.PlayInfoList {
 			if pi.Size > displaySize {
 				displaySize = pi.Size
@@ -431,7 +428,6 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 			},
 		}
 
-		// 填充播放链接 (如果有)
 		if len(track.AudioInfo.PlayInfoList) > 0 {
 			best := track.AudioInfo.PlayInfoList[0]
 			for _, info := range track.AudioInfo.PlayInfoList {
@@ -604,7 +600,6 @@ func (s *Soda) Download(song *model.Song, outputPath string) error {
 		return err
 	}
 
-	// [修改] DecryptAudio 现位于 crypto.go，但同属 package soda，可直接调用
 	decryptedData, err := DecryptAudio(encryptedData, info.PlayAuth)
 	if err != nil {
 		return fmt.Errorf("decrypt failed: %w", err)
