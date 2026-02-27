@@ -80,7 +80,7 @@ func (s *Song) Filename() string {
 	if ext == "" {
 		ext = "mp3" // 默认
 	}
-	return utils.SanitizeFilename(fmt.Sprintf("%s - %s.%s", s.Artist, s.Name, ext))
+	return utils.SanitizeFilename(fmt.Sprintf("%s - %s.%s", s.Name, s.Artist, ext))
 }
 
 // Display 用于简单的日志打印
