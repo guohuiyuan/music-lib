@@ -60,8 +60,9 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 	apiURL := "http://songsearch.kugou.com/song_search_v2?" + params.Encode()
 
 	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", MobileUserAgent),
-		utils.WithHeader("Cookie", k.cookie),
+		// 使用普通移动端UA，不加Cookie可能会降低风控概率
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36"),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, err
@@ -158,6 +159,7 @@ func (k *Kugou) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, err
@@ -229,6 +231,7 @@ func (k *Kugou) GetRecommendedPlaylists() ([]model.Playlist, error) {
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, err
@@ -291,6 +294,7 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, nil, err
@@ -415,9 +419,10 @@ func (k *Kugou) fetchSongInfo(hash string) (*model.Song, error) {
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
-		return nil, err
+		return k.fallbackFetchSongInfo(hash)
 	}
 
 	var resp struct {
@@ -430,10 +435,16 @@ func (k *Kugou) fetchSongInfo(hash string) (*model.Song, error) {
 		TimeLength int         `json:"timeLength"`
 		FileSize   int64       `json:"fileSize"`
 		Error      interface{} `json:"error"`
+		Errcode    int         `json:"errcode"` // [新增] 检查酷狗是否返回风控错误
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("json parse error: %w", err)
+		return k.fallbackFetchSongInfo(hash)
+	}
+
+	// errcode 1002 代表操作太频繁 (风控)
+	if resp.Errcode != 0 || resp.URL == "" {
+		return k.fallbackFetchSongInfo(hash)
 	}
 
 	if resp.URL == "" {
@@ -460,6 +471,58 @@ func (k *Kugou) fetchSongInfo(hash string) (*model.Song, error) {
 	}, nil
 }
 
+// fallbackFetchSongInfo 备用 API：如果原接口被风控 (1002)，使用 PC 网页端 API 进行 Fallback
+func (k *Kugou) fallbackFetchSongInfo(hash string) (*model.Song, error) {
+	// 酷狗 PC Web API, 有时可以绕过部分验证
+	apiURL := fmt.Sprintf("https://wwwapi.kugou.com/yy/index.php?r=play/getdata&hash=%s&platid=4", hash)
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		utils.WithHeader("Referer", "https://www.kugou.com/"),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			PlayURL    string `json:"play_url"`
+			BitRate    int    `json:"bitrate"`
+			AuthorName string `json:"author_name"`
+			SongName   string `json:"song_name"`
+			Timelength int    `json:"timelength"`
+			FileSize   int64  `json:"filesize"`
+			Img        string `json:"img"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("fallback json parse error: %w", err)
+	}
+
+	if resp.Data.PlayURL == "" {
+		return nil, errors.New("download url not found in fallback api")
+	}
+
+	return &model.Song{
+		Source:   "kugou",
+		ID:       hash,
+		Name:     resp.Data.SongName,
+		Artist:   resp.Data.AuthorName,
+		Duration: resp.Data.Timelength / 1000,
+		Size:     resp.Data.FileSize,
+		Bitrate:  resp.Data.BitRate,
+		Cover:    resp.Data.Img,
+		URL:      resp.Data.PlayURL,
+		Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
+		Extra: map[string]string{
+			"hash": hash,
+		},
+	}, nil
+}
+
 // GetLyrics 获取歌词
 func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "kugou" {
@@ -477,6 +540,7 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return "", err
@@ -506,6 +570,7 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return "", err

@@ -69,6 +69,7 @@ func (k *Kuwo) Search(keyword string) ([]model.Song, error) {
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, err
@@ -143,6 +144,7 @@ func (k *Kuwo) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, err
@@ -224,6 +226,7 @@ func (k *Kuwo) GetRecommendedPlaylists() ([]model.Playlist, error) {
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, err
@@ -327,6 +330,7 @@ func (k *Kuwo) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, nil, err
@@ -448,7 +452,11 @@ func (k *Kuwo) fetchFullSongInfo(rid string) (*model.Song, error) {
 	metaURL := "http://m.kuwo.cn/newh5/singles/songinfoandlrc?" + params.Encode()
 
 	var name, artist, cover string
-	metaBody, err := utils.Get(metaURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Cookie", k.cookie))
+	metaBody, err := utils.Get(metaURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
 
 	if err == nil {
 		var metaResp struct {
@@ -510,6 +518,7 @@ func (k *Kuwo) fetchAudioURL(rid string) (string, error) {
 		body, err := utils.Get(apiURL,
 			utils.WithHeader("User-Agent", UserAgent),
 			utils.WithHeader("Cookie", k.cookie),
+			utils.WithRandomIPHeader(),
 		)
 		if err != nil {
 			continue
@@ -527,6 +536,33 @@ func (k *Kuwo) fetchAudioURL(rid string) (string, error) {
 		}
 		if resp.Data.URL != "" {
 			return resp.Data.URL, nil
+		}
+	}
+
+	// [降级策略] 尝试使用 www.kuwo.cn 的备用接口绕过防盗链
+	fallbackURL := fmt.Sprintf("http://www.kuwo.cn/api/v1/www/music/playUrl?mid=%s&type=music&httpsStatus=1", rid)
+
+	// 需要伪造 Secret 头部 (简单绕过)
+	secret := "kuwo_web_secret"
+	cookieWithSecret := k.cookie
+	if !strings.Contains(cookieWithSecret, "kw_token") {
+		cookieWithSecret += "; kw_token=secret_token"
+	}
+
+	fallbackBody, err := utils.Get(fallbackURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", cookieWithSecret),
+		utils.WithHeader("Secret", secret), // Web API 需要的签名头
+		utils.WithRandomIPHeader(),
+	)
+	if err == nil {
+		var resp struct {
+			Data struct {
+				Url string `json:"url"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(fallbackBody, &resp) == nil && resp.Data.Url != "" {
+			return resp.Data.Url, nil
 		}
 	}
 
@@ -552,6 +588,7 @@ func (k *Kuwo) GetLyrics(s *model.Song) (string, error) {
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch kuwo lyric API: %w", err)
