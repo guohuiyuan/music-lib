@@ -17,7 +17,7 @@ const (
 	Referer                = "http://music.163.com/"
 	SearchAPI              = "http://music.163.com/api/linux/forward"
 	DownloadAPI            = "http://music.163.com/weapi/song/enhance/player/url"
-	DownloadEAPI           = "https://interface.music.163.com/eapi/song/enhance/player/url/v1"
+	DownloadEAPI           = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1"
 	DetailAPI              = "https://music.163.com/weapi/v3/song/detail"
 	PlaylistAPI            = "https://music.163.com/weapi/v3/playlist/detail"
 	UserAccountAPI         = "https://music.163.com/weapi/nuser/account/get"

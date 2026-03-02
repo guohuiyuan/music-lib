@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"net/url"
 	"strings"
 )
 
@@ -147,6 +148,10 @@ func EncryptWeApi(text string) (string, string) {
 // EncryptEApi 对应 Python: encrypt_params
 // 用于 EAPI 接口 (如获取高音质 VIP 下载链接)
 func EncryptEApi(urlPath string, payload string) string {
+	u, err := url.Parse(urlPath)
+	if err == nil && u.Path != "" {
+		urlPath = u.Path
+	}
 	urlPath = strings.ReplaceAll(urlPath, "/eapi/", "/api/")
 	text := fmt.Sprintf("nobody%suse%smd5forencrypt", urlPath, payload)
 
