@@ -20,11 +20,15 @@ const (
 
 // Bilibili 结构体
 type Bilibili struct {
-	cookie string
+	cookie     string
+	isVipCache *bool
 }
 
 // New 初始化函数
 func New(cookie string) *Bilibili {
+	if cookie == "" {
+		cookie = "buvid3=2E109C72-251F-3827-FA8E-921FA0D7EC5291319infoc; SESSDATA=your_sessdata;"
+	}
 	return &Bilibili{
 		cookie: cookie,
 	}
@@ -43,6 +47,46 @@ func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 func GetDownloadURL(s *model.Song) (string, error) { return defaultBilibili.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error)      { return defaultBilibili.GetLyrics(s) }
 func Parse(link string) (*model.Song, error)       { return defaultBilibili.Parse(link) }
+
+// IsVipAccount 检测 Bilibili 账号是否为大会员
+func (b *Bilibili) IsVipAccount() (bool, error) {
+	if b.isVipCache != nil {
+		return *b.isVipCache, nil
+	}
+
+	if b.cookie == "" {
+		isVip := false
+		b.isVipCache = &isVip
+		return false, nil
+	}
+
+	apiURL := "https://api.bilibili.com/x/web-interface/nav"
+	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Referer", Referer), utils.WithHeader("Cookie", b.cookie))
+	if err != nil {
+		return false, err
+	}
+
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			IsLogin   bool `json:"isLogin"`
+			VipStatus int  `json:"vipStatus"`
+			VipType   int  `json:"vipType"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, err
+	}
+
+	isVip := false
+	if resp.Code == 0 && resp.Data.IsLogin && resp.Data.VipStatus == 1 && resp.Data.VipType > 0 {
+		isVip = true
+	}
+
+	b.isVipCache = &isVip
+	return isVip, nil
+}
 
 type bilibiliViewResponse struct {
 	Data struct {
@@ -807,7 +851,8 @@ func (b *Bilibili) Parse(link string) (*model.Song, error) {
 	cidStr := strconv.FormatInt(targetPage.CID, 10)
 
 	// 4. 立即获取下载链接
-	audioURL, _ := b.fetchAudioURL(bvid, cidStr) // 忽略错误，尽可能返回元数据
+	isVip, _ := b.IsVipAccount()
+	audioURL, _ := b.fetchAudioURL(bvid, cidStr, isVip) // 忽略错误，尽可能返回元数据
 
 	return &model.Song{
 		Source:   "bilibili",
@@ -852,12 +897,19 @@ func (b *Bilibili) GetDownloadURL(s *model.Song) (string, error) {
 		}
 	}
 
-	return b.fetchAudioURL(bvid, cid)
+	isVip, _ := b.IsVipAccount()
+	return b.fetchAudioURL(bvid, cid, isVip)
 }
 
 // fetchAudioURL 内部逻辑提取
-func (b *Bilibili) fetchAudioURL(bvid, cid string) (string, error) {
-	apiURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=80&qn=127&bvid=%s&cid=%s", bvid, cid)
+func (b *Bilibili) fetchAudioURL(bvid, cid string, isVip bool) (string, error) {
+	fnval := 80
+	if isVip {
+		// 4048 allows requesting FLAC/Hi-Res/Dolby formats instead of default standard 80
+		fnval = 4048
+	}
+
+	apiURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=%d&qn=127&bvid=%s&cid=%s", fnval, bvid, cid)
 	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Referer", Referer), utils.WithHeader("Cookie", b.cookie))
 	if err != nil {
 		return "", err
@@ -870,24 +922,52 @@ func (b *Bilibili) fetchAudioURL(bvid, cid string) (string, error) {
 			} `json:"durl"`
 			Dash struct {
 				Audio []struct {
+					ID      int    `json:"id"`
 					BaseURL string `json:"baseUrl"`
 				} `json:"audio"`
 				Flac struct {
-					Audio []struct {
+					Audio struct {
+						ID      int    `json:"id"`
 						BaseURL string `json:"baseUrl"`
 					} `json:"audio"`
 				} `json:"flac"`
+				Dolby struct {
+					Audio []struct {
+						ID      int    `json:"id"`
+						BaseURL string `json:"baseUrl"`
+					} `json:"audio"`
+				} `json:"dolby"`
 			} `json:"dash"`
 		} `json:"data"`
 	}
 	json.Unmarshal(body, &resp)
 
-	if len(resp.Data.Dash.Flac.Audio) > 0 {
-		return resp.Data.Dash.Flac.Audio[0].BaseURL, nil
+	// 1. Highest Priority: Hi-Res FLAC format specifically marked by id 30251
+	if resp.Data.Dash.Flac.Audio.ID == 30251 && resp.Data.Dash.Flac.Audio.BaseURL != "" {
+		return resp.Data.Dash.Flac.Audio.BaseURL, nil
 	}
-	if len(resp.Data.Dash.Audio) > 0 {
-		return resp.Data.Dash.Audio[0].BaseURL, nil
+
+	// 2. Secondary Priority: Dolby Atmos format specifically marked by id 30250
+	for _, a := range resp.Data.Dash.Dolby.Audio {
+		if a.ID == 30250 && a.BaseURL != "" {
+			return a.BaseURL, nil
+		}
 	}
+
+	// 3. Loop through standard DASH audio evaluating the highest ID quality natively (e.g. 30280 for 192kbps vs 30232 for 132kbps)
+	var bestURL string
+	var highestID = -1
+	for _, a := range resp.Data.Dash.Audio {
+		if a.ID > highestID && a.BaseURL != "" {
+			highestID = a.ID
+			bestURL = a.BaseURL
+		}
+	}
+	if bestURL != "" {
+		return bestURL, nil
+	}
+
+	// 4. Fallback to generic unsegmented DURL format if no Dash
 	if len(resp.Data.Durl) > 0 {
 		return resp.Data.Durl[0].URL, nil
 	}
