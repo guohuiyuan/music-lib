@@ -66,9 +66,11 @@ func (q *QQ) IsVipAccount() (bool, error) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	guid := fmt.Sprintf("%d", r.Int63n(9000000000)+1000000000)
 
-	// 探针: 周杰伦 - 晴天
+	// 探针: 周杰伦 - 晴天 (VIP 专享歌曲)
 	songMID := "004YZbkL2MNHoY"
-	filename := fmt.Sprintf("F000%s%s.flac", songMID, songMID)
+	// ⚠️ 修改点：将 F000 (FLAC) 修改为 M500 (128kbps MP3) 
+	// 普通绿钻可能没有 FLAC 权限，但只要是绿钻就必定能获取 VIP 歌曲的 M500 播放链接。
+	filename := fmt.Sprintf("M500%s%s.mp3", songMID, songMID)
 
 	reqData := map[string]interface{}{
 		"comm": map[string]interface{}{
@@ -137,7 +139,6 @@ func (q *QQ) IsVipAccount() (bool, error) {
 	q.isVipCache = &isVip
 	return isVip, nil
 }
-
 // Search 搜索歌曲
 func (q *QQ) Search(keyword string) ([]model.Song, error) {
 	params := url.Values{}
