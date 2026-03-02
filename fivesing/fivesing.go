@@ -443,15 +443,17 @@ func (f *Fivesing) fetchSongInfo(songID, songType string) (*model.Song, error) {
 	if metaBody != nil {
 		var metaResp struct {
 			Data struct {
-				SongName string `json:"songName"`
-				Singer   string `json:"singer"`
-				Img      string `json:"img"`
+				SN   string `json:"SN"`
+				User struct {
+					NN string `json:"NN"`
+					I  string `json:"I"`
+				} `json:"user"`
 			} `json:"data"`
 		}
 		if json.Unmarshal(metaBody, &metaResp) == nil {
-			name = metaResp.Data.SongName
-			artist = metaResp.Data.Singer
-			cover = metaResp.Data.Img
+			name = metaResp.Data.SN
+			artist = metaResp.Data.User.NN
+			cover = metaResp.Data.User.I
 		}
 	}
 
