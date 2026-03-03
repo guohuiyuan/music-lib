@@ -1,4 +1,4 @@
-package unlock
+package qq
 
 import (
 	"bytes"
@@ -48,6 +48,22 @@ func DecryptQQ(encrypted []byte, ext string) ([]byte, string, error) {
 		}
 		return plain, "mp3", nil
 	}
+}
+
+func detectAudioExt(data []byte) string {
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte{'f', 'L', 'a', 'C'}) {
+		return "flac"
+	}
+	if len(data) >= 3 && bytes.Equal(data[:3], []byte{'I', 'D', '3'}) {
+		return "mp3"
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte{'O', 'g', 'g', 'S'}) {
+		return "ogg"
+	}
+	if len(data) >= 8 && bytes.Equal(data[4:8], []byte{'f', 't', 'y', 'p'}) {
+		return "m4a"
+	}
+	return "mp3"
 }
 
 type qqMask struct {

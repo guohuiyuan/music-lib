@@ -1,9 +1,13 @@
-package unlock
+package crypto
 
 import (
+	"bytes"
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/netease"
+	"github.com/guohuiyuan/music-lib/qq"
 )
 
 // DecryptByFilename 根据文件扩展名解密已购加密音频。
@@ -13,7 +17,7 @@ func DecryptByFilename(filename string, encrypted []byte) ([]byte, string, strin
 
 	switch ext {
 	case "ncm":
-		plain, outExt, err := DecryptNCM(encrypted)
+		plain, outExt, err := netease.DecryptNCM(encrypted)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -23,7 +27,7 @@ func DecryptByFilename(filename string, encrypted []byte) ([]byte, string, strin
 		return plain, outExt, "netease", nil
 
 	case "qmc0", "qmc3", "qmcflac", "qmcogg", "bkcmp3", "bkcflac", "tkm", "mflac", "mgg":
-		plain, outExt, err := DecryptQQ(encrypted, ext)
+		plain, outExt, err := qq.DecryptQQ(encrypted, ext)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -31,7 +35,7 @@ func DecryptByFilename(filename string, encrypted []byte) ([]byte, string, strin
 	}
 
 	if len(encrypted) >= 8 && string(encrypted[:8]) == "CTENFDAM" {
-		plain, outExt, err := DecryptNCM(encrypted)
+		plain, outExt, err := netease.DecryptNCM(encrypted)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -55,4 +59,20 @@ func MimeByExt(ext string) string {
 	default:
 		return "audio/mpeg"
 	}
+}
+
+func DetectAudioExt(data []byte) string {
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte{'f', 'L', 'a', 'C'}) {
+		return "flac"
+	}
+	if len(data) >= 3 && bytes.Equal(data[:3], []byte{'I', 'D', '3'}) {
+		return "mp3"
+	}
+	if len(data) >= 4 && bytes.Equal(data[:4], []byte{'O', 'g', 'g', 'S'}) {
+		return "ogg"
+	}
+	if len(data) >= 8 && bytes.Equal(data[4:8], []byte{'f', 't', 'y', 'p'}) {
+		return "m4a"
+	}
+	return "mp3"
 }
