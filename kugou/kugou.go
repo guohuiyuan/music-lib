@@ -143,13 +143,16 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 				MvHash      string      `json:"MvHash"`
 				SQFileSize  int64       `json:"SQFileSize"`
 				HQFileSize  int64       `json:"HQFileSize"`
+				ResFileSize int64       `json:"ResFileSize"`
 				FileSize    interface{} `json:"FileSize"`
 				Image       string      `json:"Image"`
 				PayType     int         `json:"PayType"`
 				Privilege   int         `json:"Privilege"`
 				TransParam  struct {
-					Ogg320Hash string `json:"ogg_320_hash"`
-					Ogg128Hash string `json:"ogg_128_hash"`
+					Ogg320Hash     string `json:"ogg_320_hash"`
+					Ogg128Hash     string `json:"ogg_128_hash"`
+					Ogg320FileSize int64  `json:"ogg_320_filesize"`
+					Ogg128FileSize int64  `json:"ogg_128_filesize"`
 				} `json:"trans_param"`
 			} `json:"lists"`
 		} `json:"data"`
@@ -163,18 +166,23 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 
 	var songs []model.Song
 	for _, item := range resp.Data.Lists {
-		if !isVip && item.Privilege == 10 {
-			continue
-		}
-		if item.FileHash == "" && item.SQFileHash == "" && item.HQFileHash == "" {
+		if item.Privilege == 10 && !isVip {
 			continue
 		}
 
 		finalHash := item.FileHash
-		if isValidHash(item.SQFileHash) {
+		if item.Privilege != 10 && isVip {
 			finalHash = item.SQFileHash
-		} else if isValidHash(item.HQFileHash) {
-			finalHash = item.HQFileHash
+		}
+		if strings.TrimSpace(finalHash) == "" {
+			finalHash = firstNonEmpty(
+				item.SQFileHash,
+				item.HQFileHash,
+				item.ResFileHash,
+				item.TransParam.Ogg320Hash,
+				item.FileHash,
+				item.TransParam.Ogg128Hash,
+			)
 		}
 
 		var size int64
@@ -189,16 +197,32 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 			}
 		}
 
+		switch finalHash {
+		case item.SQFileHash:
+			if item.SQFileSize > 0 {
+				size = item.SQFileSize
+			}
+		case item.HQFileHash:
+			if item.HQFileSize > 0 {
+				size = item.HQFileSize
+			}
+		case item.ResFileHash:
+			if item.ResFileSize > 0 {
+				size = item.ResFileSize
+			}
+		case item.TransParam.Ogg320Hash:
+			if item.TransParam.Ogg320FileSize > 0 {
+				size = item.TransParam.Ogg320FileSize
+			}
+		case item.TransParam.Ogg128Hash:
+			if item.TransParam.Ogg128FileSize > 0 {
+				size = item.TransParam.Ogg128FileSize
+			}
+		}
+
 		bitrate := 0
 		if item.Duration > 0 && size > 0 {
 			bitrate = int(size * 8 / 1000 / int64(item.Duration))
-		}
-		if isValidHash(item.SQFileHash) && item.SQFileSize > 0 && item.Duration > 0 {
-			size = item.SQFileSize
-			bitrate = int(item.SQFileSize * 8 / 1000 / int64(item.Duration))
-		} else if isValidHash(item.HQFileHash) && item.HQFileSize > 0 && item.Duration > 0 {
-			size = item.HQFileSize
-			bitrate = int(item.HQFileSize * 8 / 1000 / int64(item.Duration))
 		}
 
 		coverURL := strings.Replace(item.Image, "{size}", "240", 1)
@@ -224,8 +248,9 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 				"res_hash":     item.ResFileHash,
 				"mv_hash":      item.MvHash,
 				"hq_hash":      item.HQFileHash,
-				"audio_id":     fmt.Sprint(item.Audioid),
+				"audio_id":     formatKugouNumericString(item.Audioid),
 				"album_id":     item.AlbumID,
+				"privilege":    strconv.Itoa(item.Privilege),
 			},
 		})
 	}
@@ -629,19 +654,28 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 		hash = s.Extra["hash"]
 	}
 
-	if strings.TrimSpace(k.cookie) != "" {
+	privilege := getKugouPrivilege(s)
+
+	if privilege == 10 {
 		if info, err := k.fetchVIPSongInfo(s); err == nil && info != nil && info.URL != "" {
+			return info.URL, nil
+		}
+	}
+
+	if privilege != 0 {
+		isVip, vipErr := k.IsVipAccount()
+		if vipErr == nil && isVip {
+			info, err := k.fetchTrackerSongInfo(hash)
+			if err != nil {
+				return "", err
+			}
 			return info.URL, nil
 		}
 	}
 
 	info, err := k.fetchSongInfo(hash)
 	if err != nil {
-		info, trackerErr := k.fetchTrackerSongInfo(hash)
-		if trackerErr != nil {
-			return "", err
-		}
-		return info.URL, nil
+		return "", err
 	}
 	return info.URL, nil
 }
@@ -1098,6 +1132,38 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func formatKugouNumericString(v interface{}) string {
+	switch n := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(n)
+	case int:
+		return strconv.Itoa(n)
+	case int32:
+		return strconv.FormatInt(int64(n), 10)
+	case int64:
+		return strconv.FormatInt(n, 10)
+	case float32:
+		return strconv.FormatFloat(float64(n), 'f', 0, 32)
+	case float64:
+		return strconv.FormatFloat(n, 'f', 0, 64)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func getKugouPrivilege(s *model.Song) int {
+	if s == nil || s.Extra == nil {
+		return -1
+	}
+	privilege, err := strconv.Atoi(strings.TrimSpace(s.Extra["privilege"]))
+	if err != nil {
+		return -1
+	}
+	return privilege
 }
 
 func pickKugouURL(v interface{}) string {

@@ -306,6 +306,7 @@ func TestKugouVIPStatusAndDownload(t *testing.T) {
 			"hq_hash":      "7DD13522B6C143A39E10507B74B0A876",
 			"audio_id":     "281733352",
 			"album_id":     "82564821",
+			"privilege":    "10",
 		},
 	}
 	hashes := getKugouHashSnapshot(song)
@@ -322,9 +323,9 @@ func TestKugouVIPStatusAndDownload(t *testing.T) {
 	}
 	fmt.Printf("Download candidate hashes: %v\n", candidates)
 
-	url, err := k.GetDownloadURLBySonginfo(&song)
+	url, err := k.GetDownloadURL(&song)
 	if err != nil {
-		t.Fatalf("GetDownloadURLBySonginfo error: %v", err)
+		t.Fatalf("GetDownloadURL error: %v", err)
 	}
 
 	isVip, err := k.IsVipAccount()
