@@ -312,19 +312,19 @@ func TestKugouVIPStatusAndDownload(t *testing.T) {
 	fmt.Printf("Found Kugou song %s by %s, ID: %s\n", song.Name, song.Artist, song.ID)
 
 	candidates := []string{
-		hashes["sq_hash"],
-		hashes["res_hash"],
 		hashes["hash"],
+		hashes["sq_hash"],
 		hashes["hq_hash"],
-		hashes["file_hash"],
+		hashes["res_hash"],
 		hashes["ogg_320_hash"],
+		hashes["file_hash"],
 		hashes["ogg_128_hash"],
 	}
 	fmt.Printf("Download candidate hashes: %v\n", candidates)
 
-	url, err := k.GetDownloadURL(&song)
+	url, err := k.GetDownloadURLBySonginfo(&song)
 	if err != nil {
-		t.Fatalf("GetDownloadURL error: %v", err)
+		t.Fatalf("GetDownloadURLBySonginfo error: %v", err)
 	}
 
 	isVip, err := k.IsVipAccount()
