@@ -215,7 +215,7 @@ func TestKugouVIPStatusAndDownload(t *testing.T) {
 	}
 	k := kugou.New(cookie)
 
-	songs, err := k.Search("无敌")
+	songs, err := k.Search("邓紫棋")
 	if err != nil {
 		t.Skipf("Search error: %v", err)
 	}

@@ -18,6 +18,7 @@ const (
 	MobileUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1"
 	MobileReferer   = "http://m.kugou.com"
 	PCUserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+	VIPInfoAPI      = "https://vip.kugou.com/recharge/roleinfo"
 )
 
 type Kugou struct {
@@ -63,7 +64,40 @@ func (k *Kugou) IsVipAccount() (bool, error) {
 		return false, nil
 	}
 
-	return false, nil
+	body, err := utils.Get(VIPInfoAPI,
+		utils.WithHeader("User-Agent", PCUserAgent),
+		utils.WithHeader("Accept", "*/*"),
+		utils.WithHeader("Host", "vip.kugou.com"),
+		utils.WithHeader("Connection", "keep-alive"),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch kugou vip info: %w", err)
+	}
+
+	var resp struct {
+		Errno           int    `json:"errno"`
+		ErrorCode       int    `json:"error_code"`
+		Role            int    `json:"role"`
+		UserType        int    `json:"user_type"`
+		VIPRemains      int    `json:"vipRemains"`
+		VIPEndTime      string `json:"vipEndTime"`
+		RawVIPEndTime   string `json:"rawVipEndTime"`
+		MusicEndTime    string `json:"musicEndTime"`
+		IsExpiredMember int    `json:"isExpiredMember"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, fmt.Errorf("kugou vip info json parse error: %w", err)
+	}
+
+	isVip := resp.Errno == 0 &&
+		resp.ErrorCode == 0 &&
+		resp.VIPRemains > 0 &&
+		resp.IsExpiredMember == 0 &&
+		resp.Role != 0
+	k.isVipCache = &isVip
+	return isVip, nil
 }
 
 // Search 搜索歌曲
@@ -78,9 +112,9 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 	apiURL := "http://songsearch.kugou.com/song_search_v2?" + params.Encode()
 
 	body, err := utils.Get(apiURL,
-		// 使用普通移动端UA，不加Cookie可能会降低风控概率
 		utils.WithHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36"),
 		utils.WithRandomIPHeader(),
+		utils.WithHeader("Cookie", k.cookie),
 	)
 	if err != nil {
 		return nil, err
@@ -111,9 +145,11 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 		return nil, fmt.Errorf("json parse error: %w", err)
 	}
 
+	isVip, _ := k.IsVipAccount()
+
 	var songs []model.Song
 	for _, item := range resp.Data.Lists {
-		if item.Privilege == 10 {
+		if !isVip && item.Privilege == 10 {
 			continue
 		}
 		if item.FileHash == "" && item.SQFileHash == "" && item.HQFileHash == "" {
@@ -431,13 +467,20 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 		hash = s.Extra["hash"]
 	}
 
-	if info, err := k.fetchVIPSongInfo(s); err == nil && info != nil && info.URL != "" {
-		return info.URL, nil
+	isVip, vipErr := k.IsVipAccount()
+	if vipErr == nil && isVip {
+		if info, err := k.fetchVIPSongInfo(s); err == nil && info != nil && info.URL != "" {
+			return info.URL, nil
+		}
 	}
 
 	info, err := k.fetchSongInfo(hash)
 	if err != nil {
-		return "", err
+		info, trackerErr := k.fetchTrackerSongInfo(hash)
+		if trackerErr != nil {
+			return "", err
+		}
+		return info.URL, nil
 	}
 	return info.URL, nil
 }
@@ -479,7 +522,7 @@ func (k *Kugou) fetchSongInfo(hash string) (*model.Song, error) {
 		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
-		return k.fallbackFetchSongInfo(hash)
+		return nil, err
 	}
 
 	var resp struct {
@@ -496,12 +539,12 @@ func (k *Kugou) fetchSongInfo(hash string) (*model.Song, error) {
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return k.fallbackFetchSongInfo(hash)
+		return nil, fmt.Errorf("kugou song info json parse error: %w", err)
 	}
 
 	// errcode 1002 代表操作太频繁 (风控)
 	if resp.Errcode != 0 || resp.URL == "" {
-		return k.fallbackFetchSongInfo(hash)
+		return nil, fmt.Errorf("kugou song info unavailable, errcode=%d", resp.Errcode)
 	}
 
 	if resp.URL == "" {
@@ -598,58 +641,7 @@ func (k *Kugou) fetchTrackerSongInfo(hash string) (*model.Song, error) {
 	return nil, errors.New("tracker kugou download url not found")
 }
 
-func (k *Kugou) fallbackFetchSongInfo(hash string) (*model.Song, error) {
-	// 酷狗 PC Web API, 有时可以绕过部分验证
-	apiURL := fmt.Sprintf("https://wwwapi.kugou.com/yy/index.php?r=play/getdata&hash=%s&platid=4", hash)
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-		utils.WithHeader("Referer", "https://www.kugou.com/"),
-		utils.WithHeader("Cookie", k.cookie),
-		utils.WithRandomIPHeader(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Data struct {
-			PlayURL    string `json:"play_url"`
-			BitRate    int    `json:"bitrate"`
-			AuthorName string `json:"author_name"`
-			SongName   string `json:"song_name"`
-			Timelength int    `json:"timelength"`
-			FileSize   int64  `json:"filesize"`
-			Img        string `json:"img"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("fallback json parse error: %w", err)
-	}
-
-	if resp.Data.PlayURL == "" {
-		return nil, errors.New("download url not found in fallback api")
-	}
-
-	return &model.Song{
-		Source:   "kugou",
-		ID:       hash,
-		Name:     resp.Data.SongName,
-		Artist:   resp.Data.AuthorName,
-		Duration: resp.Data.Timelength / 1000,
-		Size:     resp.Data.FileSize,
-		Bitrate:  resp.Data.BitRate,
-		Cover:    resp.Data.Img,
-		URL:      resp.Data.PlayURL,
-		Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
-		Extra: map[string]string{
-			"hash": hash,
-		},
-	}, nil
-}
-
-// GetLyrics 获取歌词
+// GetLyrics 获得歌词
 func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "kugou" {
 		return "", errors.New("source mismatch")
