@@ -662,15 +662,13 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 		}
 	}
 
-	if privilege != 0 {
-		isVip, vipErr := k.IsVipAccount()
-		if vipErr == nil && isVip {
-			info, err := k.fetchTrackerSongInfo(hash)
-			if err != nil {
-				return "", err
-			}
-			return info.URL, nil
+	isVip, vipErr := k.IsVipAccount()
+	if vipErr == nil && isVip {
+		info, err := k.fetchTrackerSongInfo(hash)
+		if err != nil {
+			return "", err
 		}
+		return info.URL, nil
 	}
 
 	info, err := k.fetchSongInfo(hash)
