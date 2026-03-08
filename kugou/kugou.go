@@ -656,7 +656,7 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 
 	privilege := getKugouPrivilege(s)
 
-	if privilege == 10 {
+	if privilege == 10 || privilege == 8{
 		if info, err := k.fetchVIPSongInfo(s); err == nil && info != nil && info.URL != "" {
 			return info.URL, nil
 		}
