@@ -429,17 +429,31 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 	var resp struct {
 		Data struct {
 			Info []struct {
-				Hash       string `json:"hash"`
-				FileName   string `json:"filename"`
-				Duration   int    `json:"duration"`
-				FileSize   int64  `json:"filesize"`
-				AlbumName  string `json:"album_name"`
-				Remark     string `json:"remark"`
-				SingerName string `json:"singername"`
-				SongName   string `json:"songname"`
-				// [新增] 解析 trans_param 中的封面
-				TransParam struct {
-					UnionCover string `json:"union_cover"`
+				Hash        string      `json:"hash"`
+				FileHash    string      `json:"FileHash"`
+				SQFileHash  string      `json:"SQFileHash"`
+				HQFileHash  string      `json:"HQFileHash"`
+				ResFileHash string      `json:"ResFileHash"`
+				MvHash      string      `json:"MvHash"`
+				FileName    string      `json:"filename"`
+				Duration    int         `json:"duration"`
+				FileSize    int64       `json:"filesize"`
+				SQFileSize  int64       `json:"SQFileSize"`
+				HQFileSize  int64       `json:"HQFileSize"`
+				ResFileSize int64       `json:"ResFileSize"`
+				AlbumName   string      `json:"album_name"`
+				AlbumID     string      `json:"AlbumID"`
+				Remark      string      `json:"remark"`
+				SingerName  string      `json:"singername"`
+				SongName    string      `json:"songname"`
+				Audioid     interface{} `json:"Audioid"`
+				Privilege   int         `json:"Privilege"`
+				TransParam  struct {
+					UnionCover     string `json:"union_cover"`
+					Ogg320Hash     string `json:"ogg_320_hash"`
+					Ogg128Hash     string `json:"ogg_128_hash"`
+					Ogg320FileSize int64  `json:"ogg_320_filesize"`
+					Ogg128FileSize int64  `json:"ogg_128_filesize"`
 				} `json:"trans_param"`
 			} `json:"info"`
 		} `json:"data"`
@@ -457,6 +471,19 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 
 	var songs []model.Song
 	for _, item := range resp.Data.Info {
+		finalHash := firstNonEmpty(
+			item.Hash,
+			item.SQFileHash,
+			item.HQFileHash,
+			item.ResFileHash,
+			item.TransParam.Ogg320Hash,
+			item.FileHash,
+			item.TransParam.Ogg128Hash,
+		)
+		if !isValidHash(finalHash) {
+			continue
+		}
+
 		name := item.SongName
 		artist := item.SingerName
 		if name == "" || artist == "" {
@@ -469,7 +496,6 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 			}
 		}
 
-		// [新增] 处理封面
 		cover := ""
 		if item.TransParam.UnionCover != "" {
 			cover = strings.Replace(item.TransParam.UnionCover, "{size}", "240", 1)
@@ -480,18 +506,53 @@ func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, e
 			albumName = item.Remark
 		}
 
+		size := item.FileSize
+		switch finalHash {
+		case item.SQFileHash:
+			if item.SQFileSize > 0 {
+				size = item.SQFileSize
+			}
+		case item.HQFileHash:
+			if item.HQFileSize > 0 {
+				size = item.HQFileSize
+			}
+		case item.ResFileHash:
+			if item.ResFileSize > 0 {
+				size = item.ResFileSize
+			}
+		case item.TransParam.Ogg320Hash:
+			if item.TransParam.Ogg320FileSize > 0 {
+				size = item.TransParam.Ogg320FileSize
+			}
+		case item.TransParam.Ogg128Hash:
+			if item.TransParam.Ogg128FileSize > 0 {
+				size = item.TransParam.Ogg128FileSize
+			}
+		}
+
 		songs = append(songs, model.Song{
 			Source:   "kugou",
-			ID:       item.Hash,
+			ID:       finalHash,
 			Name:     name,
 			Artist:   artist,
 			Album:    albumName,
+			AlbumID:  item.AlbumID,
 			Duration: item.Duration,
-			Size:     item.FileSize,
-			Cover:    cover, // 赋值封面
-			Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", item.Hash),
+			Size:     size,
+			Cover:    cover,
+			Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", finalHash),
 			Extra: map[string]string{
-				"hash": item.Hash,
+				"hash":         finalHash,
+				"ogg_320_hash": item.TransParam.Ogg320Hash,
+				"ogg_128_hash": item.TransParam.Ogg128Hash,
+				"sq_hash":      item.SQFileHash,
+				"file_hash":    item.FileHash,
+				"res_hash":     item.ResFileHash,
+				"mv_hash":      item.MvHash,
+				"hq_hash":      item.HQFileHash,
+				"audio_id":     formatKugouNumericString(item.Audioid),
+				"album_id":     item.AlbumID,
+				"privilege":    strconv.Itoa(item.Privilege),
 			},
 		})
 	}
@@ -532,13 +593,20 @@ func (k *Kugou) fetchSonglistDetail(id string) (*model.Playlist, []model.Song, e
 				Heat               int    `json:"heat"`
 			} `json:"listinfo"`
 			Songs []struct {
-				Hash        string `json:"hash"`
-				Name        string `json:"name"`
-				Bitrate     int    `json:"bitrate"`
-				Size        int64  `json:"size"`
-				Timelen     int    `json:"timelen"`
-				Cover       string `json:"cover"`
-				Privilege   int    `json:"privilege"`
+				Hash        string      `json:"hash"`
+				FileHash    string      `json:"FileHash"`
+				SQFileHash  string      `json:"SQFileHash"`
+				HQFileHash  string      `json:"HQFileHash"`
+				ResFileHash string      `json:"ResFileHash"`
+				MvHash      string      `json:"MvHash"`
+				Name        string      `json:"name"`
+				Bitrate     int         `json:"bitrate"`
+				Size        int64       `json:"size"`
+				Timelen     int         `json:"timelen"`
+				Cover       string      `json:"cover"`
+				Privilege   int         `json:"privilege"`
+				AlbumID     string      `json:"AlbumID"`
+				Audioid     interface{} `json:"Audioid"`
 				RelateGoods []struct {
 					Hash      string `json:"hash"`
 					Bitrate   int    `json:"bitrate"`
@@ -552,7 +620,11 @@ func (k *Kugou) fetchSonglistDetail(id string) (*model.Playlist, []model.Song, e
 					Name string `json:"name"`
 				} `json:"albuminfo"`
 				TransParam struct {
-					UnionCover string `json:"union_cover"`
+					UnionCover     string `json:"union_cover"`
+					Ogg320Hash     string `json:"ogg_320_hash"`
+					Ogg128Hash     string `json:"ogg_128_hash"`
+					Ogg320FileSize int64  `json:"ogg_320_filesize"`
+					Ogg128FileSize int64  `json:"ogg_128_filesize"`
 				} `json:"trans_param"`
 			} `json:"songs"`
 		} `json:"info"`
@@ -586,14 +658,53 @@ func (k *Kugou) fetchSonglistDetail(id string) (*model.Playlist, []model.Song, e
 		}
 
 		fileHash, hqHash, sqHash, size, bitrate := pickSonglistHashes(item.Hash, item.Size, item.Bitrate, item.RelateGoods)
-		finalHash := fileHash
-		if isValidHash(sqHash) {
-			finalHash = sqHash
-		} else if isValidHash(hqHash) {
-			finalHash = hqHash
+		if isValidHash(item.FileHash) {
+			fileHash = item.FileHash
 		}
+		if isValidHash(item.HQFileHash) {
+			hqHash = item.HQFileHash
+		}
+		if isValidHash(item.SQFileHash) {
+			sqHash = item.SQFileHash
+		}
+
+		finalHash := firstNonEmpty(
+			item.Hash,
+			sqHash,
+			hqHash,
+			item.ResFileHash,
+			item.TransParam.Ogg320Hash,
+			fileHash,
+			item.TransParam.Ogg128Hash,
+		)
 		if !isValidHash(finalHash) {
 			continue
+		}
+
+		switch finalHash {
+		case sqHash:
+		case hqHash:
+		case item.ResFileHash:
+			if item.Size > 0 {
+				size = item.Size
+			}
+		case item.TransParam.Ogg320Hash:
+			if item.TransParam.Ogg320FileSize > 0 {
+				size = item.TransParam.Ogg320FileSize
+			}
+		case item.TransParam.Ogg128Hash:
+			if item.TransParam.Ogg128FileSize > 0 {
+				size = item.TransParam.Ogg128FileSize
+			}
+		case fileHash, item.Hash:
+			if item.Size > 0 {
+				size = item.Size
+			}
+		}
+
+		duration := normalizeKugouDuration(item.Timelen)
+		if duration > 0 && size > 0 {
+			bitrate = int(size * 8 / 1000 / int64(duration))
 		}
 
 		coverURL := item.Cover
@@ -608,16 +719,24 @@ func (k *Kugou) fetchSonglistDetail(id string) (*model.Playlist, []model.Song, e
 			Name:     pickSonglistSongName(item.Name),
 			Artist:   joinSonglistArtists(item.SingerInfo),
 			Album:    item.AlbumInfo.Name,
-			Duration: normalizeKugouDuration(item.Timelen),
+			AlbumID:  item.AlbumID,
+			Duration: duration,
 			Size:     size,
 			Bitrate:  bitrate,
 			Cover:    coverURL,
 			Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", finalHash),
 			Extra: map[string]string{
-				"hash":      finalHash,
-				"file_hash": fileHash,
-				"hq_hash":   hqHash,
-				"sq_hash":   sqHash,
+				"hash":         finalHash,
+				"ogg_320_hash": item.TransParam.Ogg320Hash,
+				"ogg_128_hash": item.TransParam.Ogg128Hash,
+				"sq_hash":      sqHash,
+				"file_hash":    fileHash,
+				"res_hash":     item.ResFileHash,
+				"mv_hash":      item.MvHash,
+				"hq_hash":      hqHash,
+				"audio_id":     formatKugouNumericString(item.Audioid),
+				"album_id":     item.AlbumID,
+				"privilege":    strconv.Itoa(item.Privilege),
 			},
 		})
 	}
@@ -656,7 +775,7 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 
 	privilege := getKugouPrivilege(s)
 
-	if privilege == 10 || privilege == 8{
+	if privilege == 10 || privilege == 8 {
 		if info, err := k.fetchVIPSongInfo(s); err == nil && info != nil && info.URL != "" {
 			return info.URL, nil
 		}
@@ -664,11 +783,9 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 
 	isVip, vipErr := k.IsVipAccount()
 	if vipErr == nil && isVip {
-		info, err := k.fetchTrackerSongInfo(hash)
-		if err != nil {
-			return "", err
+		if info, err := k.fetchTrackerSongInfo(hash); err == nil && info != nil && info.URL != "" {
+			return info.URL, nil
 		}
-		return info.URL, nil
 	}
 
 	info, err := k.fetchSongInfo(hash)
