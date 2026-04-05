@@ -58,7 +58,7 @@ func GetDownloadURL(s *model.Song) (string, error) { return defaultQQ.GetDownloa
 func GetLyrics(s *model.Song) (string, error)      { return defaultQQ.GetLyrics(s) }
 func Parse(link string) (*model.Song, error)       { return defaultQQ.Parse(link) }
 
-// GetRecommendedPlaylists 获取推荐歌单
+// GetRecommendedPlaylists returns recommended playlists.
 func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultQQ.GetRecommendedPlaylists() }
 
 func (q *QQ) IsVipAccount() (bool, error) {
@@ -72,14 +72,13 @@ func (q *QQ) IsVipAccount() (bool, error) {
 		return false, nil
 	}
 
-	// 生成随机 GUID 避免被风控
+	// Use a random GUID to reduce the chance of rate limiting.
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	guid := fmt.Sprintf("%d", r.Int63n(9000000000)+1000000000)
 
-	// 探针: 周杰伦 - 晴天 (VIP 专享歌曲)
+	// Probe a VIP-only song to detect account capability.
 	songMID := "004YZbkL2MNHoY"
-	// ⚠️ 修改点：将 F000 (FLAC) 修改为 M500 (128kbps MP3)
-	// 普通绿钻可能没有 FLAC 权限，但只要是绿钻就必定能获取 VIP 歌曲的 M500 播放链接。
+	// Prefer M500 here because standard VIP accounts may not have FLAC access.
 	filename := fmt.Sprintf("M500%s%s.mp3", songMID, songMID)
 
 	reqData := map[string]interface{}{
@@ -92,13 +91,13 @@ func (q *QQ) IsVipAccount() (bool, error) {
 			"notice":      0,
 			"platform":    "yqq.json",
 			"needNewCode": 1,
-			"uin":         0, // 如果能从 cookie 解析真实 uin 替换这里最好
+			"uin":         0,
 		},
 		"req_1": map[string]interface{}{
 			"module": "music.vkey.GetVkey",
 			"method": "UrlGetVkey",
 			"param": map[string]interface{}{
-				"guid":      guid, // 使用随机 guid
+				"guid":      guid,
 				"songmid":   []string{songMID},
 				"songtype":  []int{0},
 				"uin":       "0",
@@ -120,7 +119,7 @@ func (q *QQ) IsVipAccount() (bool, error) {
 
 	body, err := utils.Post("https://u.y.qq.com/cgi-bin/musicu.fcg", bytes.NewReader(jsonData), headers...)
 	if err != nil {
-		return false, err // 网络错误，不缓存
+		return false, err
 	}
 
 	var result struct {
@@ -135,15 +134,14 @@ func (q *QQ) IsVipAccount() (bool, error) {
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return false, err // 解析错误，不缓存
+		return false, err
 	}
 
-	// 只有在明确拿到结构体时才进行判断
+	// Cache only when the probe result is conclusive.
 	isVip := false
 	if len(result.Req1.Data.MidUrlInfo) > 0 && result.Req1.Data.MidUrlInfo[0].Purl != "" {
 		isVip = true
 	} else if result.Req1.Code != 0 {
-		// 如果接口明确返回错误码（如风控或参数错误），建议不写入缓存，或记录日志
 		return false, fmt.Errorf("api returned error code: %d", result.Req1.Code)
 	}
 
@@ -151,7 +149,7 @@ func (q *QQ) IsVipAccount() (bool, error) {
 	return isVip, nil
 }
 
-// Search 搜索歌曲
+// Search searches songs.
 func (q *QQ) Search(keyword string) ([]model.Song, error) {
 	params := url.Values{}
 	params.Set("w", keyword)
@@ -204,7 +202,7 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 
 	var songs []model.Song
 	for _, item := range resp.Data.Song.List {
-		// 如果不是VIP，且歌曲需要付费播放，则过滤该歌曲
+		// Hide VIP-only songs for non-VIP accounts.
 		if !isVip && item.Pay.PayPlay == 1 {
 			continue
 		}
@@ -252,12 +250,12 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// SearchPlaylist 搜索歌单
+// joinQQNames joins artist names for display.
 func joinQQNames(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// SearchAlbum 搜索专辑
+// SearchAlbum searches albums.
 func (q *QQ) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("format", "json")
@@ -347,6 +345,7 @@ func (q *QQ) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return nil, nil, errors.New("invalid qq album link")
 }
 
+// SearchPlaylist searches playlists.
 func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("query", keyword)
@@ -425,15 +424,15 @@ func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return playlists, nil
 }
 
-// GetPlaylistSongs 获取歌单详情（仅返回歌曲列表）
+// GetPlaylistSongs returns songs in a playlist.
 func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := q.fetchPlaylistDetail(id)
 	return songs, err
 }
 
-// ParsePlaylist 解析歌单链接并返回详情
+// ParsePlaylist parses a playlist link.
 func (q *QQ) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	// 链接格式如: https://y.qq.com/n/ryqq/playlist/8825279434
+	// Example: https://y.qq.com/n/ryqq/playlist/8825279434
 	re := regexp.MustCompile(`playlist/(\d+)`)
 	matches := re.FindStringSubmatch(link)
 	if len(matches) < 2 {
@@ -444,7 +443,7 @@ func (q *QQ) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return q.fetchPlaylistDetail(dissid)
 }
 
-// GetRecommendedPlaylists 获取推荐歌单 (QQ音乐每日推荐/热门歌单)
+// fetchAlbumDetail returns album metadata and songs.
 func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
 	albumMID := strings.TrimSpace(id)
 	if albumMID == "" {
@@ -688,8 +687,9 @@ func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) 
 	return album, songs, nil
 }
 
+// GetRecommendedPlaylists returns QQ Music recommended playlists.
 func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
-	// 构造 musicu.fcg 的请求体
+	// Build the musicu.fcg request body.
 	reqData := map[string]interface{}{
 		"comm": map[string]interface{}{
 			"ct": 24,
@@ -710,7 +710,6 @@ func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"),
 		utils.WithHeader("Referer", "https://y.qq.com/"),
 		utils.WithHeader("Content-Type", "application/json"),
-		// 推荐接口通常不需要严格的 Cookie，但如果有则带上
 		utils.WithHeader("Cookie", q.cookie),
 		utils.WithRandomIPHeader(),
 	}
@@ -720,7 +719,7 @@ func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 		return nil, err
 	}
 
-	// 响应结构
+	// Response shape.
 	var resp struct {
 		Code          int `json:"code"`
 		RecomPlaylist struct {
@@ -780,7 +779,7 @@ func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 	return playlists, nil
 }
 
-// fetchPlaylistDetail [内部复用] 获取歌单详情（元数据+歌曲）
+// fetchPlaylistDetail returns playlist metadata and songs.
 func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
 	params := url.Values{}
 	params.Set("type", "1")
@@ -810,7 +809,7 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 		return nil, nil, err
 	}
 
-	// 处理 JSONP
+	// Unwrap JSONP when needed.
 	sBody := string(body)
 	if idx := strings.Index(sBody, "("); idx >= 0 && strings.HasSuffix(strings.TrimSpace(sBody), ")") {
 		sBody = sBody[idx+1 : len(sBody)-1]
@@ -855,7 +854,7 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 
 	info := resp.Cdlist[0]
 
-	// 构造 Playlist 元数据
+	// Build playlist metadata.
 	playlist := &model.Playlist{
 		Source:      "qq",
 		ID:          id,
@@ -914,7 +913,7 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 	return playlist, songs, nil
 }
 
-// Parse 解析链接并获取完整信息
+// Parse parses a song link and enriches it with download info when possible.
 func (q *QQ) Parse(link string) (*model.Song, error) {
 	re := regexp.MustCompile(`songDetail/(\w+)`)
 	matches := re.FindStringSubmatch(link)
@@ -936,7 +935,7 @@ func (q *QQ) Parse(link string) (*model.Song, error) {
 	return song, nil
 }
 
-// GetDownloadURL 获取下载链接
+// GetDownloadURL returns a download URL.
 func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "qq" {
 		return "", errors.New("source mismatch")
@@ -950,7 +949,7 @@ func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	guid := fmt.Sprintf("%d", r.Int63n(9000000000)+1000000000)
 
-	// 智能批处理：越靠前音质越好，返回匹配到的最靠前的有效链接
+	// Request qualities from best to worst and use the first successful one.
 	var prefixes []string
 	var exts []string
 
@@ -1043,7 +1042,7 @@ func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 	return "", errors.New("no valid download url found or vip required")
 }
 
-// fetchSongDetail 内部方法：通过 songmid 获取详情
+// fetchSongDetail loads song metadata by songmid.
 func (q *QQ) fetchSongDetail(songMID string) (*model.Song, error) {
 	params := url.Values{}
 	params.Set("songmid", songMID)
@@ -1110,7 +1109,7 @@ func (q *QQ) fetchSongDetail(songMID string) (*model.Song, error) {
 	}, nil
 }
 
-// GetLyrics 获取歌词
+// GetLyrics fetches lyrics.
 func (q *QQ) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "qq" {
 		return "", errors.New("source mismatch")

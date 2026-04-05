@@ -22,7 +22,7 @@ const (
 	PlaylistAPI            = "https://music.163.com/weapi/v3/playlist/detail"
 	AlbumAPI               = "https://music.163.com/weapi/v1/album/%s"
 	UserAccountAPI         = "https://music.163.com/weapi/nuser/account/get"
-	RecommendedPlaylistAPI = "https://music.163.com/weapi/personalized/playlist" // 新增：推荐歌单API
+	RecommendedPlaylistAPI = "https://music.163.com/weapi/personalized/playlist"
 )
 
 type Netease struct {
@@ -57,12 +57,12 @@ func GetDownloadURL(s *model.Song) (string, error) { return defaultNetease.GetDo
 func GetLyrics(s *model.Song) (string, error)      { return defaultNetease.GetLyrics(s) }
 func Parse(link string) (*model.Song, error)       { return defaultNetease.Parse(link) }
 
-// GetRecommendedPlaylists 新增：获取推荐歌单（无需登录）
+// GetRecommendedPlaylists returns recommended playlists without login.
 func GetRecommendedPlaylists() ([]model.Playlist, error) {
 	return defaultNetease.GetRecommendedPlaylists()
 }
 
-// IsVipAccount 判断当前账号(cookie)是否为VIP
+// IsVipAccount reports whether the current account is VIP.
 func (n *Netease) IsVipAccount() (bool, error) {
 	if n.isVipCache != nil {
 		return *n.isVipCache, nil
@@ -111,12 +111,17 @@ func (n *Netease) IsVipAccount() (bool, error) {
 	return isVip, nil
 }
 
-// Search 搜索歌曲
-func (n *Netease) Search(keyword string) ([]model.Song, error) {
+// cloudSearch calls the shared Netease cloud search route.
+func (n *Netease) cloudSearch(keyword string, searchType int, limit int) ([]byte, error) {
 	eparams := map[string]interface{}{
 		"method": "POST",
 		"url":    "http://music.163.com/api/cloudsearch/pc",
-		"params": map[string]interface{}{"s": keyword, "type": 1, "offset": 0, "limit": 10},
+		"params": map[string]interface{}{
+			"s":      keyword,
+			"type":   searchType,
+			"offset": 0,
+			"limit":  limit,
+		},
 	}
 	eparamsJSON, _ := json.Marshal(eparams)
 	encryptedParam := EncryptLinux(string(eparamsJSON))
@@ -130,7 +135,12 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 		utils.WithRandomIPHeader(),
 	}
 
-	body, err := utils.Post(SearchAPI, strings.NewReader(form.Encode()), headers...)
+	return utils.Post(SearchAPI, strings.NewReader(form.Encode()), headers...)
+}
+
+// Search searches songs.
+func (n *Netease) Search(keyword string) ([]model.Song, error) {
+	body, err := n.cloudSearch(keyword, 1, 10)
 	if err != nil {
 		return nil, err
 	}
@@ -174,13 +184,13 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	isVip, _ := n.IsVipAccount()
 
 	for _, item := range resp.Result.Songs {
-		// 简单过滤无版权或收费歌曲 (Privilege.Fl == 0)
+		// Skip unavailable songs for non-VIP accounts.
 		if !isVip && item.Privilege.Fl == 0 {
 			continue
 		}
 
 		var size int64
-		// 优先选择高音质大小
+		// Prefer the highest available bitrate.
 		if item.Privilege.Fl >= 320000 && item.H.Size > 0 {
 			size = item.H.Size
 		} else if item.Privilege.Fl >= 192000 && item.M.Size > 0 {
@@ -219,31 +229,14 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// SearchPlaylist 搜索歌单
+// joinArtistNames joins artist names for display.
 func joinArtistNames(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// SearchAlbum 鎼滅储涓撹緫
+// SearchAlbum searches albums.
 func (n *Netease) SearchAlbum(keyword string) ([]model.Playlist, error) {
-	eparams := map[string]interface{}{
-		"method": "POST",
-		"url":    "http://music.163.com/api/cloudsearch/pc",
-		"params": map[string]interface{}{"s": keyword, "type": 10, "offset": 0, "limit": 10},
-	}
-	eparamsJSON, _ := json.Marshal(eparams)
-	encryptedParam := EncryptLinux(string(eparamsJSON))
-	form := url.Values{}
-	form.Set("eparams", encryptedParam)
-
-	headers := []utils.RequestOption{
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
-		utils.WithHeader("Cookie", n.cookie),
-		utils.WithRandomIPHeader(),
-	}
-
-	body, err := utils.Post(SearchAPI, strings.NewReader(form.Encode()), headers...)
+	body, err := n.cloudSearch(keyword, 10, 10)
 	if err != nil {
 		return nil, err
 	}
@@ -315,25 +308,9 @@ func (n *Netease) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	return albums, nil
 }
 
+// SearchPlaylist searches playlists.
 func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	eparams := map[string]interface{}{
-		"method": "POST",
-		"url":    "http://music.163.com/api/cloudsearch/pc",
-		"params": map[string]interface{}{"s": keyword, "type": 1000, "offset": 0, "limit": 10},
-	}
-	eparamsJSON, _ := json.Marshal(eparams)
-	encryptedParam := EncryptLinux(string(eparamsJSON))
-	form := url.Values{}
-	form.Set("eparams", encryptedParam)
-
-	headers := []utils.RequestOption{
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
-		utils.WithHeader("Cookie", n.cookie),
-		utils.WithRandomIPHeader(),
-	}
-
-	body, err := utils.Post(SearchAPI, strings.NewReader(form.Encode()), headers...)
+	body, err := n.cloudSearch(keyword, 1000, 10)
 	if err != nil {
 		return nil, err
 	}
@@ -375,14 +352,13 @@ func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return playlists, nil
 }
 
-// GetPlaylistSongs 获取歌单详情（仅返回歌曲列表）
-// GetAlbumSongs 鑾峰彇涓撹緫姝屾洸鍒楄〃
+// GetAlbumSongs returns songs in an album.
 func (n *Netease) GetAlbumSongs(albumID string) ([]model.Song, error) {
 	_, songs, err := n.fetchAlbumDetail(albumID)
 	return songs, err
 }
 
-// ParseAlbum 瑙ｆ瀽涓撹緫閾炬帴
+// ParseAlbum parses an album link.
 func (n *Netease) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	re := regexp.MustCompile(`album\?id=(\d+)`)
 	matches := re.FindStringSubmatch(link)
@@ -393,12 +369,13 @@ func (n *Netease) ParseAlbum(link string) (*model.Playlist, []model.Song, error)
 	return n.fetchAlbumDetail(albumID)
 }
 
+// GetPlaylistSongs returns songs in a playlist.
 func (n *Netease) GetPlaylistSongs(playlistID string) ([]model.Song, error) {
 	_, songs, err := n.fetchPlaylistDetail(playlistID)
 	return songs, err
 }
 
-// ParsePlaylist 解析歌单链接
+// ParsePlaylist parses a playlist link.
 func (n *Netease) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	re := regexp.MustCompile(`playlist\?id=(\d+)`)
 	matches := re.FindStringSubmatch(link)
@@ -409,7 +386,7 @@ func (n *Netease) ParsePlaylist(link string) (*model.Playlist, []model.Song, err
 	return n.fetchPlaylistDetail(playlistID)
 }
 
-// fetchPlaylistDetail 获取歌单详情 (核心逻辑：使用 trackIds 全量获取)
+// fetchAlbumDetail returns album metadata and songs.
 func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Song, error) {
 	reqData := map[string]interface{}{
 		"csrf_token": "",
@@ -598,7 +575,7 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 			Creator     struct {
 				Nickname string `json:"nickname"`
 			} `json:"creator"`
-			// 使用 TrackIds 获取完整列表，解决数量不一致问题
+			// Use trackIds so we can fetch the full list separately.
 			TrackIds []struct {
 				ID int `json:"id"`
 			} `json:"trackIds"`
@@ -612,7 +589,7 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 		return nil, nil, fmt.Errorf("netease api error code: %d", resp.Code)
 	}
 
-	// 构造 Playlist 元数据
+	// Build playlist metadata.
 	playlist := &model.Playlist{
 		Source:      "netease",
 		ID:          strconv.Itoa(resp.Playlist.ID),
@@ -625,13 +602,13 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 		Link:        fmt.Sprintf("https://music.163.com/#/playlist?id=%d", resp.Playlist.ID),
 	}
 
-	// 提取所有 ID
+	// Collect all song IDs first.
 	var allIDs []string
 	for _, tid := range resp.Playlist.TrackIds {
 		allIDs = append(allIDs, strconv.Itoa(tid.ID))
 	}
 
-	// 分批获取歌曲详情 (Detail API 支持批量，每次 500-1000 首没问题，这里保守用 500)
+	// Fetch song details in batches.
 	var allSongs []model.Song
 	batchSize := 500
 	for i := 0; i < len(allIDs); i += batchSize {
@@ -650,13 +627,13 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 	return playlist, allSongs, nil
 }
 
-// fetchSongsBatch 批量获取歌曲详情 (利用 Detail 接口的批量特性，速度极快)
+// fetchSongsBatch fetches song details in batches.
 func (n *Netease) fetchSongsBatch(songIDs []string) ([]model.Song, error) {
 	if len(songIDs) == 0 {
 		return nil, nil
 	}
 
-	// 构造 c 参数: [{"id":123},{"id":456},...]
+	// Build the c payload: [{"id":123},{"id":456},...]
 	var cList []map[string]interface{}
 	for _, id := range songIDs {
 		cList = append(cList, map[string]interface{}{"id": id})
@@ -730,7 +707,7 @@ func (n *Netease) fetchSongsBatch(songIDs []string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// Parse 解析单曲链接
+// Parse parses a song link.
 func (n *Netease) Parse(link string) (*model.Song, error) {
 	re := regexp.MustCompile(`id=(\d+)`)
 	matches := re.FindStringSubmatch(link)
@@ -753,7 +730,7 @@ func (n *Netease) Parse(link string) (*model.Song, error) {
 	return song, nil
 }
 
-// GetDownloadURL 获取下载链接
+// GetDownloadURL returns a download URL.
 func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	if s.Source != "netease" {
 		return "", errors.New("source mismatch")
@@ -764,10 +741,10 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 		songID = s.Extra["song_id"]
 	}
 
-	// 1. 判断账号是否是VIP，如果是VIP则走eapi接口获取高音质
+	// Try the higher-quality eapi route for VIP accounts first.
 	isVip, _ := n.IsVipAccount()
 	if isVip {
-		// 尝试获取 Hi-Res (hires), 无损 (lossless) 或极高音质 (exhigh) 下载链接
+		// Prefer higher-quality levels when they are available.
 		if url, err := n.getEAPIDownloadURL(songID, "hires"); err == nil && url != "" {
 			return url, nil
 		} else if url, err := n.getEAPIDownloadURL(songID, "lossless"); err == nil && url != "" {
@@ -777,7 +754,7 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 		}
 	}
 
-	// 2. 非VIP 或 eapi 失败的话回退到原来的 weapi
+	// Fall back to the original weapi route.
 	reqData := map[string]interface{}{
 		"ids": []string{songID},
 		"br":  320000,
@@ -816,7 +793,7 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	return resp.Data[0].URL, nil
 }
 
-// getEAPIDownloadURL 使用eapi接口获取高音质下载链接
+// getEAPIDownloadURL fetches a high-quality download URL via eapi.
 func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, error) {
 	idNum, err := strconv.Atoi(songID)
 	if err != nil {
@@ -866,7 +843,7 @@ func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, err
 	return resp.Data[0].URL, nil
 }
 
-// GetLyrics 获取歌词
+// GetLyrics fetches lyrics.
 func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "netease" {
 		return "", errors.New("source mismatch")
@@ -917,10 +894,10 @@ func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 	return resp.Lrc.Lyric, nil
 }
 
-// GetRecommendedPlaylists 获取推荐歌单 (无需登录，即首页推荐歌单)
+// GetRecommendedPlaylists returns homepage recommended playlists.
 func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 	reqData := map[string]interface{}{
-		"limit": 30, // 默认返回30个
+		"limit": 30,
 		"total": true,
 		"n":     1000,
 	}
@@ -933,7 +910,6 @@ func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 	headers := []utils.RequestOption{
 		utils.WithHeader("Referer", Referer),
 		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
-		// 此接口不需要 Cookie
 		utils.WithRandomIPHeader(),
 	}
 
@@ -950,7 +926,7 @@ func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 			PicURL     string  `json:"picUrl"`
 			PlayCount  float64 `json:"playCount"`
 			TrackCount int     `json:"trackCount"`
-			Copywriter string  `json:"copywriter"` // 关键字段：推荐语
+			Copywriter string  `json:"copywriter"`
 			Alg        string  `json:"alg"`
 		} `json:"result"`
 	}
@@ -963,7 +939,6 @@ func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 
 	var playlists []model.Playlist
 	for _, item := range resp.Result {
-		// [优化] 由于接口不返回 Creator，我们用 Copywriter (推荐语) 代替，或者显示 "网易推荐"
 		creatorDisplay := "网易云推荐"
 		if item.Copywriter != "" {
 			creatorDisplay = item.Copywriter
@@ -977,7 +952,7 @@ func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 			PlayCount:   int(item.PlayCount),
 			TrackCount:  item.TrackCount,
 			Description: item.Copywriter,
-			Creator:     creatorDisplay, // [修改] 使用推荐语代替作者名
+			Creator:     creatorDisplay,
 			Link:        fmt.Sprintf("https://music.163.com/#/playlist?id=%d", item.ID),
 			Extra:       map[string]string{},
 		}
