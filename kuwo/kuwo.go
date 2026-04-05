@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"math/rand"
 	"net/url"
 	"regexp"
@@ -28,8 +29,18 @@ func New(cookie string) *Kuwo { return &Kuwo{cookie: cookie} }
 var defaultKuwo = New("")
 
 func Search(keyword string) ([]model.Song, error) { return defaultKuwo.Search(keyword) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultKuwo.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultKuwo.SearchPlaylist(keyword)
+}
+func GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := defaultKuwo.fetchAlbumDetail(id)
+	return songs, err
+}
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultKuwo.ParseAlbum(link)
 }
 func GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := defaultKuwo.fetchPlaylistDetail(id)
@@ -125,6 +136,85 @@ func (k *Kuwo) Search(keyword string) ([]model.Song, error) {
 }
 
 // SearchPlaylist 搜索歌单
+func (k *Kuwo) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	params := url.Values{}
+	params.Set("all", keyword)
+	params.Set("ft", "album")
+	params.Set("itemset", "web_2013")
+	params.Set("client", "kt")
+	params.Set("pcmp4", "1")
+	params.Set("geo", "c")
+	params.Set("vipver", "1")
+	params.Set("pn", "0")
+	params.Set("rn", "10")
+	params.Set("rformat", "json")
+	params.Set("encoding", "utf8")
+
+	apiURL := "http://search.kuwo.cn/r.s?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		AlbumList []struct {
+			AlbumID  string `json:"albumid"`
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Artist   string `json:"artist"`
+			AArtist  string `json:"aartist"`
+			HtsImg   string `json:"hts_img"`
+			Img      string `json:"img"`
+			MusicCnt string `json:"musiccnt"`
+			Info     string `json:"info"`
+			Company  string `json:"company"`
+			Pub      string `json:"pub"`
+			PlayCnt  string `json:"PLAYCNT"`
+		} `json:"albumlist"`
+	}
+
+	if err := parseKuwoLegacyJSON(body, &resp); err != nil {
+		return nil, fmt.Errorf("kuwo album json parse error: %w", err)
+	}
+
+	albums := make([]model.Playlist, 0, len(resp.AlbumList))
+	for _, item := range resp.AlbumList {
+		albumID := firstNonEmpty(item.AlbumID, item.ID)
+		if albumID == "" {
+			continue
+		}
+
+		albums = append(albums, model.Playlist{
+			Source:      "kuwo",
+			ID:          albumID,
+			Name:        normalizeKuwoText(item.Name),
+			Cover:       normalizeKuwoImageURL(firstNonEmpty(item.HtsImg, item.Img)),
+			TrackCount:  parseKuwoStringInt(item.MusicCnt),
+			PlayCount:   parseKuwoStringInt(item.PlayCnt),
+			Creator:     normalizeKuwoText(firstNonEmpty(item.AArtist, item.Artist)),
+			Description: normalizeKuwoText(item.Info),
+			Link:        fmt.Sprintf("http://www.kuwo.cn/album_detail/%s", albumID),
+			Extra: map[string]string{
+				"type":         "album",
+				"album_id":     albumID,
+				"company":      normalizeKuwoText(item.Company),
+				"publish_time": strings.TrimSpace(item.Pub),
+			},
+		})
+	}
+
+	if len(albums) == 0 {
+		return nil, errors.New("no albums found")
+	}
+
+	return albums, nil
+}
+
 func (k *Kuwo) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("all", keyword)
@@ -195,6 +285,28 @@ func (k *Kuwo) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 // GetPlaylistSongs 获取歌单详情（解析歌曲列表）
+func (k *Kuwo) GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := k.fetchAlbumDetail(id)
+	return songs, err
+}
+
+func (k *Kuwo) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`album_detail/(\d+)`),
+		regexp.MustCompile(`album/(\d+)`),
+		regexp.MustCompile(`albumid=(\d+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return k.fetchAlbumDetail(matches[1])
+		}
+	}
+
+	return nil, nil, errors.New("invalid kuwo album link")
+}
+
 func (k *Kuwo) GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := k.fetchPlaylistDetail(id)
 	return songs, err
@@ -416,6 +528,289 @@ func (k *Kuwo) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 }
 
 // Parse 解析链接并获取完整信息
+func (k *Kuwo) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil, errors.New("album id is empty")
+	}
+
+	album, songs, err := k.fetchAlbumDetailFromLegacyAPI(id)
+	if err == nil && len(songs) > 0 {
+		return album, songs, nil
+	}
+
+	pageAlbum, pageSongs, pageErr := k.fetchAlbumDetailFromPage(id)
+	if pageErr == nil && len(pageSongs) > 0 {
+		return pageAlbum, pageSongs, nil
+	}
+
+	if err != nil && pageErr != nil {
+		return nil, nil, fmt.Errorf("kuwo album detail failed: legacy api: %v; page parse: %w", err, pageErr)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if pageErr != nil {
+		return nil, nil, pageErr
+	}
+
+	return album, songs, nil
+}
+
+func (k *Kuwo) fetchAlbumDetailFromLegacyAPI(id string) (*model.Playlist, []model.Song, error) {
+	const pageSize = 100
+
+	var album *model.Playlist
+	totalSongs := 0
+	seen := make(map[string]struct{})
+	songs := make([]model.Song, 0, pageSize)
+
+	for page := 0; ; page++ {
+		params := url.Values{}
+		params.Set("pn", strconv.Itoa(page))
+		params.Set("rn", strconv.Itoa(pageSize))
+		params.Set("stype", "albuminfo")
+		params.Set("albumid", id)
+		params.Set("sortby", "0")
+		params.Set("alflac", "1")
+		params.Set("show_copyright_off", "1")
+		params.Set("pcmp4", "1")
+		params.Set("encoding", "utf8")
+
+		apiURL := "http://search.kuwo.cn/r.s?" + params.Encode()
+
+		body, err := utils.Get(apiURL,
+			utils.WithHeader("User-Agent", UserAgent),
+			utils.WithHeader("Cookie", k.cookie),
+			utils.WithRandomIPHeader(),
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		var resp map[string]interface{}
+		if err := parseKuwoLegacyJSON(body, &resp); err != nil {
+			return nil, nil, fmt.Errorf("kuwo album detail json error: %w", err)
+		}
+
+		if album == nil {
+			albumID := firstNonEmpty(parseKuwoAnyString(resp["albumid"]), parseKuwoAnyString(resp["id"]), id)
+			totalSongs = parseKuwoAnyInt(resp["songnum"])
+			album = &model.Playlist{
+				Source:      "kuwo",
+				ID:          albumID,
+				Name:        normalizeKuwoText(parseKuwoAnyString(resp["name"])),
+				Cover:       normalizeKuwoImageURL(firstNonEmpty(parseKuwoAnyString(resp["hts_img"]), parseKuwoAnyString(resp["img"]))),
+				TrackCount:  totalSongs,
+				Creator:     normalizeKuwoText(firstNonEmpty(parseKuwoAnyString(resp["aartist"]), parseKuwoAnyString(resp["artist"]))),
+				Description: normalizeKuwoText(parseKuwoAnyString(resp["info"])),
+				Link:        fmt.Sprintf("http://www.kuwo.cn/album_detail/%s", albumID),
+				Extra: map[string]string{
+					"type":         "album",
+					"album_id":     albumID,
+					"company":      normalizeKuwoText(parseKuwoAnyString(resp["company"])),
+					"publish_time": strings.TrimSpace(parseKuwoAnyString(resp["pub"])),
+					"lang":         normalizeKuwoText(parseKuwoAnyString(resp["lang"])),
+				},
+			}
+		}
+
+		musicList := parseKuwoAnySlice(resp["musiclist"])
+		if len(musicList) == 0 {
+			if page == 0 {
+				return nil, nil, fmt.Errorf("album %s detail api returned empty musiclist", id)
+			}
+			break
+		}
+
+		for _, rawItem := range musicList {
+			item, ok := rawItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			rid := firstNonEmpty(parseKuwoAnyString(item["id"]), parseKuwoAnyString(item["musicrid"]))
+			if rid == "" {
+				continue
+			}
+			if _, ok := seen[rid]; ok {
+				continue
+			}
+			seen[rid] = struct{}{}
+
+			songCover := normalizeKuwoImageURL(firstNonEmpty(parseKuwoAnyString(item["pic120"]), parseKuwoAnyString(item["web_albumpic_short"])))
+			if songCover == "" && album != nil {
+				songCover = album.Cover
+			}
+
+			song := model.Song{
+				Source:   "kuwo",
+				ID:       rid,
+				Name:     normalizeKuwoText(firstNonEmpty(parseKuwoAnyString(item["name"]), parseKuwoAnyString(item["songname"]))),
+				Artist:   normalizeKuwoText(firstNonEmpty(parseKuwoAnyString(item["aartist"]), parseKuwoAnyString(item["artist"]))),
+				Album:    normalizeKuwoText(firstNonEmpty(parseKuwoAnyString(item["album"]), album.Name)),
+				Duration: parseKuwoAnyInt(item["duration"]),
+				Size:     parseSizeFromMInfo(parseKuwoAnyString(item["MINFO"])),
+				Bitrate:  parseBitrateFromMInfo(parseKuwoAnyString(item["MINFO"])),
+				Cover:    songCover,
+				Link:     fmt.Sprintf("http://www.kuwo.cn/play_detail/%s", rid),
+				Extra: map[string]string{
+					"rid": rid,
+				},
+			}
+
+			if album != nil {
+				song.AlbumID = album.ID
+				song.Extra["album_id"] = album.ID
+			}
+			if track := strings.TrimSpace(parseKuwoAnyString(item["track"])); track != "" {
+				song.Extra["track"] = track
+			}
+			if subtitle := normalizeKuwoText(parseKuwoAnyString(item["subtitle"])); subtitle != "" {
+				song.Extra["subtitle"] = subtitle
+			}
+			if bitSwitch := parseKuwoAnyInt(item["bitSwitch"]); bitSwitch > 0 {
+				song.Extra["bit_switch"] = strconv.Itoa(bitSwitch)
+			}
+
+			songs = append(songs, song)
+		}
+
+		if len(musicList) < pageSize {
+			break
+		}
+		if totalSongs > 0 && len(songs) >= totalSongs {
+			break
+		}
+	}
+
+	if album == nil {
+		return nil, nil, errors.New("album not found")
+	}
+	if album.TrackCount == 0 {
+		album.TrackCount = len(songs)
+	}
+
+	return album, songs, nil
+}
+
+func (k *Kuwo) fetchAlbumDetailFromPage(id string) (*model.Playlist, []model.Song, error) {
+	pageURL := fmt.Sprintf("https://www.kuwo.cn/album_detail/%s", id)
+
+	body, err := utils.Get(pageURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	htmlBody := string(body)
+	albumName, artistName := parseKuwoAlbumPageTitle(findKuwoSubmatch(htmlBody, `(?is)<title>(.*?)</title>`))
+	if albumName == "" {
+		albumName = normalizeKuwoText(stripKuwoHTMLTags(findKuwoSubmatch(htmlBody, `(?is)<p class="song_name"[^>]*>(.*?)</p>`)))
+	}
+	if artistName == "" {
+		artistName = normalizeKuwoText(stripKuwoHTMLTags(findKuwoSubmatch(htmlBody, `(?is)<p class="artist_name"[^>]*>(.*?)</p>`)))
+	}
+
+	infoBlock := findKuwoSubmatch(htmlBody, `(?is)<p class="song_info"[^>]*>(.*?)</p>`)
+	infoTips := findKuwoSubmatches(infoBlock, `(?is)<span class="tip"[^>]*>(.*?)</span>`)
+	lang := ""
+	publishTime := ""
+	if len(infoTips) > 0 {
+		lang = normalizeKuwoText(stripKuwoHTMLTags(infoTips[0]))
+	}
+	if len(infoTips) > 1 {
+		publishTime = normalizeKuwoText(stripKuwoHTMLTags(infoTips[1]))
+	}
+
+	description := normalizeKuwoText(stripKuwoHTMLTags(findKuwoSubmatch(htmlBody, `(?is)<p class="intr_txt"[^>]*>.*?<span[^>]*>(.*?)</span>`)))
+	cover := normalizeKuwoImageURL(decodeKuwoEscapedString(findKuwoSubmatch(htmlBody, `hts_img:"([^"]+)"`)))
+	if cover == "" {
+		cover = normalizeKuwoImageURL(decodeKuwoEscapedString(findKuwoSubmatch(htmlBody, `img:"([^"]*albumcover[^"]+)"`)))
+	}
+
+	company := normalizeKuwoText(decodeKuwoEscapedString(findKuwoSubmatch(htmlBody, `company:"([^"]+)"`)))
+	songBlocks := regexp.MustCompile(`(?is)<li class="song_item[^"]*"[^>]*>.*?</li>`).FindAllString(htmlBody, -1)
+	if len(songBlocks) == 0 {
+		return nil, nil, errors.New("album page returned no songs")
+	}
+
+	album := &model.Playlist{
+		Source:      "kuwo",
+		ID:          id,
+		Name:        albumName,
+		Cover:       cover,
+		TrackCount:  len(songBlocks),
+		Creator:     artistName,
+		Description: description,
+		Link:        pageURL,
+		Extra: map[string]string{
+			"type":         "album",
+			"album_id":     id,
+			"company":      company,
+			"publish_time": publishTime,
+			"lang":         lang,
+		},
+	}
+
+	songs := make([]model.Song, 0, len(songBlocks))
+	seen := make(map[string]struct{}, len(songBlocks))
+	for _, block := range songBlocks {
+		rid := findKuwoSubmatch(block, `href="/play_detail/(\d+)"`)
+		if rid == "" {
+			continue
+		}
+		if _, ok := seen[rid]; ok {
+			continue
+		}
+		seen[rid] = struct{}{}
+
+		name := normalizeKuwoText(stripKuwoHTMLTags(firstNonEmpty(
+			findKuwoSubmatch(block, `title="([^"]+)"`),
+			findKuwoSubmatch(block, `(?is)<a[^>]*class="name"[^>]*>(.*?)</a>`),
+		)))
+		artist := normalizeKuwoText(stripKuwoHTMLTags(firstNonEmpty(
+			findKuwoSubmatch(block, `(?is)<div class="song_artist"[^>]*>.*?<span[^>]*title="([^"]+)"`),
+			findKuwoSubmatch(block, `(?is)<div class="song_artist"[^>]*>.*?<span[^>]*>(.*?)</span>`),
+			artistName,
+		)))
+		track := firstNonEmpty(
+			findKuwoSubmatch(block, `(?is)<div class="rank_num"[^>]*>.*?<span style="display:;?"[^>]*>\s*(\d+)\s*</span>`),
+			findKuwoSubmatch(block, `(?is)<div class="rank_num"[^>]*>.*?<span[^>]*>\s*(\d+)\s*</span>`),
+		)
+
+		song := model.Song{
+			Source:   "kuwo",
+			ID:       rid,
+			Name:     name,
+			Artist:   artist,
+			Album:    album.Name,
+			AlbumID:  album.ID,
+			Cover:    album.Cover,
+			Link:     fmt.Sprintf("http://www.kuwo.cn/play_detail/%s", rid),
+			Duration: 0,
+			Extra: map[string]string{
+				"rid":      rid,
+				"album_id": album.ID,
+			},
+		}
+		if track != "" {
+			song.Extra["track"] = track
+		}
+
+		songs = append(songs, song)
+	}
+
+	if len(songs) == 0 {
+		return nil, nil, errors.New("album page parsed zero songs")
+	}
+	album.TrackCount = len(songs)
+
+	return album, songs, nil
+}
+
 func (k *Kuwo) Parse(link string) (*model.Song, error) {
 	re := regexp.MustCompile(`play_detail/(\d+)`)
 	matches := re.FindStringSubmatch(link)
@@ -619,6 +1014,192 @@ func (k *Kuwo) GetLyrics(s *model.Song) (string, error) {
 		sb.WriteString(fmt.Sprintf("[%02d:%02d.%02d]%s\n", m, s, ms, line.LineLyric))
 	}
 	return sb.String(), nil
+}
+
+func parseKuwoLegacyJSON(body []byte, out interface{}) error {
+	jsonStr := strings.ReplaceAll(string(body), "'", "\"")
+	return json.Unmarshal([]byte(jsonStr), out)
+}
+
+func findKuwoSubmatch(input, pattern string) string {
+	matches := regexp.MustCompile(pattern).FindStringSubmatch(input)
+	if len(matches) < 2 {
+		return ""
+	}
+	return matches[1]
+}
+
+func findKuwoSubmatches(input, pattern string) []string {
+	allMatches := regexp.MustCompile(pattern).FindAllStringSubmatch(input, -1)
+	values := make([]string, 0, len(allMatches))
+	for _, match := range allMatches {
+		if len(match) >= 2 {
+			values = append(values, match[1])
+		}
+	}
+	return values
+}
+
+func stripKuwoHTMLTags(raw string) string {
+	if raw == "" {
+		return ""
+	}
+
+	replacer := strings.NewReplacer(
+		"<br>", "\n",
+		"<br/>", "\n",
+		"<br />", "\n",
+		"</p>", "\n",
+		"</div>", "\n",
+	)
+	raw = replacer.Replace(raw)
+	raw = regexp.MustCompile(`(?is)<[^>]+>`).ReplaceAllString(raw, "")
+
+	return normalizeKuwoText(raw)
+}
+
+func decodeKuwoEscapedString(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	decoded, err := strconv.Unquote(`"` + raw + `"`)
+	if err != nil {
+		raw = strings.ReplaceAll(raw, `\/`, `/`)
+		return raw
+	}
+
+	return decoded
+}
+
+func parseKuwoAlbumPageTitle(title string) (string, string) {
+	title = normalizeKuwoText(title)
+	if title == "" {
+		return "", ""
+	}
+
+	parts := strings.Split(title, "_")
+	if len(parts) < 2 {
+		return "", ""
+	}
+
+	name := normalizeKuwoText(strings.TrimSuffix(parts[0], "专辑"))
+	artist := normalizeKuwoText(parts[1])
+
+	return name, artist
+}
+
+func normalizeKuwoText(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	value = html.UnescapeString(value)
+	value = strings.ReplaceAll(value, "\u00a0", " ")
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.ReplaceAll(value, "\\n;", "\n")
+	value = strings.ReplaceAll(value, "\\n", "\n")
+	value = strings.ReplaceAll(value, "\n;", "\n")
+	return strings.TrimSpace(value)
+}
+
+func normalizeKuwoImageURL(raw string) string {
+	raw = normalizeKuwoText(raw)
+	if raw == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(raw, "//") {
+		raw = "http:" + raw
+	} else if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		switch {
+		case strings.HasPrefix(raw, "img"):
+			raw = "http://" + raw
+		default:
+			raw = "http://img1.kuwo.cn/star/albumcover/" + strings.TrimPrefix(raw, "/")
+		}
+	}
+
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{"/120/", "/500/"},
+		{"/150/", "/500/"},
+		{"/240/", "/500/"},
+		{"_100.", "_500."},
+		{"_120.", "_500."},
+		{"_150.", "_500."},
+		{"_240.", "_500."},
+	}
+	for _, replacement := range replacements {
+		if strings.Contains(raw, replacement.old) {
+			raw = strings.Replace(raw, replacement.old, replacement.new, 1)
+		}
+	}
+
+	return raw
+}
+
+func parseKuwoStringInt(value string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(value))
+	return n
+}
+
+func parseKuwoAnyString(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return strconv.FormatFloat(v, 'f', 0, 64)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func parseKuwoAnyInt(value interface{}) int {
+	switch v := value.(type) {
+	case nil:
+		return 0
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case string:
+		return parseKuwoStringInt(v)
+	default:
+		return parseKuwoStringInt(fmt.Sprint(v))
+	}
+}
+
+func parseKuwoAnySlice(value interface{}) []interface{} {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case []interface{}:
+		return v
+	default:
+		return nil
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseSizeFromMInfo(minfo string) int64 {
