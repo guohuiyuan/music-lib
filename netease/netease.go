@@ -20,6 +20,7 @@ const (
 	DownloadEAPI           = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1"
 	DetailAPI              = "https://music.163.com/weapi/v3/song/detail"
 	PlaylistAPI            = "https://music.163.com/weapi/v3/playlist/detail"
+	AlbumAPI               = "https://music.163.com/weapi/v1/album/%s"
 	UserAccountAPI         = "https://music.163.com/weapi/nuser/account/get"
 	RecommendedPlaylistAPI = "https://music.163.com/weapi/personalized/playlist" // 新增：推荐歌单API
 )
@@ -34,8 +35,17 @@ func New(cookie string) *Netease { return &Netease{cookie: cookie} }
 var defaultNetease = New("")
 
 func Search(keyword string) ([]model.Song, error) { return defaultNetease.Search(keyword) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultNetease.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultNetease.SearchPlaylist(keyword)
+}
+func GetAlbumSongs(albumID string) ([]model.Song, error) {
+	return defaultNetease.GetAlbumSongs(albumID)
+}
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultNetease.ParseAlbum(link)
 }
 func GetPlaylistSongs(playlistID string) ([]model.Song, error) {
 	return defaultNetease.GetPlaylistSongs(playlistID)
@@ -210,6 +220,101 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 }
 
 // SearchPlaylist 搜索歌单
+func joinArtistNames(names []string) string {
+	return strings.Join(names, ", ")
+}
+
+// SearchAlbum 鎼滅储涓撹緫
+func (n *Netease) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	eparams := map[string]interface{}{
+		"method": "POST",
+		"url":    "http://music.163.com/api/cloudsearch/pc",
+		"params": map[string]interface{}{"s": keyword, "type": 10, "offset": 0, "limit": 10},
+	}
+	eparamsJSON, _ := json.Marshal(eparams)
+	encryptedParam := EncryptLinux(string(eparamsJSON))
+	form := url.Values{}
+	form.Set("eparams", encryptedParam)
+
+	headers := []utils.RequestOption{
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
+		utils.WithHeader("Cookie", n.cookie),
+		utils.WithRandomIPHeader(),
+	}
+
+	body, err := utils.Post(SearchAPI, strings.NewReader(form.Encode()), headers...)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Code   int `json:"code"`
+		Result struct {
+			Albums []struct {
+				ID          int    `json:"id"`
+				Name        string `json:"name"`
+				PicURL      string `json:"picUrl"`
+				Size        int    `json:"size"`
+				Company     string `json:"company"`
+				Description string `json:"description"`
+				BriefDesc   string `json:"briefDesc"`
+				PublishTime int64  `json:"publishTime"`
+				Artist      struct {
+					Name string `json:"name"`
+				} `json:"artist"`
+				Artists []struct {
+					Name string `json:"name"`
+				} `json:"artists"`
+			} `json:"albums"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("netease album json parse error: %w", err)
+	}
+	if resp.Code != 200 {
+		return nil, fmt.Errorf("netease api error code: %d", resp.Code)
+	}
+
+	albums := make([]model.Playlist, 0, len(resp.Result.Albums))
+	for _, item := range resp.Result.Albums {
+		artistName := item.Artist.Name
+		if artistName == "" && len(item.Artists) > 0 {
+			names := make([]string, 0, len(item.Artists))
+			for _, artist := range item.Artists {
+				if artist.Name != "" {
+					names = append(names, artist.Name)
+				}
+			}
+			artistName = joinArtistNames(names)
+		}
+
+		description := item.Description
+		if description == "" {
+			description = item.BriefDesc
+		}
+
+		albums = append(albums, model.Playlist{
+			Source:      "netease",
+			ID:          strconv.Itoa(item.ID),
+			Name:        item.Name,
+			Cover:       item.PicURL,
+			TrackCount:  item.Size,
+			Creator:     artistName,
+			Description: description,
+			Link:        fmt.Sprintf("https://music.163.com/#/album?id=%d", item.ID),
+			Extra: map[string]string{
+				"type":         "album",
+				"company":      item.Company,
+				"publish_time": strconv.FormatInt(item.PublishTime, 10),
+			},
+		})
+	}
+
+	return albums, nil
+}
+
 func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	eparams := map[string]interface{}{
 		"method": "POST",
@@ -271,6 +376,23 @@ func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 // GetPlaylistSongs 获取歌单详情（仅返回歌曲列表）
+// GetAlbumSongs 鑾峰彇涓撹緫姝屾洸鍒楄〃
+func (n *Netease) GetAlbumSongs(albumID string) ([]model.Song, error) {
+	_, songs, err := n.fetchAlbumDetail(albumID)
+	return songs, err
+}
+
+// ParseAlbum 瑙ｆ瀽涓撹緫閾炬帴
+func (n *Netease) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	re := regexp.MustCompile(`album\?id=(\d+)`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) < 2 {
+		return nil, nil, errors.New("invalid netease album link")
+	}
+	albumID := matches[1]
+	return n.fetchAlbumDetail(albumID)
+}
+
 func (n *Netease) GetPlaylistSongs(playlistID string) ([]model.Song, error) {
 	_, songs, err := n.fetchPlaylistDetail(playlistID)
 	return songs, err
@@ -288,6 +410,158 @@ func (n *Netease) ParsePlaylist(link string) (*model.Playlist, []model.Song, err
 }
 
 // fetchPlaylistDetail 获取歌单详情 (核心逻辑：使用 trackIds 全量获取)
+func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Song, error) {
+	reqData := map[string]interface{}{
+		"csrf_token": "",
+	}
+	reqJSON, _ := json.Marshal(reqData)
+	params, encSecKey := EncryptWeApi(string(reqJSON))
+	form := url.Values{}
+	form.Set("params", params)
+	form.Set("encSecKey", encSecKey)
+
+	headers := []utils.RequestOption{
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Content-Type", "application/x-www-form-urlencoded"),
+		utils.WithHeader("Cookie", n.cookie),
+		utils.WithRandomIPHeader(),
+	}
+
+	body, err := utils.Post(fmt.Sprintf(AlbumAPI, albumID), strings.NewReader(form.Encode()), headers...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var resp struct {
+		Code  int `json:"code"`
+		Album struct {
+			ID          int    `json:"id"`
+			Name        string `json:"name"`
+			PicURL      string `json:"picUrl"`
+			Size        int    `json:"size"`
+			Company     string `json:"company"`
+			Description string `json:"description"`
+			BriefDesc   string `json:"briefDesc"`
+			PublishTime int64  `json:"publishTime"`
+			Artist      struct {
+				Name string `json:"name"`
+			} `json:"artist"`
+			Artists []struct {
+				Name string `json:"name"`
+			} `json:"artists"`
+		} `json:"album"`
+		Songs []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+			Ar   []struct {
+				Name string `json:"name"`
+			} `json:"ar"`
+			Al struct {
+				ID     int    `json:"id"`
+				Name   string `json:"name"`
+				PicURL string `json:"picUrl"`
+			} `json:"al"`
+			Dt        int `json:"dt"`
+			Privilege struct {
+				Fl int `json:"fl"`
+			} `json:"privilege"`
+			H struct {
+				Size int64 `json:"size"`
+			} `json:"h"`
+			M struct {
+				Size int64 `json:"size"`
+			} `json:"m"`
+			L struct {
+				Size int64 `json:"size"`
+			} `json:"l"`
+		} `json:"songs"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, nil, fmt.Errorf("netease album detail json parse error: %w", err)
+	}
+	if resp.Code != 200 {
+		return nil, nil, fmt.Errorf("netease api error code: %d", resp.Code)
+	}
+
+	artistName := resp.Album.Artist.Name
+	if artistName == "" && len(resp.Album.Artists) > 0 {
+		names := make([]string, 0, len(resp.Album.Artists))
+		for _, artist := range resp.Album.Artists {
+			if artist.Name != "" {
+				names = append(names, artist.Name)
+			}
+		}
+		artistName = joinArtistNames(names)
+	}
+
+	description := resp.Album.Description
+	if description == "" {
+		description = resp.Album.BriefDesc
+	}
+
+	album := &model.Playlist{
+		Source:      "netease",
+		ID:          strconv.Itoa(resp.Album.ID),
+		Name:        resp.Album.Name,
+		Cover:       resp.Album.PicURL,
+		TrackCount:  resp.Album.Size,
+		Creator:     artistName,
+		Description: description,
+		Link:        fmt.Sprintf("https://music.163.com/#/album?id=%d", resp.Album.ID),
+		Extra: map[string]string{
+			"type":         "album",
+			"company":      resp.Album.Company,
+			"publish_time": strconv.FormatInt(resp.Album.PublishTime, 10),
+		},
+	}
+
+	songs := make([]model.Song, 0, len(resp.Songs))
+	for _, item := range resp.Songs {
+		artistNames := make([]string, 0, len(item.Ar))
+		for _, artist := range item.Ar {
+			if artist.Name != "" {
+				artistNames = append(artistNames, artist.Name)
+			}
+		}
+
+		var size int64
+		if item.Privilege.Fl >= 320000 && item.H.Size > 0 {
+			size = item.H.Size
+		} else if item.Privilege.Fl >= 192000 && item.M.Size > 0 {
+			size = item.M.Size
+		} else {
+			size = item.L.Size
+		}
+
+		duration := item.Dt / 1000
+		bitrate := 128
+		if duration > 0 && size > 0 {
+			bitrate = int(size * 8 / 1000 / int64(duration))
+		}
+
+		songs = append(songs, model.Song{
+			Source:   "netease",
+			ID:       strconv.Itoa(item.ID),
+			Name:     item.Name,
+			Artist:   joinArtistNames(artistNames),
+			Album:    item.Al.Name,
+			AlbumID:  strconv.Itoa(item.Al.ID),
+			Duration: duration,
+			Size:     size,
+			Bitrate:  bitrate,
+			Cover:    item.Al.PicURL,
+			Link:     fmt.Sprintf("https://music.163.com/#/song?id=%d", item.ID),
+			Extra: map[string]string{
+				"song_id":  strconv.Itoa(item.ID),
+				"album_id": strconv.Itoa(item.Al.ID),
+			},
+		})
+	}
+
+	return album, songs, nil
+}
+
 func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []model.Song, error) {
 	reqData := map[string]interface{}{
 		"id":         playlistID,
