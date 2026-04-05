@@ -5,6 +5,7 @@ import (
 
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/netease"
+	"github.com/guohuiyuan/music-lib/qq"
 )
 
 type AlbumTestSuite struct {
@@ -23,6 +24,13 @@ func TestAlbumPlatforms(t *testing.T) {
 			SearchAlbum:   netease.SearchAlbum,
 			GetAlbumSongs: netease.GetAlbumSongs,
 			ParseAlbum:    netease.ParseAlbum,
+		},
+		{
+			Name:          "qq",
+			Keyword:       "七里香",
+			SearchAlbum:   qq.SearchAlbum,
+			GetAlbumSongs: qq.GetAlbumSongs,
+			ParseAlbum:    qq.ParseAlbum,
 		},
 	}
 

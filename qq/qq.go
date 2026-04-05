@@ -34,8 +34,18 @@ func New(cookie string) *QQ { return &QQ{cookie: cookie} }
 var defaultQQ = New("")
 
 func Search(keyword string) ([]model.Song, error) { return defaultQQ.Search(keyword) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultQQ.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultQQ.SearchPlaylist(keyword)
+}
+func GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := defaultQQ.fetchAlbumDetail(id)
+	return songs, err
+}
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultQQ.ParseAlbum(link)
 }
 func GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := defaultQQ.fetchPlaylistDetail(id)
@@ -243,6 +253,100 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 }
 
 // SearchPlaylist 搜索歌单
+func joinQQNames(names []string) string {
+	return strings.Join(names, ", ")
+}
+
+// SearchAlbum 搜索专辑
+func (q *QQ) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	params := url.Values{}
+	params.Set("format", "json")
+	params.Set("p", "1")
+	params.Set("n", "10")
+	params.Set("w", keyword)
+	params.Set("t", "8")
+	apiURL := "http://c.y.qq.com/soso/fcgi-bin/search_for_qq_cp?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/portal/search.html"),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			Album struct {
+				List []struct {
+					AlbumID    int64  `json:"albumID"`
+					AlbumMID   string `json:"albumMID"`
+					AlbumName  string `json:"albumName"`
+					PublicTime string `json:"publicTime"`
+					SingerName string `json:"singerName"`
+				} `json:"list"`
+			} `json:"album"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq album json parse error: %w", err)
+	}
+
+	var albums []model.Playlist
+	for _, item := range resp.Data.Album.List {
+		if item.AlbumMID == "" {
+			continue
+		}
+
+		albums = append(albums, model.Playlist{
+			Source:      "qq",
+			ID:          item.AlbumMID,
+			Name:        item.AlbumName,
+			Cover:       fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", item.AlbumMID),
+			Creator:     item.SingerName,
+			Description: "",
+			Link:        fmt.Sprintf("https://y.qq.com/n/ryqq/albumDetail/%s", item.AlbumMID),
+			Extra: map[string]string{
+				"type":         "album",
+				"album_id":     strconv.FormatInt(item.AlbumID, 10),
+				"album_mid":    item.AlbumMID,
+				"publish_time": item.PublicTime,
+			},
+		})
+	}
+
+	if len(albums) == 0 {
+		return nil, errors.New("no albums found")
+	}
+
+	return albums, nil
+}
+
+func (q *QQ) GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := q.fetchAlbumDetail(id)
+	return songs, err
+}
+
+func (q *QQ) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`albumDetail/([A-Za-z0-9]+)`),
+		regexp.MustCompile(`album/([A-Za-z0-9]+)`),
+		regexp.MustCompile(`albummid=([A-Za-z0-9]+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return q.fetchAlbumDetail(matches[1])
+		}
+	}
+
+	return nil, nil, errors.New("invalid qq album link")
+}
+
 func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("query", keyword)
@@ -341,6 +445,249 @@ func (q *QQ) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 }
 
 // GetRecommendedPlaylists 获取推荐歌单 (QQ音乐每日推荐/热门歌单)
+func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
+	albumMID := strings.TrimSpace(id)
+	if albumMID == "" {
+		return nil, nil, errors.New("album id is empty")
+	}
+
+	headers := []utils.RequestOption{
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/"),
+		utils.WithHeader("Content-Type", "application/json"),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	}
+
+	detailReq := map[string]interface{}{
+		"comm": map[string]interface{}{
+			"ct": 24,
+			"cv": 0,
+		},
+		"album": map[string]interface{}{
+			"module": "music.musichallAlbum.AlbumInfoServer",
+			"method": "GetAlbumDetail",
+			"param": map[string]interface{}{
+				"albumMid": albumMID,
+			},
+		},
+	}
+	detailJSON, _ := json.Marshal(detailReq)
+
+	detailBody, err := utils.Post("https://u.y.qq.com/cgi-bin/musicu.fcg", bytes.NewReader(detailJSON), headers...)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var detailResp struct {
+		Code  int `json:"code"`
+		Album struct {
+			Code int `json:"code"`
+			Data struct {
+				BasicInfo struct {
+					AlbumID     int64  `json:"albumID"`
+					AlbumMid    string `json:"albumMid"`
+					AlbumName   string `json:"albumName"`
+					PublishDate string `json:"publishDate"`
+					Desc        string `json:"desc"`
+				} `json:"basicInfo"`
+				Company struct {
+					Name string `json:"name"`
+				} `json:"company"`
+				Singer struct {
+					SingerList []struct {
+						Name string `json:"name"`
+					} `json:"singerList"`
+				} `json:"singer"`
+			} `json:"data"`
+		} `json:"album"`
+	}
+
+	if err := json.Unmarshal(detailBody, &detailResp); err != nil {
+		return nil, nil, fmt.Errorf("qq album detail json parse error: %w", err)
+	}
+	if detailResp.Album.Code != 0 {
+		return nil, nil, fmt.Errorf("qq album detail api error code: %d", detailResp.Album.Code)
+	}
+
+	info := detailResp.Album.Data.BasicInfo
+	if info.AlbumMid != "" {
+		albumMID = info.AlbumMid
+	}
+	if info.AlbumName == "" {
+		return nil, nil, errors.New("album not found")
+	}
+
+	artistNames := make([]string, 0, len(detailResp.Album.Data.Singer.SingerList))
+	for _, singer := range detailResp.Album.Data.Singer.SingerList {
+		if singer.Name != "" {
+			artistNames = append(artistNames, singer.Name)
+		}
+	}
+
+	const batchSize = 100
+	totalNum := 0
+	songs := make([]model.Song, 0)
+
+	for begin := 0; ; begin += batchSize {
+		songReq := map[string]interface{}{
+			"comm": map[string]interface{}{
+				"ct": 24,
+				"cv": 0,
+			},
+			"album": map[string]interface{}{
+				"module": "music.musichallAlbum.AlbumSongList",
+				"method": "GetAlbumSongList",
+				"param": map[string]interface{}{
+					"albumMid": albumMID,
+					"begin":    begin,
+					"num":      batchSize,
+					"order":    2,
+				},
+			},
+		}
+		songJSON, _ := json.Marshal(songReq)
+
+		songBody, err := utils.Post("https://u.y.qq.com/cgi-bin/musicu.fcg", bytes.NewReader(songJSON), headers...)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		var songResp struct {
+			Code  int `json:"code"`
+			Album struct {
+				Code int `json:"code"`
+				Data struct {
+					TotalNum int `json:"totalNum"`
+					SongList []struct {
+						SongInfo struct {
+							Mid      string `json:"mid"`
+							Name     string `json:"name"`
+							Interval int    `json:"interval"`
+							Singer   []struct {
+								Name string `json:"name"`
+							} `json:"singer"`
+							Album struct {
+								ID   int64  `json:"id"`
+								Mid  string `json:"mid"`
+								Name string `json:"name"`
+							} `json:"album"`
+							File struct {
+								Size128MP3 int64 `json:"size_128mp3"`
+								Size320MP3 int64 `json:"size_320mp3"`
+								SizeFlac   int64 `json:"size_flac"`
+							} `json:"file"`
+							Pay struct {
+								PayPlay int `json:"pay_play"`
+							} `json:"pay"`
+						} `json:"songInfo"`
+					} `json:"songList"`
+				} `json:"data"`
+			} `json:"album"`
+		}
+
+		if err := json.Unmarshal(songBody, &songResp); err != nil {
+			return nil, nil, fmt.Errorf("qq album songs json parse error: %w", err)
+		}
+		if songResp.Album.Code != 0 {
+			return nil, nil, fmt.Errorf("qq album songs api error code: %d", songResp.Album.Code)
+		}
+
+		if totalNum == 0 {
+			totalNum = songResp.Album.Data.TotalNum
+		}
+
+		pageSongs := songResp.Album.Data.SongList
+		if len(pageSongs) == 0 {
+			break
+		}
+
+		for _, item := range pageSongs {
+			songInfo := item.SongInfo
+			if songInfo.Mid == "" {
+				continue
+			}
+
+			pageArtistNames := make([]string, 0, len(songInfo.Singer))
+			for _, singer := range songInfo.Singer {
+				if singer.Name != "" {
+					pageArtistNames = append(pageArtistNames, singer.Name)
+				}
+			}
+
+			fileSize := songInfo.File.Size128MP3
+			bitrate := 128
+			if songInfo.File.SizeFlac > 0 {
+				fileSize = songInfo.File.SizeFlac
+				if songInfo.Interval > 0 {
+					bitrate = int(fileSize * 8 / 1000 / int64(songInfo.Interval))
+				} else {
+					bitrate = 800
+				}
+			} else if songInfo.File.Size320MP3 > 0 {
+				fileSize = songInfo.File.Size320MP3
+				bitrate = 320
+			}
+
+			cover := ""
+			if songInfo.Album.Mid != "" {
+				cover = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", songInfo.Album.Mid)
+			}
+
+			songs = append(songs, model.Song{
+				Source:   "qq",
+				ID:       songInfo.Mid,
+				Name:     songInfo.Name,
+				Artist:   joinQQNames(pageArtistNames),
+				Album:    songInfo.Album.Name,
+				AlbumID:  songInfo.Album.Mid,
+				Duration: songInfo.Interval,
+				Size:     fileSize,
+				Bitrate:  bitrate,
+				Cover:    cover,
+				Link:     fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", songInfo.Mid),
+				Extra: map[string]string{
+					"songmid":   songInfo.Mid,
+					"album_mid": songInfo.Album.Mid,
+					"album_id":  strconv.FormatInt(songInfo.Album.ID, 10),
+				},
+			})
+		}
+
+		if len(pageSongs) < batchSize {
+			break
+		}
+		if totalNum > 0 && begin+len(pageSongs) >= totalNum {
+			break
+		}
+	}
+
+	trackCount := totalNum
+	if trackCount == 0 {
+		trackCount = len(songs)
+	}
+
+	album := &model.Playlist{
+		Source:      "qq",
+		ID:          albumMID,
+		Name:        info.AlbumName,
+		Cover:       fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", albumMID),
+		TrackCount:  trackCount,
+		Creator:     joinQQNames(artistNames),
+		Description: info.Desc,
+		Link:        fmt.Sprintf("https://y.qq.com/n/ryqq/albumDetail/%s", albumMID),
+		Extra: map[string]string{
+			"type":         "album",
+			"album_id":     strconv.FormatInt(info.AlbumID, 10),
+			"album_mid":    albumMID,
+			"company":      detailResp.Album.Data.Company.Name,
+			"publish_time": info.PublishDate,
+		},
+	}
+
+	return album, songs, nil
+}
+
 func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 	// 构造 musicu.fcg 的请求体
 	reqData := map[string]interface{}{
