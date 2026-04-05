@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/guohuiyuan/music-lib/kugou"
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/netease"
 	"github.com/guohuiyuan/music-lib/qq"
@@ -27,10 +28,17 @@ func TestAlbumPlatforms(t *testing.T) {
 		},
 		{
 			Name:          "qq",
-			Keyword:       "七里香",
+			Keyword:       "\u4e03\u91cc\u9999",
 			SearchAlbum:   qq.SearchAlbum,
 			GetAlbumSongs: qq.GetAlbumSongs,
 			ParseAlbum:    qq.ParseAlbum,
+		},
+		{
+			Name:          "kugou",
+			Keyword:       "\u4e03\u91cc\u9999",
+			SearchAlbum:   kugou.SearchAlbum,
+			GetAlbumSongs: kugou.GetAlbumSongs,
+			ParseAlbum:    kugou.ParseAlbum,
 		},
 	}
 

@@ -35,8 +35,18 @@ var defaultKugou = New("")
 
 func Search(keyword string) ([]model.Song, error) { return defaultKugou.Search(keyword) }
 func IsVipAccount() (bool, error)                 { return defaultKugou.IsVipAccount() }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultKugou.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultKugou.SearchPlaylist(keyword)
+}
+func GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := defaultKugou.fetchAlbumDetail(id)
+	return songs, err
+}
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultKugou.ParseAlbum(link)
 }
 func GetPlaylistSongs(id string) ([]model.Song, error) {
 	// 保持原接口兼容性，仅返回 Songs
@@ -258,6 +268,78 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 }
 
 // SearchPlaylist 搜索歌单
+// SearchAlbum searches albums.
+func (k *Kugou) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	params := url.Values{}
+	params.Set("keyword", keyword)
+	params.Set("format", "json")
+	params.Set("page", "1")
+	params.Set("pagesize", "10")
+	apiURL := "http://mobilecdn.kugou.com/api/v3/search/album?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", MobileUserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Status  int    `json:"status"`
+		Errcode int    `json:"errcode"`
+		Error   string `json:"error"`
+		Data    struct {
+			Info []struct {
+				AlbumID     int    `json:"albumid"`
+				AlbumName   string `json:"albumname"`
+				SingerName  string `json:"singername"`
+				PublishTime string `json:"publishtime"`
+				ImgURL      string `json:"imgurl"`
+				Intro       string `json:"intro"`
+				SongCount   int    `json:"songcount"`
+			} `json:"info"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kugou album search json error: %w", err)
+	}
+	if resp.Errcode != 0 || resp.Status != 1 {
+		return nil, fmt.Errorf("kugou album search api error: status=%d errcode=%d error=%s", resp.Status, resp.Errcode, resp.Error)
+	}
+
+	albums := make([]model.Playlist, 0, len(resp.Data.Info))
+	for _, item := range resp.Data.Info {
+		if item.AlbumID == 0 {
+			continue
+		}
+
+		albums = append(albums, model.Playlist{
+			Source:      "kugou",
+			ID:          strconv.Itoa(item.AlbumID),
+			Name:        item.AlbumName,
+			Cover:       strings.Replace(item.ImgURL, "{size}", "240", 1),
+			TrackCount:  item.SongCount,
+			Creator:     item.SingerName,
+			Description: item.Intro,
+			Link:        fmt.Sprintf("https://www.kugou.com/album/%d.html", item.AlbumID),
+			Extra: map[string]string{
+				"type":         "album",
+				"album_id":     strconv.Itoa(item.AlbumID),
+				"publish_time": item.PublishTime,
+			},
+		})
+	}
+
+	if len(albums) == 0 {
+		return nil, errors.New("no albums found")
+	}
+
+	return albums, nil
+}
+
 func (k *Kugou) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("keyword", keyword)
@@ -315,6 +397,31 @@ func (k *Kugou) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 // GetPlaylistSongs 获取歌单详情 (仅返回 Songs, 兼容旧接口)
+// GetAlbumSongs returns songs in an album.
+func (k *Kugou) GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := k.fetchAlbumDetail(id)
+	return songs, err
+}
+
+// ParseAlbum parses an album link.
+func (k *Kugou) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`album/single/(\d+)\.html`),
+		regexp.MustCompile(`yy/album/single/(\d+)\.html`),
+		regexp.MustCompile(`album/(\d+)\.html`),
+		regexp.MustCompile(`albumid=(\d+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return k.fetchAlbumDetail(matches[1])
+		}
+	}
+
+	return nil, nil, errors.New("invalid kugou album link")
+}
+
 func (k *Kugou) GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := k.fetchPlaylistDetail(id)
 	return songs, err
@@ -410,6 +517,241 @@ func (k *Kugou) GetRecommendedPlaylists() ([]model.Playlist, error) {
 }
 
 // fetchPlaylistDetail [内部复用] 获取歌单详情 (Metadata + Songs)
+// fetchAlbumDetail returns album metadata and songs.
+func (k *Kugou) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil, errors.New("album id is empty")
+	}
+
+	infoURL := fmt.Sprintf("http://mobilecdn.kugou.com/api/v3/album/info?albumid=%s&version=9108&area_code=1", id)
+	infoBody, err := utils.Get(infoURL,
+		utils.WithHeader("User-Agent", MobileUserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var infoResp struct {
+		Status  int    `json:"status"`
+		Errcode int    `json:"errcode"`
+		Error   string `json:"error"`
+		Data    struct {
+			AlbumID     int    `json:"albumid"`
+			AlbumName   string `json:"albumname"`
+			SingerName  string `json:"singername"`
+			Intro       string `json:"intro"`
+			ImgURL      string `json:"imgurl"`
+			PublishTime string `json:"publishtime"`
+			PlayCount   int    `json:"play_count"`
+			SongCount   int    `json:"songcount"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(infoBody, &infoResp); err != nil {
+		return nil, nil, fmt.Errorf("kugou album info json error: %w", err)
+	}
+	if infoResp.Errcode != 0 || infoResp.Status != 1 {
+		return nil, nil, fmt.Errorf("kugou album info api error: status=%d errcode=%d error=%s", infoResp.Status, infoResp.Errcode, infoResp.Error)
+	}
+
+	const pageSize = 300
+	total := 0
+	songs := make([]model.Song, 0)
+
+	for page := 1; ; page++ {
+		songURL := fmt.Sprintf("http://mobilecdn.kugou.com/api/v3/album/song?albumid=%s&page=%d&pagesize=%d&version=9108&area_code=1", id, page, pageSize)
+		body, err := utils.Get(songURL,
+			utils.WithHeader("User-Agent", MobileUserAgent),
+			utils.WithHeader("Cookie", k.cookie),
+			utils.WithRandomIPHeader(),
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		var resp struct {
+			Status  int    `json:"status"`
+			Errcode int    `json:"errcode"`
+			Error   string `json:"error"`
+			Data    struct {
+				Total int `json:"total"`
+				Info  []struct {
+					Hash        string `json:"hash"`
+					FileHash    string `json:"origin_hash"`
+					SQFileHash  string `json:"sqhash"`
+					HQFileHash  string `json:"320hash"`
+					ResFileHash string `json:"res_hash"`
+					MvHash      string `json:"mvhash"`
+					FileName    string `json:"filename"`
+					SongName    string `json:"songname"`
+					SingerName  string `json:"singername"`
+					AlbumName   string `json:"album_name"`
+					AlbumID     string `json:"album_id"`
+					Duration    int    `json:"duration"`
+					FileSize    int64  `json:"filesize"`
+					SQFileSize  int64  `json:"sqfilesize"`
+					HQFileSize  int64  `json:"320filesize"`
+					AudioID     int64  `json:"audio_id"`
+					Privilege   int    `json:"privilege"`
+					Remark      string `json:"remark"`
+					TransParam  struct {
+						UnionCover     string `json:"union_cover"`
+						Ogg320Hash     string `json:"ogg_320_hash"`
+						Ogg128Hash     string `json:"ogg_128_hash"`
+						Ogg320FileSize int64  `json:"ogg_320_filesize"`
+						Ogg128FileSize int64  `json:"ogg_128_filesize"`
+					} `json:"trans_param"`
+				} `json:"info"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, nil, fmt.Errorf("kugou album songs json error: %w", err)
+		}
+		if resp.Errcode != 0 || resp.Status != 1 {
+			return nil, nil, fmt.Errorf("kugou album songs api error: status=%d errcode=%d error=%s", resp.Status, resp.Errcode, resp.Error)
+		}
+
+		if total == 0 {
+			total = resp.Data.Total
+		}
+		if len(resp.Data.Info) == 0 {
+			break
+		}
+
+		for _, item := range resp.Data.Info {
+			finalHash := firstNonEmpty(
+				item.Hash,
+				item.SQFileHash,
+				item.HQFileHash,
+				item.ResFileHash,
+				item.TransParam.Ogg320Hash,
+				item.FileHash,
+				item.TransParam.Ogg128Hash,
+			)
+			if !isValidHash(finalHash) {
+				continue
+			}
+
+			name := strings.TrimSpace(item.SongName)
+			artist := strings.TrimSpace(item.SingerName)
+			if name == "" || artist == "" {
+				parts := strings.Split(item.FileName, " - ")
+				if len(parts) >= 2 {
+					artist = strings.TrimSpace(parts[0])
+					name = strings.TrimSpace(strings.Join(parts[1:], " - "))
+				} else if name == "" {
+					name = strings.TrimSpace(item.FileName)
+				}
+			}
+
+			albumName := strings.TrimSpace(item.AlbumName)
+			if albumName == "" {
+				albumName = strings.TrimSpace(infoResp.Data.AlbumName)
+			}
+			if albumName == "" {
+				albumName = strings.TrimSpace(item.Remark)
+			}
+
+			size := item.FileSize
+			switch finalHash {
+			case item.SQFileHash:
+				if item.SQFileSize > 0 {
+					size = item.SQFileSize
+				}
+			case item.HQFileHash:
+				if item.HQFileSize > 0 {
+					size = item.HQFileSize
+				}
+			case item.ResFileHash:
+				if item.SQFileSize > 0 {
+					size = item.SQFileSize
+				}
+			case item.TransParam.Ogg320Hash:
+				if item.TransParam.Ogg320FileSize > 0 {
+					size = item.TransParam.Ogg320FileSize
+				}
+			case item.TransParam.Ogg128Hash:
+				if item.TransParam.Ogg128FileSize > 0 {
+					size = item.TransParam.Ogg128FileSize
+				}
+			}
+
+			bitrate := 0
+			if item.Duration > 0 && size > 0 {
+				bitrate = int(size * 8 / 1000 / int64(item.Duration))
+			}
+
+			cover := strings.Replace(firstNonEmpty(item.TransParam.UnionCover, infoResp.Data.ImgURL), "{size}", "240", 1)
+			albumID := firstNonEmpty(item.AlbumID, id)
+
+			songs = append(songs, model.Song{
+				Source:   "kugou",
+				ID:       finalHash,
+				Name:     name,
+				Artist:   artist,
+				Album:    albumName,
+				AlbumID:  albumID,
+				Duration: item.Duration,
+				Size:     size,
+				Bitrate:  bitrate,
+				Cover:    cover,
+				Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", finalHash),
+				Extra: map[string]string{
+					"hash":         finalHash,
+					"ogg_320_hash": item.TransParam.Ogg320Hash,
+					"ogg_128_hash": item.TransParam.Ogg128Hash,
+					"sq_hash":      item.SQFileHash,
+					"file_hash":    item.FileHash,
+					"res_hash":     item.ResFileHash,
+					"mv_hash":      item.MvHash,
+					"hq_hash":      item.HQFileHash,
+					"audio_id":     strconv.FormatInt(item.AudioID, 10),
+					"album_id":     albumID,
+					"privilege":    strconv.Itoa(item.Privilege),
+				},
+			})
+		}
+
+		if len(resp.Data.Info) < pageSize {
+			break
+		}
+		if total > 0 && len(songs) >= total {
+			break
+		}
+	}
+
+	trackCount := total
+	if trackCount == 0 {
+		trackCount = infoResp.Data.SongCount
+	}
+	if trackCount == 0 {
+		trackCount = len(songs)
+	}
+
+	album := &model.Playlist{
+		Source:      "kugou",
+		ID:          firstNonEmpty(strconv.Itoa(infoResp.Data.AlbumID), id),
+		Name:        infoResp.Data.AlbumName,
+		Cover:       strings.Replace(infoResp.Data.ImgURL, "{size}", "240", 1),
+		TrackCount:  trackCount,
+		PlayCount:   infoResp.Data.PlayCount,
+		Creator:     infoResp.Data.SingerName,
+		Description: infoResp.Data.Intro,
+		Link:        fmt.Sprintf("https://www.kugou.com/album/%s.html", id),
+		Extra: map[string]string{
+			"type":         "album",
+			"album_id":     firstNonEmpty(strconv.Itoa(infoResp.Data.AlbumID), id),
+			"publish_time": infoResp.Data.PublishTime,
+		},
+	}
+
+	return album, songs, nil
+}
+
 func (k *Kugou) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "gcid_") {
 		return k.fetchSonglistDetail(id)
