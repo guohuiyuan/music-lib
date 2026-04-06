@@ -33,13 +33,20 @@ func New(cookie string) *Joox {
 var defaultJoox = New(Cookie)
 
 func Search(keyword string) ([]model.Song, error) { return defaultJoox.Search(keyword) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultJoox.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultJoox.SearchPlaylist(keyword)
 }                                                      // [新增]
 func GetPlaylistSongs(id string) ([]model.Song, error) { return defaultJoox.GetPlaylistSongs(id) } // [新增]
+func GetAlbumSongs(id string) ([]model.Song, error)    { return defaultJoox.GetAlbumSongs(id) }
 func GetDownloadURL(s *model.Song) (string, error)     { return defaultJoox.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error)          { return defaultJoox.GetLyrics(s) }
-func Parse(link string) (*model.Song, error)           { return defaultJoox.Parse(link) }
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultJoox.ParseAlbum(link)
+}
+func Parse(link string) (*model.Song, error) { return defaultJoox.Parse(link) }
 
 // Search 搜索歌曲
 func (j *Joox) Search(keyword string) ([]model.Song, error) {
@@ -113,7 +120,7 @@ func (j *Joox) Search(keyword string) ([]model.Song, error) {
 					Source:   "joox",
 					ID:       info.ID,
 					Name:     info.Name,
-					Artist:   strings.Join(artistNames, "、"),
+					Artist:   strings.Join(artistNames, " / "),
 					Album:    info.AlbumName,
 					Duration: info.PlayDuration,
 					Cover:    cover,
@@ -129,6 +136,85 @@ func (j *Joox) Search(keyword string) ([]model.Song, error) {
 }
 
 // SearchPlaylist 搜索歌单
+func (j *Joox) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	params := url.Values{}
+	params.Set("country", "sg")
+	params.Set("lang", "zh_cn")
+	params.Set("keyword", keyword)
+	apiURL := "https://cache.api.joox.com/openjoox/v3/search?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", j.cookie),
+		utils.WithHeader("X-Forwarded-For", XForwardedFor),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		SectionList []struct {
+			SectionType int `json:"section_type"`
+			ItemList    []struct {
+				Type  int `json:"type"`
+				Album struct {
+					ID          string       `json:"id"`
+					Name        string       `json:"name"`
+					Images      []jooxImage  `json:"images"`
+					PublishDate string       `json:"publish_date"`
+					ArtistList  []jooxArtist `json:"artist_list"`
+				} `json:"album"`
+			} `json:"item_list"`
+		} `json:"section_list"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("joox album search json error: %w", err)
+	}
+
+	albums := make([]model.Playlist, 0)
+	seen := make(map[string]struct{})
+	for _, section := range resp.SectionList {
+		if section.SectionType != 1 {
+			continue
+		}
+		for _, item := range section.ItemList {
+			if item.Type != 2 {
+				continue
+			}
+			albumID := normalizeJooxID(item.Album.ID)
+			if albumID == "" {
+				continue
+			}
+			if _, ok := seen[albumID]; ok {
+				continue
+			}
+			seen[albumID] = struct{}{}
+
+			albums = append(albums, model.Playlist{
+				Source:      "joox",
+				ID:          albumID,
+				Name:        item.Album.Name,
+				Cover:       pickJooxImage(item.Album.Images),
+				Creator:     joinJooxArtists(item.Album.ArtistList),
+				Description: strings.TrimSpace(item.Album.PublishDate),
+				Link:        jooxAlbumLink(albumID),
+				Extra: map[string]string{
+					"type":         "album",
+					"album_id":     albumID,
+					"publish_date": strings.TrimSpace(item.Album.PublishDate),
+				},
+			})
+		}
+	}
+
+	if len(albums) == 0 {
+		return nil, errors.New("no albums found")
+	}
+
+	return albums, nil
+}
+
 func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("country", "sg")
@@ -222,6 +308,32 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 // GetPlaylistSongs 获取歌单详情 (Updated to use OpenJoox v3 API)
+func (j *Joox) GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := j.fetchAlbumDetail(id)
+	return songs, err
+}
+
+func (j *Joox) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`joox\.com/.*/album/([^/?#]+)`),
+		regexp.MustCompile(`h_activity_id=([^&]+)`),
+		regexp.MustCompile(`albumid=([^&]+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return j.fetchAlbumDetail(matches[1])
+		}
+	}
+
+	if len(link) > 10 && !strings.Contains(link, "/") {
+		return j.fetchAlbumDetail(link)
+	}
+
+	return nil, nil, errors.New("invalid joox album link")
+}
+
 func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 	params := url.Values{}
 	// The new v3 API uses "id" instead of "playlistid"
@@ -316,7 +428,7 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 						Source:   "joox",
 						ID:       info.ID,
 						Name:     info.Name,
-						Artist:   strings.Join(artistNames, "、"),
+						Artist:   strings.Join(artistNames, " / "),
 						Album:    info.AlbumName,
 						Duration: info.PlayDuration,
 						Cover:    cover,
@@ -340,6 +452,215 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 }
 
 // Parse 解析链接并获取完整信息
+func (j *Joox) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
+	albumData, err := j.fetchAlbumPageData(id)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	albumID := normalizeJooxID(albumData.ID)
+	if albumID == "" {
+		return nil, nil, errors.New("album not found")
+	}
+
+	trackCount := albumData.TrackList.TotalCount
+	if trackCount == 0 {
+		if albumData.TrackList.ListCount > 0 {
+			trackCount = albumData.TrackList.ListCount
+		} else {
+			trackCount = len(albumData.TrackList.Items)
+		}
+	}
+
+	cover := strings.TrimSpace(albumData.ImgSrc)
+	if cover == "" && len(albumData.TrackList.Items) > 0 {
+		cover = pickJooxImage(albumData.TrackList.Items[0].Images)
+	}
+
+	album := &model.Playlist{
+		Source:      "joox",
+		ID:          albumID,
+		Name:        albumData.Title,
+		Cover:       cover,
+		TrackCount:  trackCount,
+		Creator:     joinJooxArtists(albumData.ArtistList),
+		Description: strings.TrimSpace(albumData.Description),
+		Link:        jooxAlbumLink(albumID),
+		Extra: map[string]string{
+			"type":         "album",
+			"album_id":     albumID,
+			"publish_date": strings.TrimSpace(albumData.PublishDate),
+		},
+	}
+
+	songs := make([]model.Song, 0, len(albumData.TrackList.Items))
+	for _, item := range albumData.TrackList.Items {
+		songID := normalizeJooxID(item.ID)
+		if songID == "" {
+			continue
+		}
+		songs = append(songs, model.Song{
+			Source:   "joox",
+			ID:       songID,
+			Name:     item.Name,
+			Artist:   joinJooxArtists(item.ArtistList),
+			Album:    firstNonEmpty(item.AlbumName, albumData.Title),
+			Duration: item.PlayDuration,
+			Cover:    firstNonEmpty(pickJooxImage(item.Images), strings.TrimSpace(albumData.ImgSrc)),
+			Link:     fmt.Sprintf("https://www.joox.com/hk/single/%s", songID),
+			Extra: map[string]string{
+				"songid":   songID,
+				"album_id": albumID,
+			},
+		})
+	}
+
+	if len(songs) == 0 {
+		return nil, nil, errors.New("album has no songs")
+	}
+
+	return album, songs, nil
+}
+
+func (j *Joox) fetchAlbumPageData(id string) (*jooxAlbumPageData, error) {
+	albumID := normalizeJooxID(id)
+	if albumID == "" {
+		return nil, errors.New("album id is empty")
+	}
+
+	pageURL := jooxAlbumLink(albumID)
+	body, err := utils.Get(pageURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", j.cookie),
+		utils.WithHeader("X-Forwarded-For", XForwardedFor),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := regexp.MustCompile(`(?s)<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>`).FindSubmatch(body)
+	if len(matches) < 2 {
+		return nil, errors.New("joox album page data not found")
+	}
+
+	var nextData struct {
+		Props struct {
+			PageProps struct {
+				AlbumData jooxAlbumPageData `json:"albumData"`
+				Content   struct {
+					Page struct {
+						AlbumData jooxAlbumPageData `json:"albumData"`
+					} `json:"page"`
+				} `json:"content"`
+			} `json:"pageProps"`
+		} `json:"props"`
+	}
+
+	if err := json.Unmarshal(matches[1], &nextData); err != nil {
+		return nil, fmt.Errorf("joox album page json error: %w", err)
+	}
+
+	albumData := nextData.Props.PageProps.AlbumData
+	if normalizeJooxID(albumData.ID) == "" {
+		albumData = nextData.Props.PageProps.Content.Page.AlbumData
+	}
+	if normalizeJooxID(albumData.ID) == "" {
+		return nil, errors.New("album data not found")
+	}
+
+	return &albumData, nil
+}
+
+type jooxArtist struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type jooxImage struct {
+	Width int    `json:"width"`
+	URL   string `json:"url"`
+}
+
+type jooxAlbumTrack struct {
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	AlbumID      string       `json:"album_id"`
+	AlbumName    string       `json:"album_name"`
+	ArtistList   []jooxArtist `json:"artist_list"`
+	PlayDuration int          `json:"play_duration"`
+	Images       []jooxImage  `json:"images"`
+}
+
+type jooxAlbumPageData struct {
+	ID          string       `json:"id"`
+	ImgSrc      string       `json:"imgSrc"`
+	Title       string       `json:"title"`
+	ArtistList  []jooxArtist `json:"artistList"`
+	PublishDate string       `json:"publishDate"`
+	Description string       `json:"description"`
+	TrackList   struct {
+		Items      []jooxAlbumTrack `json:"items"`
+		ListCount  int              `json:"list_count"`
+		TotalCount int              `json:"total_count"`
+	} `json:"trackList"`
+}
+
+func joinJooxArtists(artists []jooxArtist) string {
+	names := make([]string, 0, len(artists))
+	for _, artist := range artists {
+		name := strings.TrimSpace(artist.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, " / ")
+}
+
+func pickJooxImage(images []jooxImage) string {
+	for _, preferred := range []int{300, 1000, 100} {
+		for _, image := range images {
+			if image.Width == preferred && strings.TrimSpace(image.URL) != "" {
+				return image.URL
+			}
+		}
+	}
+	for _, image := range images {
+		if strings.TrimSpace(image.URL) != "" {
+			return image.URL
+		}
+	}
+	return ""
+}
+
+func normalizeJooxID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if id == "" {
+		return ""
+	}
+	if strings.Contains(id, "%") {
+		if decoded, err := url.PathUnescape(id); err == nil {
+			id = decoded
+		}
+		if decoded, err := url.QueryUnescape(id); err == nil {
+			id = strings.ReplaceAll(decoded, " ", "+")
+		}
+	}
+	return id
+}
+
+func jooxAlbumLink(id string) string {
+	return fmt.Sprintf("https://www.joox.com/hk/album/%s", normalizeJooxID(id))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (j *Joox) Parse(link string) (*model.Song, error) {
 	// 1. 提取 ID
 	// 支持格式: https://www.joox.com/hk/single/C+Q0... 或纯 ID
