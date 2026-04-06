@@ -12,6 +12,7 @@ import (
 	"github.com/guohuiyuan/music-lib/netease"
 	"github.com/guohuiyuan/music-lib/qianqian"
 	"github.com/guohuiyuan/music-lib/qq"
+	"github.com/guohuiyuan/music-lib/soda"
 )
 
 type AlbumTestSuite struct {
@@ -79,6 +80,13 @@ func TestAlbumPlatforms(t *testing.T) {
 			SearchAlbum:   qianqian.SearchAlbum,
 			GetAlbumSongs: qianqian.GetAlbumSongs,
 			ParseAlbum:    qianqian.ParseAlbum,
+		},
+		{
+			Name:          "soda",
+			Keyword:       "Elizabeth Taylor",
+			SearchAlbum:   soda.SearchAlbum,
+			GetAlbumSongs: soda.GetAlbumSongs,
+			ParseAlbum:    soda.ParseAlbum,
 		},
 	}
 

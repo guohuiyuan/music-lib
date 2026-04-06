@@ -26,18 +26,73 @@ type Soda struct {
 	cookie string
 }
 
+type sodaArtist struct {
+	Name string `json:"name"`
+}
+
+type sodaImage struct {
+	Urls []string `json:"urls"`
+	Uri  string   `json:"uri"`
+}
+
+type sodaBitRate struct {
+	Size int64 `json:"size"`
+}
+
+type sodaShareAlbumPage struct {
+	LoaderData struct {
+		AlbumPage struct {
+			AlbumInfo struct {
+				ID          string       `json:"id"`
+				Name        string       `json:"name"`
+				Artists     []sodaArtist `json:"artists"`
+				Company     string       `json:"company"`
+				CountTracks int          `json:"count_tracks"`
+				URLCover    sodaImage    `json:"url_cover"`
+				ReleaseDate int64        `json:"release_date"`
+				PCLines     []string     `json:"pclines"`
+			} `json:"albumInfo"`
+			TrackList []struct {
+				ID       string       `json:"id"`
+				Name     string       `json:"name"`
+				Duration int          `json:"duration"`
+				Artists  []sodaArtist `json:"artists"`
+				Album    struct {
+					ID       string    `json:"id"`
+					Name     string    `json:"name"`
+					URLCover sodaImage `json:"url_cover"`
+				} `json:"album"`
+				BitRates []sodaBitRate `json:"bit_rates"`
+				Preview  struct {
+					BitRates []sodaBitRate `json:"bit_rates"`
+				} `json:"preview"`
+			} `json:"trackList"`
+		} `json:"album_page"`
+	} `json:"loaderData"`
+}
+
 func New(cookie string) *Soda { return &Soda{cookie: cookie} }
 
 var defaultSoda = New("")
 
 func Search(keyword string) ([]model.Song, error) { return defaultSoda.Search(keyword) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultSoda.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultSoda.SearchPlaylist(keyword)
+}
+
+func GetAlbumSongs(id string) ([]model.Song, error) {
+	return defaultSoda.GetAlbumSongs(id)
 }
 func GetPlaylistSongs(id string) ([]model.Song, error) {
 	// 复用 fetchPlaylistDetail，只返回歌曲列表
 	_, songs, err := defaultSoda.fetchPlaylistDetail(id)
 	return songs, err
+}
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultSoda.ParseAlbum(link)
 }
 func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultSoda.ParsePlaylist(link)
@@ -49,7 +104,9 @@ func GetLyrics(s *model.Song) (string, error)              { return defaultSoda.
 func Parse(link string) (*model.Song, error)               { return defaultSoda.Parse(link) }
 
 // GetRecommendedPlaylists [新增] 获取推荐歌单 (空实现)
-func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultSoda.GetRecommendedPlaylists() }
+func GetRecommendedPlaylists() ([]model.Playlist, error) {
+	return defaultSoda.GetRecommendedPlaylists()
+}
 
 // Search 搜索歌曲 (PC API)
 func (s *Soda) Search(keyword string) ([]model.Song, error) {
@@ -160,6 +217,80 @@ func (s *Soda) Search(keyword string) ([]model.Song, error) {
 }
 
 // SearchPlaylist 搜索歌单 (PC API)
+// SearchAlbum 鎼滅储涓撹緫 (PC API)
+func (s *Soda) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	params := url.Values{}
+	params.Set("q", keyword)
+	params.Set("cursor", "0")
+	params.Set("search_method", "input")
+	params.Set("aid", "386088")
+	params.Set("device_platform", "web")
+	params.Set("channel", "pc_web")
+
+	apiURL := "https://api.qishui.com/luna/pc/search/album?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", s.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		ResultGroups []struct {
+			Data []struct {
+				Entity struct {
+					Album struct {
+						ID          string       `json:"id"`
+						Name        string       `json:"name"`
+						Artists     []sodaArtist `json:"artists"`
+						Company     string       `json:"company"`
+						CountTracks int          `json:"count_tracks"`
+						URLCover    sodaImage    `json:"url_cover"`
+						ReleaseDate int64        `json:"release_date"`
+					} `json:"album"`
+				} `json:"entity"`
+			} `json:"data"`
+		} `json:"result_groups"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("soda album search json parse error: %w", err)
+	}
+	if len(resp.ResultGroups) == 0 {
+		return nil, nil
+	}
+
+	albums := make([]model.Playlist, 0, len(resp.ResultGroups[0].Data))
+	for _, item := range resp.ResultGroups[0].Data {
+		album := item.Entity.Album
+		if album.ID == "" {
+			continue
+		}
+
+		extra := map[string]string{
+			"album_id": album.ID,
+		}
+		if album.ReleaseDate > 0 {
+			extra["release_date"] = strconv.FormatInt(album.ReleaseDate, 10)
+		}
+
+		albums = append(albums, model.Playlist{
+			Source:      "soda",
+			ID:          album.ID,
+			Name:        album.Name,
+			Cover:       sodaBuildImageURL(album.URLCover, "~c5_300x300.jpg"),
+			TrackCount:  album.CountTracks,
+			Creator:     sodaJoinArtists(album.Artists),
+			Description: strings.TrimSpace(album.Company),
+			Link:        sodaAlbumLink(album.ID),
+			Extra:       extra,
+		})
+	}
+
+	return albums, nil
+}
+
 func (s *Soda) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("q", keyword)
@@ -256,12 +387,25 @@ func (s *Soda) GetRecommendedPlaylists() ([]model.Playlist, error) {
 }
 
 // GetPlaylistSongs 获取歌单所有歌曲
+func (s *Soda) GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := s.fetchAlbumDetail(id)
+	return songs, err
+}
+
 func (s *Soda) GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := s.fetchPlaylistDetail(id)
 	return songs, err
 }
 
 // ParsePlaylist 解析歌单链接
+func (s *Soda) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	albumID := sodaExtractAlbumID(link)
+	if albumID == "" {
+		return nil, nil, errors.New("invalid soda album link")
+	}
+	return s.fetchAlbumDetail(albumID)
+}
+
 func (s *Soda) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	re := regexp.MustCompile(`playlist/(\d+)`)
 	matches := re.FindStringSubmatch(link)
@@ -273,6 +417,112 @@ func (s *Soda) ParsePlaylist(link string) (*model.Playlist, []model.Song, error)
 }
 
 // fetchPlaylistDetail [内部通用] 获取歌单详情
+func (s *Soda) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
+	body, err := utils.Get(sodaAlbumLink(id),
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", s.cookie),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pageData, err := parseSodaShareAlbumPage(body)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	info := pageData.LoaderData.AlbumPage.AlbumInfo
+	if info.ID == "" {
+		return nil, nil, errors.New("album not found")
+	}
+
+	description := strings.TrimSpace(strings.Join(info.PCLines, " "))
+	if description == "" {
+		description = strings.TrimSpace(info.Company)
+	}
+
+	album := &model.Playlist{
+		Source:      "soda",
+		ID:          info.ID,
+		Name:        info.Name,
+		Cover:       sodaBuildImageURL(info.URLCover, "~c5_300x300.jpg"),
+		TrackCount:  info.CountTracks,
+		Creator:     sodaJoinArtists(info.Artists),
+		Description: description,
+		Link:        sodaAlbumLink(info.ID),
+		Extra: map[string]string{
+			"album_id": info.ID,
+		},
+	}
+	if info.ReleaseDate > 0 {
+		album.Extra["release_date"] = strconv.FormatInt(info.ReleaseDate, 10)
+	}
+	if album.TrackCount == 0 {
+		album.TrackCount = len(pageData.LoaderData.AlbumPage.TrackList)
+	}
+
+	songs := make([]model.Song, 0, len(pageData.LoaderData.AlbumPage.TrackList))
+	for _, track := range pageData.LoaderData.AlbumPage.TrackList {
+		if track.ID == "" {
+			continue
+		}
+
+		displaySize := sodaMaxBitRateSize(track.BitRates)
+		if previewSize := sodaMaxBitRateSize(track.Preview.BitRates); previewSize > displaySize {
+			displaySize = previewSize
+		}
+
+		artist := sodaJoinArtists(track.Artists)
+		if artist == "" {
+			artist = album.Creator
+		}
+
+		cover := sodaBuildImageURL(track.Album.URLCover, "~c5_375x375.jpg")
+		if cover == "" {
+			cover = sodaBuildImageURL(info.URLCover, "~c5_375x375.jpg")
+		}
+
+		albumID := track.Album.ID
+		if albumID == "" {
+			albumID = info.ID
+		}
+		albumName := strings.TrimSpace(track.Album.Name)
+		if albumName == "" {
+			albumName = info.Name
+		}
+
+		duration := track.Duration / 1000
+		bitrate := 0
+		if duration > 0 && displaySize > 0 {
+			bitrate = int(displaySize * 8 / 1000 / int64(duration))
+		}
+
+		songs = append(songs, model.Song{
+			Source:   "soda",
+			ID:       track.ID,
+			Name:     track.Name,
+			Artist:   artist,
+			Album:    albumName,
+			AlbumID:  albumID,
+			Duration: duration,
+			Size:     displaySize,
+			Bitrate:  bitrate,
+			Cover:    cover,
+			Link:     fmt.Sprintf("https://www.qishui.com/track/%s", track.ID),
+			Extra: map[string]string{
+				"track_id": track.ID,
+				"album_id": albumID,
+			},
+		})
+	}
+
+	if len(songs) == 0 {
+		return nil, nil, errors.New("album has no songs")
+	}
+
+	return album, songs, nil
+}
+
 func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
 	params := url.Values{}
 	params.Set("playlist_id", id)
@@ -451,6 +701,132 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 }
 
 // GetDownloadInfo 获取下载信息
+func parseSodaShareAlbumPage(body []byte) (*sodaShareAlbumPage, error) {
+	routerJSON, err := extractSodaJSONBlock(string(body), "_ROUTER_DATA = ")
+	if err != nil {
+		return nil, err
+	}
+
+	var page sodaShareAlbumPage
+	if err := json.Unmarshal([]byte(routerJSON), &page); err != nil {
+		return nil, fmt.Errorf("soda album page json error: %w", err)
+	}
+
+	return &page, nil
+}
+
+func extractSodaJSONBlock(page string, marker string) (string, error) {
+	start := strings.Index(page, marker)
+	if start < 0 {
+		return "", errors.New("soda router data not found")
+	}
+	start += len(marker)
+
+	depth := 0
+	inString := false
+	escaped := false
+	started := false
+
+	for i := start; i < len(page); i++ {
+		ch := page[i]
+
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+			started = true
+		case '}':
+			depth--
+			if started && depth == 0 {
+				return page[start : i+1], nil
+			}
+		}
+	}
+
+	return "", errors.New("soda router data is incomplete")
+}
+
+func sodaJoinArtists(artists []sodaArtist) string {
+	names := make([]string, 0, len(artists))
+	for _, artist := range artists {
+		name := strings.TrimSpace(artist.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, " / ")
+}
+
+func sodaBuildImageURL(img sodaImage, suffix string) string {
+	if len(img.Urls) == 0 {
+		return ""
+	}
+
+	cover := strings.TrimSpace(img.Urls[0])
+	uri := strings.TrimSpace(img.Uri)
+	if uri != "" && !strings.Contains(cover, uri) {
+		cover += uri
+	}
+	if cover == "" {
+		return ""
+	}
+	if suffix != "" && !strings.Contains(cover, "~") {
+		cover += suffix
+	}
+	return cover
+}
+
+func sodaMaxBitRateSize(bitRates []sodaBitRate) int64 {
+	var size int64
+	for _, br := range bitRates {
+		if br.Size > size {
+			size = br.Size
+		}
+	}
+	return size
+}
+
+func sodaAlbumLink(id string) string {
+	return fmt.Sprintf("https://www.qishui.com/share/album?album_id=%s", strings.TrimSpace(id))
+}
+
+func sodaExtractAlbumID(link string) string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`album_id=(\d+)`),
+		regexp.MustCompile(`(?:^|[?&])id=(\d+)`),
+		regexp.MustCompile(`album/(\d+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return matches[1]
+		}
+	}
+
+	link = strings.TrimSpace(link)
+	if len(link) > 10 && !strings.Contains(link, "/") {
+		return link
+	}
+	return ""
+}
+
 func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 	if strings.Contains(song.URL, "#auth=") {
 		parts := strings.Split(song.URL, "#auth=")
