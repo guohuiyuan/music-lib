@@ -30,13 +30,20 @@ func New(cookie string) *Migu { return &Migu{cookie: cookie} }
 var defaultMigu = New("")
 
 func Search(keyword string) ([]model.Song, error) { return defaultMigu.Search(keyword) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultMigu.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultMigu.SearchPlaylist(keyword)
 }                                                      // [新增]
 func GetPlaylistSongs(id string) ([]model.Song, error) { return defaultMigu.GetPlaylistSongs(id) } // [新增]
+func GetAlbumSongs(id string) ([]model.Song, error)    { return defaultMigu.GetAlbumSongs(id) }
 func GetDownloadURL(s *model.Song) (string, error)     { return defaultMigu.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error)          { return defaultMigu.GetLyrics(s) }
-func Parse(link string) (*model.Song, error)           { return defaultMigu.Parse(link) }
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultMigu.ParseAlbum(link)
+}
+func Parse(link string) (*model.Song, error) { return defaultMigu.Parse(link) }
 
 // Search 搜索歌曲
 func (m *Migu) Search(keyword string) ([]model.Song, error) {
@@ -80,6 +87,81 @@ func (m *Migu) Search(keyword string) ([]model.Song, error) {
 }
 
 // SearchPlaylist 搜索歌单
+// SearchAlbum 鎼滅储涓撹緫
+func (m *Migu) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	params := url.Values{}
+	params.Set("ua", "Android_migu")
+	params.Set("version", "5.0.1")
+	params.Set("text", keyword)
+	params.Set("pageNo", "1")
+	params.Set("pageSize", "10")
+	params.Set("searchSwitch", `{"song":0,"album":1,"singer":0,"tagSong":0,"mvSong":0,"songlist":0,"bestShow":1}`)
+
+	apiURL := "http://pd.musicapp.migu.cn/MIGUM2.0/v1.0/content/search_all.do?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", m.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		AlbumResultData struct {
+			Result []struct {
+				ID           string          `json:"id"`
+				ResourceType string          `json:"resourceType"`
+				Name         string          `json:"name"`
+				Singer       string          `json:"singer"`
+				PublishDate  string          `json:"publishDate"`
+				Desc         string          `json:"desc"`
+				ImgItems     []miguImageItem `json:"imgItems"`
+			} `json:"result"`
+		} `json:"albumResultData"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("migu album json parse error: %w", err)
+	}
+
+	albums := make([]model.Playlist, 0, len(resp.AlbumResultData.Result))
+	for _, item := range resp.AlbumResultData.Result {
+		albumID := strings.TrimSpace(item.ID)
+		if albumID == "" {
+			continue
+		}
+
+		description := strings.TrimSpace(item.Desc)
+		if description == "" {
+			description = strings.TrimSpace(item.PublishDate)
+		}
+
+		albums = append(albums, model.Playlist{
+			Source:      "migu",
+			ID:          albumID,
+			Name:        strings.TrimSpace(item.Name),
+			Cover:       pickMiguImage(item.ImgItems),
+			Creator:     strings.TrimSpace(item.Singer),
+			Description: description,
+			Link:        miguAlbumLink(albumID),
+			Extra: map[string]string{
+				"type":          "album",
+				"album_id":      albumID,
+				"resource_type": firstNonEmpty(strings.TrimSpace(item.ResourceType), "2003"),
+				"publish_date":  strings.TrimSpace(item.PublishDate),
+			},
+		})
+	}
+
+	if len(albums) == 0 {
+		return nil, errors.New("no albums found")
+	}
+
+	return albums, nil
+}
+
 func (m *Migu) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("ua", "Android_migu")
@@ -140,6 +222,28 @@ func (m *Migu) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 // GetPlaylistSongs 获取歌单详情（解析歌曲列表）
+func (m *Migu) GetAlbumSongs(id string) ([]model.Song, error) {
+	songs, _, err := m.fetchAlbumSongs(id)
+	return songs, err
+}
+
+func (m *Migu) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`music\.migu\.cn/(?:v3|v5)/music/album/(\d+)`),
+		regexp.MustCompile(`albumId=(\d+)`),
+		regexp.MustCompile(`resourceId=(\d+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return m.fetchAlbumDetail(matches[1])
+		}
+	}
+
+	return nil, nil, errors.New("invalid migu album link")
+}
+
 func (m *Migu) GetPlaylistSongs(id string) ([]model.Song, error) {
 	// [修复] 使用 musicListContent.do 接口
 	// resourceinfo.do (类型2021) 只返回歌单简介，不返回歌曲列表
@@ -230,6 +334,189 @@ func (m *Migu) GetPlaylistSongs(id string) ([]model.Song, error) {
 }
 
 // Parse 解析链接并获取完整信息
+func (m *Migu) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
+	albumID := strings.TrimSpace(id)
+	if albumID == "" {
+		return nil, nil, errors.New("album id is empty")
+	}
+
+	songs, totalSongs, err := m.fetchAlbumSongs(albumID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	params := url.Values{}
+	params.Set("needSimple", "00")
+	params.Set("resourceType", "2003")
+	params.Set("resourceId", albumID)
+
+	apiURL := "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", m.cookie),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var resp struct {
+		Code     string `json:"code"`
+		Info     string `json:"info"`
+		Resource []struct {
+			ResourceType   string          `json:"resourceType"`
+			AlbumID        string          `json:"albumId"`
+			ImgItems       []miguImageItem `json:"imgItems"`
+			Title          string          `json:"title"`
+			Singer         string          `json:"singer"`
+			Summary        string          `json:"summary"`
+			TotalCount     string          `json:"totalCount"`
+			PublishTime    string          `json:"publishTime"`
+			PublishCorp    string          `json:"publishCorp"`
+			AlbumAliasName string          `json:"albumAliasName"`
+			AlbumClass     string          `json:"albumClass"`
+			Language       string          `json:"language"`
+			PublishCompany string          `json:"publishCompany"`
+			PublishDate    string          `json:"publishDate"`
+			TranslateName  string          `json:"translateName"`
+		} `json:"resource"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, nil, fmt.Errorf("migu album detail json parse error: %w", err)
+	}
+	if resp.Code != "" && resp.Code != "000000" {
+		return nil, nil, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
+	}
+	if len(resp.Resource) == 0 {
+		return nil, nil, errors.New("album not found")
+	}
+
+	info := resp.Resource[0]
+	albumID = firstNonEmpty(strings.TrimSpace(info.AlbumID), albumID)
+	trackCount, _ := strconv.Atoi(strings.TrimSpace(info.TotalCount))
+	if trackCount == 0 {
+		if totalSongs > 0 {
+			trackCount = totalSongs
+		} else {
+			trackCount = len(songs)
+		}
+	}
+
+	album := &model.Playlist{
+		Source:      "migu",
+		ID:          albumID,
+		Name:        strings.TrimSpace(info.Title),
+		Cover:       pickMiguImage(info.ImgItems),
+		TrackCount:  trackCount,
+		Creator:     strings.TrimSpace(info.Singer),
+		Description: strings.TrimSpace(info.Summary),
+		Link:        miguAlbumLink(albumID),
+		Extra: map[string]string{
+			"type":            "album",
+			"album_id":        albumID,
+			"resource_type":   firstNonEmpty(strings.TrimSpace(info.ResourceType), "2003"),
+			"publish_time":    strings.TrimSpace(info.PublishTime),
+			"publish_date":    strings.TrimSpace(info.PublishDate),
+			"publish_corp":    strings.TrimSpace(info.PublishCorp),
+			"publish_company": strings.TrimSpace(info.PublishCompany),
+			"album_alias":     strings.TrimSpace(info.AlbumAliasName),
+			"album_class":     strings.TrimSpace(info.AlbumClass),
+			"language":        strings.TrimSpace(info.Language),
+			"translate_name":  strings.TrimSpace(info.TranslateName),
+		},
+	}
+
+	return album, songs, nil
+}
+
+func (m *Migu) fetchAlbumSongs(id string) ([]model.Song, int, error) {
+	albumID := strings.TrimSpace(id)
+	if albumID == "" {
+		return nil, 0, errors.New("album id is empty")
+	}
+
+	const pageSize = 50
+
+	seen := make(map[string]struct{})
+	songs := make([]model.Song, 0, pageSize)
+	totalCount := 0
+
+	for pageNo := 1; ; pageNo++ {
+		params := url.Values{}
+		params.Set("albumId", albumID)
+		params.Set("pageNo", strconv.Itoa(pageNo))
+		params.Set("pageSize", strconv.Itoa(pageSize))
+
+		apiURL := "https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/queryAlbumSong?" + params.Encode()
+		body, err := utils.Get(apiURL,
+			utils.WithHeader("User-Agent", UserAgent),
+			utils.WithHeader("Referer", Referer),
+			utils.WithHeader("Cookie", m.cookie),
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		var resp struct {
+			Code string `json:"code"`
+			Info string `json:"info"`
+			Data struct {
+				SongList   []MiguSongItem `json:"songList"`
+				TotalCount int            `json:"totalCount"`
+			} `json:"data"`
+		}
+
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, 0, fmt.Errorf("migu album songs json parse error: %w", err)
+		}
+		if resp.Code != "" && resp.Code != "000000" {
+			return nil, 0, fmt.Errorf("migu api error: %s (code %s)", resp.Info, resp.Code)
+		}
+
+		if totalCount == 0 {
+			totalCount = resp.Data.TotalCount
+		}
+		if len(resp.Data.SongList) == 0 {
+			break
+		}
+
+		before := len(songs)
+		for _, item := range resp.Data.SongList {
+			song := m.convertItemToSong(item)
+			if song == nil {
+				continue
+			}
+
+			key := firstNonEmpty(song.Extra["content_id"], item.ContentID, song.ID, item.CopyrightID)
+			if key == "" {
+				key = song.Name + "|" + song.Artist
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			songs = append(songs, *song)
+		}
+
+		if len(resp.Data.SongList) < pageSize {
+			break
+		}
+		if totalCount > 0 && len(songs) >= totalCount {
+			break
+		}
+		if len(songs) == before {
+			break
+		}
+	}
+
+	if len(songs) == 0 {
+		return nil, totalCount, errors.New("album has no playable songs")
+	}
+
+	return songs, totalCount, nil
+}
+
 func (m *Migu) Parse(link string) (*model.Song, error) {
 	// 1. 提取 ContentID
 	// 支持格式: https://music.migu.cn/v3/music/song/60054701934
@@ -327,30 +614,47 @@ func (m *Migu) GetDownloadURL(s *model.Song) (string, error) {
 }
 
 // 内部结构体定义，用于 Search 和 Parse 复用
+type miguImageItem struct {
+	ImgSizeType string `json:"imgSizeType"`
+	Img         string `json:"img"`
+}
+
+type miguArtistItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type miguAlbumItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type miguRateFormat struct {
+	FormatType      string   `json:"formatType"`
+	ResourceType    string   `json:"resourceType"`
+	Size            string   `json:"size"`
+	AndroidSize     string   `json:"androidSize"`
+	FileType        string   `json:"fileType"`
+	AndroidFileType string   `json:"androidFileType"`
+	Price           string   `json:"price"`
+	ShowTag         []string `json:"showTag"`
+}
+
 type MiguSongItem struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Singers []struct {
-		Name string `json:"name"`
-	} `json:"singers"`
-	Albums []struct {
-		Name string `json:"name"`
-	} `json:"albums"`
-	ContentID       string `json:"contentId"`
-	ChargeAuditions string `json:"chargeAuditions"`
-	ImgItems        []struct {
-		Img string `json:"img"`
-	} `json:"imgItems"`
-	RateFormats []struct {
-		FormatType      string   `json:"formatType"`
-		ResourceType    string   `json:"resourceType"`
-		Size            string   `json:"size"`
-		AndroidSize     string   `json:"androidSize"`
-		FileType        string   `json:"fileType"`
-		AndroidFileType string   `json:"androidFileType"`
-		Price           string   `json:"price"`
-		ShowTag         []string `json:"showTag"`
-	} `json:"rateFormats"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	SongName        string           `json:"songName"`
+	Singers         []miguArtistItem `json:"singers"`
+	Artists         []miguArtistItem `json:"artists"`
+	Albums          []miguAlbumItem  `json:"albums"`
+	Album           string           `json:"album"`
+	Singer          string           `json:"singer"`
+	ContentID       string           `json:"contentId"`
+	CopyrightID     string           `json:"copyrightId"`
+	ChargeAuditions string           `json:"chargeAuditions"`
+	ImgItems        []miguImageItem  `json:"imgItems"`
+	AlbumImgs       []miguImageItem  `json:"albumImgs"`
+	RateFormats     []miguRateFormat `json:"rateFormats"`
 }
 
 // fetchSongDetail 通过 contentId 获取歌曲详情
@@ -401,14 +705,11 @@ func (m *Migu) fetchSongDetail(contentID string) (*model.Song, error) {
 
 // convertItemToSong 将 API 返回的 Item 转换为 Song 模型 (复用 Search 中的逻辑)
 func (m *Migu) convertItemToSong(item MiguSongItem) *model.Song {
-	var artistNames []string
-	for _, s := range item.Singers {
-		artistNames = append(artistNames, s.Name)
-	}
-
-	albumName := ""
-	if len(item.Albums) > 0 {
-		albumName = item.Albums[0].Name
+	artistNames := collectMiguArtistNames(item)
+	songName := firstNonEmpty(strings.TrimSpace(item.Name), strings.TrimSpace(item.SongName))
+	albumName := strings.TrimSpace(item.Album)
+	if len(item.Albums) > 0 && strings.TrimSpace(item.Albums[0].Name) != "" {
+		albumName = strings.TrimSpace(item.Albums[0].Name)
 	}
 
 	if len(item.RateFormats) == 0 {
@@ -488,32 +789,98 @@ func (m *Migu) convertItemToSong(item MiguSongItem) *model.Song {
 		bitrate = int(bestInfo.size * 8 / 1000 / duration)
 	}
 
-	var coverURL string
-	if len(item.ImgItems) > 0 {
-		coverURL = item.ImgItems[0].Img
+	coverURL := pickMiguImage(item.ImgItems)
+	if coverURL == "" {
+		coverURL = pickMiguImage(item.AlbumImgs)
+	}
+
+	linkID := firstNonEmpty(item.ContentID, item.CopyrightID)
+	extra := map[string]string{
+		"content_id":    item.ContentID,
+		"resource_type": bestFormat.ResourceType,
+		"format_type":   bestFormat.FormatType,
+	}
+	if item.CopyrightID != "" {
+		extra["copyright_id"] = item.CopyrightID
 	}
 
 	return &model.Song{
 		Source:   "migu",
 		ID:       fmt.Sprintf("%s|%s|%s", item.ContentID, bestFormat.ResourceType, bestFormat.FormatType),
-		Name:     item.Name,
-		Artist:   strings.Join(artistNames, "、"),
+		Name:     songName,
+		Artist:   strings.Join(artistNames, " / "),
 		Album:    albumName,
 		Size:     displaySize,
 		Duration: int(duration),
 		Bitrate:  bitrate,
 		Cover:    coverURL,
 		Ext:      bestInfo.ext,
-		Link:     fmt.Sprintf("https://music.migu.cn/v3/music/song/%s", item.ContentID),
-		Extra: map[string]string{
-			"content_id":    item.ContentID,
-			"resource_type": bestFormat.ResourceType,
-			"format_type":   bestFormat.FormatType,
-		},
+		Link:     fmt.Sprintf("https://music.migu.cn/v3/music/song/%s", linkID),
+		Extra:    extra,
 	}
 }
 
 // GetLyrics 获取歌词
+func collectMiguArtistNames(item MiguSongItem) []string {
+	names := make([]string, 0, len(item.Singers)+len(item.Artists)+1)
+	seen := make(map[string]struct{})
+
+	appendName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+
+	for _, singer := range item.Singers {
+		appendName(singer.Name)
+	}
+	for _, artist := range item.Artists {
+		appendName(artist.Name)
+	}
+	if len(names) == 0 {
+		for _, name := range strings.Split(item.Singer, "|") {
+			appendName(name)
+		}
+	}
+
+	return names
+}
+
+func pickMiguImage(items []miguImageItem) string {
+	for _, preferred := range []string{"02", "01", "03"} {
+		for _, item := range items {
+			if item.ImgSizeType == preferred && strings.TrimSpace(item.Img) != "" {
+				return item.Img
+			}
+		}
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item.Img) != "" {
+			return item.Img
+		}
+	}
+	return ""
+}
+
+func miguAlbumLink(id string) string {
+	return fmt.Sprintf("https://music.migu.cn/v3/music/album/%s", id)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (m *Migu) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "migu" {
 		return "", errors.New("source mismatch")

@@ -32,10 +32,29 @@ func New(cookie string) *Qianqian { return &Qianqian{cookie: cookie} }
 
 var defaultQianqian = New("")
 
+type qianqianArtist struct {
+	Name       string `json:"name"`
+	ArtistType int    `json:"artistType"`
+}
+
+type qianqianRateFileInfo struct {
+	Size   int64  `json:"size"`
+	Format string `json:"format"`
+}
+
 func Search(keyword string) ([]model.Song, error) { return defaultQianqian.Search(keyword) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) {
+	return defaultQianqian.SearchAlbum(keyword)
+}
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultQianqian.SearchPlaylist(keyword)
-}                                                      // [新增]
+}
+func GetAlbumSongs(id string) ([]model.Song, error) {
+	return defaultQianqian.GetAlbumSongs(id)
+}
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultQianqian.ParseAlbum(link)
+}
 func GetPlaylistSongs(id string) ([]model.Song, error) { return defaultQianqian.GetPlaylistSongs(id) } // [新增]
 func GetDownloadURL(s *model.Song) (string, error)     { return defaultQianqian.GetDownloadURL(s) }
 func GetLyrics(s *model.Song) (string, error)          { return defaultQianqian.GetLyrics(s) }
@@ -64,20 +83,15 @@ func (q *Qianqian) Search(keyword string) ([]model.Song, error) {
 	var resp struct {
 		Data struct {
 			TypeTrack []struct {
-				TSID       string `json:"TSID"`
-				Title      string `json:"title"`
-				AlbumTitle string `json:"albumTitle"`
-				Pic        string `json:"pic"`
-				Duration   int    `json:"duration"`
-				Lyric      string `json:"lyric"`
-				Artist     []struct {
-					Name string `json:"name"`
-				} `json:"artist"`
-				RateFileInfo map[string]struct {
-					Size   int64  `json:"size"`
-					Format string `json:"format"`
-				} `json:"rateFileInfo"`
-				IsVip int `json:"isVip"`
+				TSID         string                          `json:"TSID"`
+				Title        string                          `json:"title"`
+				AlbumTitle   string                          `json:"albumTitle"`
+				Pic          string                          `json:"pic"`
+				Duration     int                             `json:"duration"`
+				Lyric        string                          `json:"lyric"`
+				Artist       []qianqianArtist                `json:"artist"`
+				RateFileInfo map[string]qianqianRateFileInfo `json:"rateFileInfo"`
+				IsVip        int                             `json:"isVip"`
 			} `json:"typeTrack"`
 		} `json:"data"`
 	}
@@ -91,36 +105,13 @@ func (q *Qianqian) Search(keyword string) ([]model.Song, error) {
 		if item.IsVip != 0 {
 			continue
 		}
-		var artistNames []string
-		for _, ar := range item.Artist {
-			artistNames = append(artistNames, ar.Name)
-		}
-
-		var size int64
-		var bitrate int
-
-		rates := []string{"3000", "320", "128", "64"}
-		for _, r := range rates {
-			if info, ok := item.RateFileInfo[r]; ok && info.Size > 0 {
-				size = info.Size
-				if item.Duration > 0 {
-					bitrate = int(size * 8 / 1000 / int64(item.Duration))
-				} else {
-					if r == "3000" {
-						bitrate = 800
-					} else {
-						bitrate, _ = strconv.Atoi(r)
-					}
-				}
-				break
-			}
-		}
+		size, bitrate := qianqianRateStats(item.RateFileInfo, item.Duration)
 
 		songs = append(songs, model.Song{
 			Source:   "qianqian",
 			ID:       item.TSID,
 			Name:     item.Title,
-			Artist:   strings.Join(artistNames, "、"),
+			Artist:   joinQianqianArtists(item.Artist),
 			Album:    item.AlbumTitle,
 			Duration: item.Duration,
 			Size:     size,
@@ -133,6 +124,84 @@ func (q *Qianqian) Search(keyword string) ([]model.Song, error) {
 		})
 	}
 	return songs, nil
+}
+
+// SearchAlbum 搜索专辑
+func (q *Qianqian) SearchAlbum(keyword string) ([]model.Playlist, error) {
+	params := url.Values{}
+	params.Set("word", keyword)
+	params.Set("type", "3")
+	params.Set("pageNo", "1")
+	params.Set("pageSize", "10")
+	params.Set("appid", AppID)
+	signParams(params)
+
+	apiURL := "https://music.91q.com/v1/search?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", q.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		State bool   `json:"state"`
+		Errno int    `json:"errno"`
+		Msg   string `json:"errmsg"`
+		Data  struct {
+			TypeAlbum []struct {
+				AlbumAssetCode string            `json:"albumAssetCode"`
+				Title          string            `json:"title"`
+				Pic            string            `json:"pic"`
+				Introduce      string            `json:"introduce"`
+				ReleaseDate    string            `json:"releaseDate"`
+				Genre          string            `json:"genre"`
+				Lang           string            `json:"lang"`
+				Artist         []qianqianArtist  `json:"artist"`
+				TrackList      []json.RawMessage `json:"trackList"`
+			} `json:"typeAlbum"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qianqian album json parse error: %w", err)
+	}
+
+	if !resp.State && resp.Errno != 22000 {
+		return nil, fmt.Errorf("api error: %s (code %d)", resp.Msg, resp.Errno)
+	}
+
+	albums := make([]model.Playlist, 0, len(resp.Data.TypeAlbum))
+	for _, item := range resp.Data.TypeAlbum {
+		albumID := normalizeQianqianAlbumAssetCode(item.AlbumAssetCode)
+		if albumID == "" {
+			continue
+		}
+
+		albums = append(albums, model.Playlist{
+			Source:      "qianqian",
+			ID:          albumID,
+			Name:        item.Title,
+			Cover:       item.Pic,
+			TrackCount:  len(item.TrackList),
+			Creator:     joinQianqianArtists(item.Artist),
+			Description: item.Introduce,
+			Link:        qianqianAlbumLink(albumID),
+			Extra: map[string]string{
+				"type":         "album",
+				"album_id":     albumID,
+				"release_date": qianqianReleaseDate(item.ReleaseDate),
+				"genre":        strings.TrimSpace(item.Genre),
+				"lang":         strings.TrimSpace(item.Lang),
+			},
+		})
+	}
+	if len(albums) == 0 {
+		return nil, errors.New("no albums found")
+	}
+
+	return albums, nil
 }
 
 // SearchPlaylist 搜索歌单
@@ -232,7 +301,7 @@ func (q *Qianqian) GetPlaylistSongs(id string) ([]model.Song, error) {
 	// [关键修正] 接口路径改为 v1/tracklist/info，原 songlist/info 已 404
 	params.Set("type", "0") // 0通常代表默认列表，有些情况可能需要此参数
 	signParams(params)
-	
+
 	apiURL := "https://music.91q.com/v1/tracklist/info?" + params.Encode()
 
 	body, err := utils.Get(apiURL,
@@ -249,15 +318,13 @@ func (q *Qianqian) GetPlaylistSongs(id string) ([]model.Song, error) {
 		Data struct {
 			// 注意：tracklist/info 接口返回的字段通常是 trackList
 			TrackList []struct {
-				TSID       string `json:"TSID"` // 歌曲 ID
-				Title      string `json:"title"`
-				AlbumTitle string `json:"albumTitle"`
-				Pic        string `json:"pic"`
-				Duration   int    `json:"duration"`
-				Artist     []struct {
-					Name string `json:"name"`
-				} `json:"artist"`
-				IsVip int `json:"isVip"`
+				TSID       string           `json:"TSID"` // 歌曲 ID
+				Title      string           `json:"title"`
+				AlbumTitle string           `json:"albumTitle"`
+				Pic        string           `json:"pic"`
+				Duration   int              `json:"duration"`
+				Artist     []qianqianArtist `json:"artist"`
+				IsVip      int              `json:"isVip"`
 			} `json:"trackList"`
 		} `json:"data"`
 		// 错误处理字段
@@ -276,23 +343,18 @@ func (q *Qianqian) GetPlaylistSongs(id string) ([]model.Song, error) {
 	var songs []model.Song
 	for _, item := range resp.Data.TrackList {
 		// 过滤掉需要 VIP 的歌曲，或者虽然列出但无法播放的
-		// if item.IsVip != 0 { continue } 
-
-		var artistNames []string
-		for _, ar := range item.Artist {
-			artistNames = append(artistNames, ar.Name)
-		}
+		// if item.IsVip != 0 { continue }
 
 		songs = append(songs, model.Song{
 			Source:   "qianqian",
 			ID:       item.TSID,
 			Name:     item.Title,
-			Artist:   strings.Join(artistNames, "、"),
+			Artist:   joinQianqianArtists(item.Artist),
 			Album:    item.AlbumTitle,
 			Duration: item.Duration,
 			Cover:    item.Pic,
 			// 构造网页链接
-			Link:     fmt.Sprintf("https://music.91q.com/song/%s", item.TSID),
+			Link: fmt.Sprintf("https://music.91q.com/song/%s", item.TSID),
 			Extra: map[string]string{
 				"tsid": item.TSID,
 			},
@@ -304,6 +366,30 @@ func (q *Qianqian) GetPlaylistSongs(id string) ([]model.Song, error) {
 	}
 
 	return songs, nil
+}
+
+// GetAlbumSongs 获取专辑歌曲列表
+func (q *Qianqian) GetAlbumSongs(id string) ([]model.Song, error) {
+	_, songs, err := q.fetchAlbumDetail(id)
+	return songs, err
+}
+
+// ParseAlbum 解析专辑链接
+func (q *Qianqian) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`music\.91q\.com/album/([A-Za-z0-9]+)`),
+		regexp.MustCompile(`albumAssetCode=([A-Za-z0-9]+)`),
+		regexp.MustCompile(`albumid=(\d+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return q.fetchAlbumDetail(matches[1])
+		}
+	}
+
+	return nil, nil, errors.New("invalid qianqian album link")
 }
 
 // Parse 解析链接并获取完整信息
@@ -329,6 +415,126 @@ func (q *Qianqian) Parse(link string) (*model.Song, error) {
 	}
 
 	return song, nil
+}
+
+func (q *Qianqian) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
+	albumID, err := q.resolveAlbumAssetCode(id)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	params := url.Values{}
+	params.Set("albumAssetCode", albumID)
+	params.Set("appid", AppID)
+	signParams(params)
+
+	apiURL := "https://music.91q.com/v1/album/info?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", q.cookie),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var resp struct {
+		State  bool   `json:"state"`
+		Errno  int    `json:"errno"`
+		ErrMsg string `json:"errmsg"`
+		Data   struct {
+			AlbumAssetCode string           `json:"albumAssetCode"`
+			Title          string           `json:"title"`
+			Pic            string           `json:"pic"`
+			Introduce      string           `json:"introduce"`
+			ReleaseDate    string           `json:"releaseDate"`
+			Genre          string           `json:"genre"`
+			Lang           string           `json:"lang"`
+			Artist         []qianqianArtist `json:"artist"`
+			TrackList      []struct {
+				Duration     int                             `json:"duration"`
+				Artist       []qianqianArtist                `json:"artist"`
+				AssetID      string                          `json:"assetId"`
+				Sort         int                             `json:"sort"`
+				Title        string                          `json:"title"`
+				IsVip        int                             `json:"isVip"`
+				IsPaid       int                             `json:"isPaid"`
+				RateFileInfo map[string]qianqianRateFileInfo `json:"rateFileInfo"`
+			} `json:"trackList"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, nil, fmt.Errorf("qianqian album detail json error: %w", err)
+	}
+	if !resp.State && resp.Errno != 22000 {
+		return nil, nil, fmt.Errorf("api error: %s (code %d)", resp.ErrMsg, resp.Errno)
+	}
+	if normalizeQianqianAlbumAssetCode(resp.Data.AlbumAssetCode) == "" {
+		return nil, nil, errors.New("album not found")
+	}
+
+	album := &model.Playlist{
+		Source:      "qianqian",
+		ID:          albumID,
+		Name:        resp.Data.Title,
+		Cover:       resp.Data.Pic,
+		TrackCount:  len(resp.Data.TrackList),
+		Creator:     joinQianqianArtists(resp.Data.Artist),
+		Description: resp.Data.Introduce,
+		Link:        qianqianAlbumLink(albumID),
+		Extra: map[string]string{
+			"type":         "album",
+			"album_id":     albumID,
+			"release_date": qianqianReleaseDate(resp.Data.ReleaseDate),
+			"genre":        strings.TrimSpace(resp.Data.Genre),
+			"lang":         strings.TrimSpace(resp.Data.Lang),
+		},
+	}
+
+	songs := make([]model.Song, 0, len(resp.Data.TrackList))
+	for _, item := range resp.Data.TrackList {
+		songID := strings.TrimSpace(item.AssetID)
+		if songID == "" {
+			continue
+		}
+
+		artist := joinQianqianArtists(item.Artist)
+		if artist == "" {
+			artist = album.Creator
+		}
+		size, bitrate := qianqianRateStats(item.RateFileInfo, item.Duration)
+
+		song := model.Song{
+			Source:   "qianqian",
+			ID:       songID,
+			Name:     item.Title,
+			Artist:   artist,
+			Album:    album.Name,
+			AlbumID:  album.ID,
+			Duration: item.Duration,
+			Size:     size,
+			Bitrate:  bitrate,
+			Cover:    album.Cover,
+			Link:     fmt.Sprintf("https://music.91q.com/song/%s", songID),
+			Extra: map[string]string{
+				"tsid":     songID,
+				"album_id": album.ID,
+			},
+		}
+		if item.Sort > 0 {
+			song.Extra["track"] = strconv.Itoa(item.Sort)
+		}
+
+		songs = append(songs, song)
+	}
+	if len(songs) == 0 {
+		return nil, nil, errors.New("album is empty or invalid")
+	}
+	if album.TrackCount == 0 {
+		album.TrackCount = len(songs)
+	}
+
+	return album, songs, nil
 }
 
 // GetDownloadURL 获取下载链接
@@ -413,14 +619,12 @@ func (q *Qianqian) fetchSongInfo(tsid string) (*model.Song, error) {
 	// 该接口不仅返回 lyric，还返回歌曲基本信息，虽然结构体需要扩展
 	var resp struct {
 		Data []struct {
-			Title      string `json:"title"`
-			AlbumTitle string `json:"albumTitle"`
-			Pic        string `json:"pic"`
-			Duration   int    `json:"duration"`
-			Artist     []struct {
-				Name string `json:"name"`
-			} `json:"artist"`
-			Lyric string `json:"lyric"`
+			Title      string           `json:"title"`
+			AlbumTitle string           `json:"albumTitle"`
+			Pic        string           `json:"pic"`
+			Duration   int              `json:"duration"`
+			Artist     []qianqianArtist `json:"artist"`
+			Lyric      string           `json:"lyric"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -431,16 +635,12 @@ func (q *Qianqian) fetchSongInfo(tsid string) (*model.Song, error) {
 	}
 
 	item := resp.Data[0]
-	var artistNames []string
-	for _, ar := range item.Artist {
-		artistNames = append(artistNames, ar.Name)
-	}
 
 	return &model.Song{
 		Source:   "qianqian",
 		ID:       tsid,
 		Name:     item.Title,
-		Artist:   strings.Join(artistNames, "、"),
+		Artist:   joinQianqianArtists(item.Artist),
 		Album:    item.AlbumTitle,
 		Duration: item.Duration,
 		Cover:    item.Pic,
@@ -498,6 +698,133 @@ func (q *Qianqian) GetLyrics(s *model.Song) (string, error) {
 		return "", fmt.Errorf("download lyric failed: %w", err)
 	}
 	return string(lrcBody), nil
+}
+
+func (q *Qianqian) resolveAlbumAssetCode(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", errors.New("album id is empty")
+	}
+
+	if normalized := normalizeQianqianAlbumAssetCode(id); normalized != "" {
+		return normalized, nil
+	}
+
+	params := url.Values{}
+	params.Set("albumid", id)
+	params.Set("appid", AppID)
+	signParams(params)
+
+	apiURL := "https://music.91q.com/v1/album/albumid2psid?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", q.cookie),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	var resp struct {
+		State  bool   `json:"state"`
+		Errno  int    `json:"errno"`
+		ErrMsg string `json:"errmsg"`
+		Data   []struct {
+			PSID string `json:"psid"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("qianqian album id json parse error: %w", err)
+	}
+	if !resp.State && resp.Errno != 22000 {
+		return "", fmt.Errorf("api error: %s (code %d)", resp.ErrMsg, resp.Errno)
+	}
+
+	for _, item := range resp.Data {
+		if psid := normalizeQianqianAlbumAssetCode(item.PSID); psid != "" {
+			return psid, nil
+		}
+	}
+
+	return "", errors.New("album asset code not found")
+}
+
+func normalizeQianqianAlbumAssetCode(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) < 2 {
+		return ""
+	}
+	if id[0] == 'p' || id[0] == 'P' {
+		return "P" + id[1:]
+	}
+	return ""
+}
+
+func qianqianAlbumLink(id string) string {
+	return fmt.Sprintf("https://music.91q.com/album/%s", id)
+}
+
+func qianqianReleaseDate(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) >= 10 {
+		return raw[:10]
+	}
+	return raw
+}
+
+func joinQianqianArtists(artists []qianqianArtist) string {
+	if len(artists) == 0 {
+		return ""
+	}
+
+	names := make([]string, 0, len(artists))
+	seen := make(map[string]struct{}, len(artists))
+	addName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+
+	for _, artist := range artists {
+		if artist.ArtistType == 38 {
+			addName(artist.Name)
+		}
+	}
+	if len(names) == 0 {
+		for _, artist := range artists {
+			addName(artist.Name)
+		}
+	}
+
+	return strings.Join(names, "、")
+}
+
+func qianqianRateStats(rateFileInfo map[string]qianqianRateFileInfo, duration int) (int64, int) {
+	for _, rate := range []string{"3000", "320", "128", "64"} {
+		info, ok := rateFileInfo[rate]
+		if !ok || info.Size <= 0 {
+			continue
+		}
+
+		if duration > 0 {
+			return info.Size, int(info.Size * 8 / 1000 / int64(duration))
+		}
+
+		if rate == "3000" {
+			return info.Size, 800
+		}
+
+		bitrate, _ := strconv.Atoi(rate)
+		return info.Size, bitrate
+	}
+
+	return 0, 0
 }
 
 func signParams(v url.Values) {

@@ -5,8 +5,10 @@ import (
 
 	"github.com/guohuiyuan/music-lib/kugou"
 	"github.com/guohuiyuan/music-lib/kuwo"
+	"github.com/guohuiyuan/music-lib/migu"
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/netease"
+	"github.com/guohuiyuan/music-lib/qianqian"
 	"github.com/guohuiyuan/music-lib/qq"
 )
 
@@ -47,6 +49,20 @@ func TestAlbumPlatforms(t *testing.T) {
 			SearchAlbum:   kuwo.SearchAlbum,
 			GetAlbumSongs: kuwo.GetAlbumSongs,
 			ParseAlbum:    kuwo.ParseAlbum,
+		},
+		{
+			Name:          "migu",
+			Keyword:       "JJ林俊杰",
+			SearchAlbum:   migu.SearchAlbum,
+			GetAlbumSongs: migu.GetAlbumSongs,
+			ParseAlbum:    migu.ParseAlbum,
+		},
+		{
+			Name:          "qianqian",
+			Keyword:       "林俊杰",
+			SearchAlbum:   qianqian.SearchAlbum,
+			GetAlbumSongs: qianqian.GetAlbumSongs,
+			ParseAlbum:    qianqian.ParseAlbum,
 		},
 	}
 
