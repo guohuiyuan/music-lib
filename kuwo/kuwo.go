@@ -135,11 +135,11 @@ func (k *Kuwo) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// SearchPlaylist 搜索歌单
-func (k *Kuwo) SearchAlbum(keyword string) ([]model.Playlist, error) {
+// 酷我的歌单和专辑搜索共用同一个 legacy 路由，仅通过 ft 参数区分类型。
+func (k *Kuwo) searchCollection(keyword, ft string, out interface{}) error {
 	params := url.Values{}
 	params.Set("all", keyword)
-	params.Set("ft", "album")
+	params.Set("ft", ft)
 	params.Set("itemset", "web_2013")
 	params.Set("client", "kt")
 	params.Set("pcmp4", "1")
@@ -158,9 +158,18 @@ func (k *Kuwo) SearchAlbum(keyword string) ([]model.Playlist, error) {
 		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
+	if err := parseKuwoLegacyJSON(body, out); err != nil {
+		return fmt.Errorf("kuwo %s json parse error: %w", ft, err)
+	}
+
+	return nil
+}
+
+// SearchAlbum 搜索专辑
+func (k *Kuwo) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	var resp struct {
 		AlbumList []struct {
 			AlbumID  string `json:"albumid"`
@@ -178,8 +187,8 @@ func (k *Kuwo) SearchAlbum(keyword string) ([]model.Playlist, error) {
 		} `json:"albumlist"`
 	}
 
-	if err := parseKuwoLegacyJSON(body, &resp); err != nil {
-		return nil, fmt.Errorf("kuwo album json parse error: %w", err)
+	if err := k.searchCollection(keyword, "album", &resp); err != nil {
+		return nil, err
 	}
 
 	albums := make([]model.Playlist, 0, len(resp.AlbumList))
@@ -216,33 +225,6 @@ func (k *Kuwo) SearchAlbum(keyword string) ([]model.Playlist, error) {
 }
 
 func (k *Kuwo) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	params := url.Values{}
-	params.Set("all", keyword)
-	params.Set("ft", "playlist")
-	params.Set("itemset", "web_2013")
-	params.Set("client", "kt")
-	params.Set("pcmp4", "1")
-	params.Set("geo", "c")
-	params.Set("vipver", "1")
-	params.Set("pn", "0")
-	params.Set("rn", "10")
-	params.Set("rformat", "json")
-	params.Set("encoding", "utf8")
-
-	apiURL := "http://search.kuwo.cn/r.s?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Cookie", k.cookie),
-		utils.WithRandomIPHeader(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	jsonStr := string(body)
-	jsonStr = strings.ReplaceAll(jsonStr, "'", "\"")
-
 	var resp struct {
 		AbsList []struct {
 			PlaylistID string `json:"playlistid"`
@@ -254,8 +236,8 @@ func (k *Kuwo) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 		} `json:"abslist"`
 	}
 
-	if err := json.Unmarshal([]byte(jsonStr), &resp); err != nil {
-		return nil, fmt.Errorf("kuwo playlist json parse error: %w", err)
+	if err := k.searchCollection(keyword, "playlist", &resp); err != nil {
+		return nil, err
 	}
 
 	var playlists []model.Playlist
