@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/guohuiyuan/music-lib/jamendo"
 	"github.com/guohuiyuan/music-lib/joox"
 	"github.com/guohuiyuan/music-lib/kugou"
 	"github.com/guohuiyuan/music-lib/kuwo"
@@ -57,6 +58,13 @@ func TestAlbumPlatforms(t *testing.T) {
 			SearchAlbum:   joox.SearchAlbum,
 			GetAlbumSongs: joox.GetAlbumSongs,
 			ParseAlbum:    joox.ParseAlbum,
+		},
+		{
+			Name:          "jamendo",
+			Keyword:       "Taylor",
+			SearchAlbum:   jamendo.SearchAlbum,
+			GetAlbumSongs: jamendo.GetAlbumSongs,
+			ParseAlbum:    jamendo.ParseAlbum,
 		},
 		{
 			Name:          "migu",
