@@ -1,36 +1,36 @@
 # music-lib
 
-music-lib 是个用 Go 写的音乐库。
+`music-lib` 是一个用 Go 编写的音乐平台能力库。
 
-它没有 UI，主要帮你解决各个音乐平台的数据接口问题——不管是搜索、解析还是下载。如果你想自己写个音乐下载器或者播放器，用它正好。
+它不提供 UI，主要用来统一不同平台的歌曲、歌单、专辑搜索与解析能力，适合拿来做下载器、播放器、聚合工具或你自己的上层服务。
 
 ## 主要功能
 
 支持网易云、QQ、酷狗、酷我这些主流平台，也能搞定汽水音乐、5sing 这些。具体支持情况如下：
 
-| 平台       | 包名         | 搜索 | 下载 | 歌词 | 歌曲解析 | 歌单搜索 | 歌单推荐 | 歌单歌曲 | 歌单链接解析 | 备注           |
-| :--------- | :----------- | :--: | :--: | :--: | :------: | :------: | :------: | :------: | :----------: | :------------- |
-| 网易云音乐 | `netease`  |  ✅  |  ✅  |  ✅  |    ✅    |    ✅    |    ✅    |    ✅    |      ✅      | 支持 FLAC 无损 |
-| QQ 音乐    | `qq`       |  ✅  |  ✅  |  ✅  |    ✅    |    ✅    |    ✅    |    ✅    |      ✅      | 支持 FLAC 无损 |
-| 酷狗音乐   | `kugou`    |  ✅  |  ✅  |  ✅  |    ✅    |    ✅    |    ✅    |    ✅    |      ✅      | 支持普通歌曲 FLAC 无损 |
-| 酷我音乐   | `kuwo`     |  ✅  |  ✅  |  ✅  |    ✅    |    ✅    |    ✅    |    ✅    |      ✅      |                |
-| 咪咕音乐   | `migu`     |  ✅  |  ✅  |  ✅  |    ❌    |    ✅    |    ❌    |    ❌    |      ❌      |                |
-| 千千音乐   | `qianqian` |  ✅  |  ✅  |  ✅  |    ❌    |    ❌    |    ❌    |    ✅    |      ❌      |                |
-| 汽水音乐   | `soda`     |  ✅  |  ✅  |  ✅  |    ✅    |    ✅    |    ❌    |    ✅    |      ✅      | 音频解密       |
-| 5sing      | `fivesing` |  ✅  |  ✅  |  ✅  |    ✅    |    ✅    |    ❌    |    ✅    |      ✅      |                |
-| Jamendo    | `jamendo`  |  ✅  |  ✅  |  ❌  |    ✅    |    ❌    |    ❌    |    ❌    |      ❌      |                |
-| JOOX       | `joox`     |  ✅  |  ✅  |  ✅  |    ❌    |    ✅    |    ❌    |    ❌    |      ❌      |                |
-| Bilibili   | `bilibili` |  ✅  |  ✅  |  ❌  |    ✅    |    ✅    |    ❌    |    ✅    |      ✅      | 支持 FLAC 无损 |
+| 平台       | 包名         | 搜索 | 下载 | 歌词 | 歌曲解析 | 歌单搜索 | 歌单推荐 | 歌单歌曲 | 歌单链接解析 | 专辑搜索 | 专辑歌曲 | 专辑链接解析 | 备注                   |
+| ---------- | ------------ | ---- | ---- | ---- | -------- | -------- | -------- | -------- | ------------ | -------- | -------- | ------------ | ---------------------- |
+| 网易云音乐 | `netease`  | ✅   | ✅   | ✅   | ✅       | ✅       | ✅       | ✅       | ✅           | ✅       | ✅       | ✅           | 支持 FLAC 无损         |
+| QQ 音乐    | `qq`       | ✅   | ✅   | ✅   | ✅       | ✅       | ✅       | ✅       | ✅           | ✅       | ✅       | ✅           | 支持 FLAC 无损         |
+| 酷狗音乐   | `kugou`    | ✅   | ✅   | ✅   | ✅       | ✅       | ✅       | ✅       | ✅           | ✅       | ✅       | ✅           | 支持普通歌曲 FLAC 无损 |
+| 酷我音乐   | `kuwo`     | ✅   | ✅   | ✅   | ✅       | ✅       | ✅       | ✅       | ✅           | ✅       | ✅       | ✅           |                        |
+| 咪咕音乐   | `migu`     | ✅   | ✅   | ✅   | ✅       | ❌       | ❌       | ❌       | ❌           | ✅       | ✅       | ✅           |                        |
+| 千千音乐   | `qianqian` | ✅   | ✅   | ✅   | ❌       | ❌       | ❌       | ❌       | ❌           | ✅       | ✅       | ✅           |                        |
+| 汽水音乐   | `soda`     | ✅   | ✅   | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ✅       | ✅       | ✅           | 音频解密               |
+| 5sing      | `fivesing` | ✅   | ✅   | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ❌       | ❌       | ❌           |                        |
+| Jamendo    | `jamendo`  | ✅   | ✅   | ✅   | ✅       | ❌       | ❌       | ❌       | ❌           | ✅       | ✅       | ✅           |                        |
+| JOOX       | `joox`     | ✅   | ✅   | ✅   | ❌       | ❌       | ❌       | ❌       | ❌           | ✅       | ✅       | ✅           |                        |
+| Bilibili   | `bilibili` | ✅   | ✅   | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ❌       | ❌       | ❌           | 支持 FLAC 无损         |
 
-## 怎么用
-
-直接 `go get`：
+## 安装
 
 ```bash
 go get github.com/guohuiyuan/music-lib
 ```
 
-### 1. 搜歌 + 下载
+## 使用示例
+
+### 1. 搜歌并获取下载地址
 
 ```go
 package main
@@ -48,20 +48,20 @@ func main() {
 		log.Fatal(err)
 	}
 	if len(songs) == 0 {
-		fmt.Println("没找到相关歌曲")
+		fmt.Println("没有找到相关歌曲")
 		return
 	}
 
-	// 拿第一首的下载地址
 	url, err := kugou.GetDownloadURL(&songs[0])
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	fmt.Println("下载地址:", url)
 }
 ```
 
-### 2. 获取推荐歌单 (新功能)
+### 2. 搜索专辑并获取专辑歌曲
 
 ```go
 package main
@@ -69,20 +69,27 @@ package main
 import (
 	"fmt"
 	"log"
-	"github.com/guohuiyuan/music-lib/netease"
+
+	"github.com/guohuiyuan/music-lib/qq"
 )
 
 func main() {
-	// 获取不需要登录的推荐歌单
-	playlists, err := netease.GetRecommendedPlaylists()
+	albums, err := qq.SearchAlbum("Taylor")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(albums) == 0 {
+		fmt.Println("没有找到相关专辑")
+		return
+	}
+
+	album := albums[0]
+	songs, err := qq.GetAlbumSongs(album.ID)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("拿到 %d 个推荐歌单：\n", len(playlists))
-	for _, p := range playlists {
-		fmt.Printf("- %s (ID: %s)\n", p.Name, p.ID)
-	}
+	fmt.Printf("专辑: %s, 共 %d 首歌\n", album.Name, len(songs))
 }
 ```
 
@@ -94,6 +101,7 @@ package main
 import (
 	"fmt"
 	"log"
+
 	"github.com/guohuiyuan/music-lib/netease"
 )
 
@@ -103,34 +111,37 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	fmt.Printf("%s 共有 %d 首歌\n", playlist.Name, len(songs))
 }
 ```
 
-## 设计的一点想法
+## 设计说明
 
-做这个库的时候，我尽量保证了**独立性**和**统一性**。
-
-- **独立性**：你可以只引 `netease` 包，别的包不会进去污染你的依赖。
-- **统一性**：不管用哪个包，返回的 `Song` 和 `Playlist` 结构都是一样的，切换源的时候不用改业务逻辑。
-- **扩展性**：如果要加新平台，照着 `provider` 接口实现一遍就行。
+- 独立性：每个平台包彼此独立，可以按需引入。
+- 统一性：大部分平台统一返回 `Song` 和 `Playlist` 结构，便于上层复用。
+- 可扩展性：新增平台时，按现有包结构补实现即可。
 
 ## 目录结构
 
-```
+```text
 music-lib/
-├── model/      # 都在用的数据结构
+├── model/      # 通用数据结构
 ├── provider/   # 接口定义
-├── netease/    # 各个平台的实现
+├── netease/    # 各平台实现
 ├── qq/
 ├── kugou/
-...
+├── kuwo/
+├── migu/
+├── qianqian/
+├── soda/
+├── ...
 └── README.md
 ```
 
 ## 许可证
 
-本项目遵循 GNU Affero General Public License v3.0（AGPL-3.0）。详情见 [LICENSE](LICENSE)。
+本项目使用 `GNU Affero General Public License v3.0 (AGPL-3.0)`，详见 [LICENSE](LICENSE)。
 
 ## 免责声明
 
