@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -29,6 +28,24 @@ type Netease struct {
 	cookie     string
 	isVipCache *bool
 }
+
+type neteaseLinkKind string
+
+const (
+	neteaseLinkUnknown  neteaseLinkKind = ""
+	neteaseLinkSong     neteaseLinkKind = "song"
+	neteaseLinkAlbum    neteaseLinkKind = "album"
+	neteaseLinkPlaylist neteaseLinkKind = "playlist"
+)
+
+var (
+	errInvalidNeteaseLink      = errors.New("invalid netease link")
+	errNeteasePlaylistLink     = errors.New("netease playlist link detected, use ParsePlaylist")
+	errNeteaseAlbumLink        = errors.New("netease album link detected, use ParseAlbum")
+	errNeteaseInvalidAlbumLink = errors.New("invalid netease album link")
+	errNeteaseInvalidListLink  = errors.New("invalid netease playlist link")
+	errNeteaseSongNotFound     = errors.New("netease song not found")
+)
 
 func New(cookie string) *Netease { return &Netease{cookie: cookie} }
 
@@ -360,12 +377,10 @@ func (n *Netease) GetAlbumSongs(albumID string) ([]model.Song, error) {
 
 // ParseAlbum parses an album link.
 func (n *Netease) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
-	re := regexp.MustCompile(`album\?id=(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return nil, nil, errors.New("invalid netease album link")
+	kind, albumID, err := parseNeteaseLink(link)
+	if err != nil || kind != neteaseLinkAlbum {
+		return nil, nil, errNeteaseInvalidAlbumLink
 	}
-	albumID := matches[1]
 	return n.fetchAlbumDetail(albumID)
 }
 
@@ -377,12 +392,10 @@ func (n *Netease) GetPlaylistSongs(playlistID string) ([]model.Song, error) {
 
 // ParsePlaylist parses a playlist link.
 func (n *Netease) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	re := regexp.MustCompile(`playlist\?id=(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return nil, nil, errors.New("invalid netease playlist link")
+	kind, playlistID, err := parseNeteaseLink(link)
+	if err != nil || kind != neteaseLinkPlaylist {
+		return nil, nil, errNeteaseInvalidListLink
 	}
-	playlistID := matches[1]
 	return n.fetchPlaylistDetail(playlistID)
 }
 
@@ -709,16 +722,26 @@ func (n *Netease) fetchSongsBatch(songIDs []string) ([]model.Song, error) {
 
 // Parse parses a song link.
 func (n *Netease) Parse(link string) (*model.Song, error) {
-	re := regexp.MustCompile(`id=(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return nil, errors.New("invalid netease link")
+	kind, songID, err := parseNeteaseLink(link)
+	if err != nil {
+		return nil, errInvalidNeteaseLink
 	}
-	songID := matches[1]
+	switch kind {
+	case neteaseLinkPlaylist:
+		return nil, errNeteasePlaylistLink
+	case neteaseLinkAlbum:
+		return nil, errNeteaseAlbumLink
+	case neteaseLinkSong:
+	default:
+		return nil, errInvalidNeteaseLink
+	}
 
 	songs, err := n.fetchSongsBatch([]string{songID})
-	if err != nil || len(songs) == 0 {
-		return nil, fmt.Errorf("fetch song detail failed: %v", err)
+	if err != nil {
+		return nil, fmt.Errorf("fetch song detail failed: %w", err)
+	}
+	if len(songs) == 0 {
+		return nil, errNeteaseSongNotFound
 	}
 	song := &songs[0]
 
@@ -728,6 +751,94 @@ func (n *Netease) Parse(link string) (*model.Song, error) {
 	}
 
 	return song, nil
+}
+
+func parseNeteaseLink(link string) (neteaseLinkKind, string, error) {
+	candidates := []string{link}
+
+	if parsed, err := url.Parse(link); err == nil {
+		if parsed.Path != "" && parsed.Path != "/" {
+			pathCandidate := parsed.Path
+			if parsed.RawQuery != "" {
+				pathCandidate += "?" + parsed.RawQuery
+			}
+			candidates = append(candidates, pathCandidate)
+		}
+		if fragment := strings.TrimSpace(strings.TrimPrefix(parsed.Fragment, "!")); fragment != "" {
+			candidates = append(candidates, fragment)
+		}
+	}
+
+	for _, candidate := range candidates {
+		if kind, id, ok := parseNeteaseLinkCandidate(candidate); ok {
+			return kind, id, nil
+		}
+	}
+
+	return neteaseLinkUnknown, "", errInvalidNeteaseLink
+}
+
+func parseNeteaseLinkCandidate(candidate string) (neteaseLinkKind, string, bool) {
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return neteaseLinkUnknown, "", false
+	}
+
+	var kind neteaseLinkKind
+	segments := strings.FieldsFunc(strings.ToLower(parsed.Path), func(r rune) bool {
+		return r == '/'
+	})
+	for _, segment := range segments {
+		switch segment {
+		case string(neteaseLinkSong):
+			kind = neteaseLinkSong
+		case string(neteaseLinkAlbum):
+			kind = neteaseLinkAlbum
+		case string(neteaseLinkPlaylist):
+			kind = neteaseLinkPlaylist
+		}
+	}
+
+	id := parsed.Query().Get("id")
+	if !isDigits(id) {
+		id = ""
+	}
+
+	if kind == neteaseLinkUnknown && len(segments) >= 2 {
+		last := segments[len(segments)-1]
+		prev := segments[len(segments)-2]
+		if isDigits(last) {
+			switch prev {
+			case string(neteaseLinkSong):
+				kind = neteaseLinkSong
+			case string(neteaseLinkAlbum):
+				kind = neteaseLinkAlbum
+			case string(neteaseLinkPlaylist):
+				kind = neteaseLinkPlaylist
+			}
+			if kind != neteaseLinkUnknown {
+				id = last
+			}
+		}
+	}
+
+	if kind == neteaseLinkUnknown || id == "" {
+		return neteaseLinkUnknown, "", false
+	}
+
+	return kind, id, true
+}
+
+func isDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // GetDownloadURL returns a download URL.
