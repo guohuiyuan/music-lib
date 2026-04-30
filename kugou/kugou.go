@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/guohuiyuan/music-lib/lyrics"
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
 )
@@ -1441,7 +1442,7 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 		hash = s.Extra["hash"]
 	}
 
-	searchURL := fmt.Sprintf("http://krcs.kugou.com/search?ver=1&client=mobi&duration=&hash=%s&album_audio_id=", hash)
+	searchURL := fmt.Sprintf("http://krcs.kugou.com/search?ver=1&client=mobi&duration=%d&hash=%s&album_audio_id=", s.Duration*1000, hash)
 
 	body, err := utils.Get(searchURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
@@ -1471,7 +1472,7 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 	}
 
 	candidate := searchResp.Candidates[0]
-	downloadURL := fmt.Sprintf("http://lyrics.kugou.com/download?ver=1&client=pc&id=%v&accesskey=%s&fmt=lrc&charset=utf8", candidate.ID, candidate.AccessKey)
+	downloadURL := fmt.Sprintf("http://lyrics.kugou.com/download?ver=1&client=pc&id=%v&accesskey=%s&fmt=krc&charset=utf8", candidate.ID, candidate.AccessKey)
 
 	lrcBody, err := utils.Get(downloadURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
@@ -1484,9 +1485,10 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 	}
 
 	var downloadResp struct {
-		Status  int    `json:"status"`
-		Content string `json:"content"`
-		Fmt     string `json:"fmt"`
+		Status      int    `json:"status"`
+		Content     string `json:"content"`
+		Fmt         string `json:"fmt"`
+		ContentType int    `json:"contenttype"`
 	}
 	if err := json.Unmarshal(lrcBody, &downloadResp); err != nil {
 		return "", fmt.Errorf("download lyrics json parse error: %w", err)
@@ -1495,12 +1497,41 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 		return "", errors.New("lyrics content is empty")
 	}
 
-	decodedBytes, err := base64.StdEncoding.DecodeString(downloadResp.Content)
-	if err != nil {
-		return "", fmt.Errorf("base64 decode error: %w", err)
+	tags := map[string]string{
+		"ti": s.Name,
+		"ar": s.Artist,
+		"al": s.Album,
 	}
-
-	return string(decodedBytes), nil
+	var data lyrics.MultiData
+	if downloadResp.ContentType == 2 || downloadResp.Fmt == "lrc" {
+		decodedBytes, err := base64.StdEncoding.DecodeString(downloadResp.Content)
+		if err != nil {
+			return "", fmt.Errorf("base64 decode error: %w", err)
+		}
+		lrcTags, lrcData := lyrics.ParseLRC(string(decodedBytes))
+		for k, v := range lrcTags {
+			if strings.TrimSpace(tags[k]) == "" {
+				tags[k] = v
+			}
+		}
+		data = lyrics.MultiData{"orig": lrcData}
+	} else {
+		krc, err := lyrics.DecodeKRCBase64(downloadResp.Content)
+		if err != nil {
+			return "", fmt.Errorf("krc decode error: %w", err)
+		}
+		krcTags, krcData := lyrics.ParseKRC(krc)
+		for k, v := range krcTags {
+			if strings.TrimSpace(tags[k]) == "" {
+				tags[k] = v
+			}
+		}
+		data = krcData
+	}
+	if len(data["orig"]) == 0 {
+		return "", errors.New("lyrics content is empty")
+	}
+	return lyrics.ConvertVerbatimLRC(tags, data, []string{"orig", "ts", "roma"}), nil
 }
 
 func isValidHash(h string) bool {

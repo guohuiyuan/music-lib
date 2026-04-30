@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/guohuiyuan/music-lib/lyrics"
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
 )
@@ -970,6 +971,8 @@ func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 		"id":         songID,
 		"lv":         -1,
 		"tv":         -1,
+		"rv":         -1,
+		"yv":         -1,
 	}
 	reqJSON, _ := json.Marshal(reqData)
 	params, encSecKey := EncryptWeApi(string(reqJSON))
@@ -995,6 +998,15 @@ func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 		Lrc  struct {
 			Lyric string `json:"lyric"`
 		} `json:"lrc"`
+		Yrc struct {
+			Lyric string `json:"lyric"`
+		} `json:"yrc"`
+		TLyric struct {
+			Lyric string `json:"lyric"`
+		} `json:"tlyric"`
+		RomaLrc struct {
+			Lyric string `json:"lyric"`
+		} `json:"romalrc"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("json parse error: %w", err)
@@ -1002,7 +1014,33 @@ func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 	if resp.Code != 200 {
 		return "", fmt.Errorf("netease api error code: %d", resp.Code)
 	}
-	return resp.Lrc.Lyric, nil
+	tags := map[string]string{
+		"ti": s.Name,
+		"ar": s.Artist,
+		"al": s.Album,
+	}
+	data := lyrics.MultiData{}
+	if strings.TrimSpace(resp.Yrc.Lyric) != "" {
+		data["orig"] = lyrics.ParseYRC(resp.Yrc.Lyric)
+	} else if strings.TrimSpace(resp.Lrc.Lyric) != "" {
+		lrcTags, lrcData := lyrics.ParseLRC(resp.Lrc.Lyric)
+		for k, v := range lrcTags {
+			if strings.TrimSpace(tags[k]) == "" {
+				tags[k] = v
+			}
+		}
+		data["orig"] = lrcData
+	}
+	if strings.TrimSpace(resp.TLyric.Lyric) != "" {
+		_, data["ts"] = lyrics.ParseLRC(resp.TLyric.Lyric)
+	}
+	if strings.TrimSpace(resp.RomaLrc.Lyric) != "" {
+		_, data["roma"] = lyrics.ParseLRC(resp.RomaLrc.Lyric)
+	}
+	if len(data["orig"]) == 0 {
+		return "", errors.New("lyric is empty or not found")
+	}
+	return lyrics.ConvertVerbatimLRC(tags, data, []string{"orig", "ts", "roma"}), nil
 }
 
 // GetRecommendedPlaylists returns homepage recommended playlists.
