@@ -17,13 +17,53 @@ func TestParseYRCAndConvertVerbatimLRC(t *testing.T) {
 		"orig": orig,
 		"ts":   ts,
 		"roma": roma,
-	}, []string{"orig", "ts", "roma"})
+	}, DefaultDisplayOrder())
 
 	for _, want := range []string{
 		"[ti:song]",
 		"[00:01.00]你[00:01.50]好[00:02.00]",
-		"[00:01.00]hello[00:02.00]",
 		"[00:01.00]ni hao[00:02.00]",
+		"[00:01.00]hello[00:02.00]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("converted lrc missing %q:\n%s", want, got)
+		}
+	}
+
+	if strings.Index(got, "ni hao") > strings.Index(got, "hello") {
+		t.Fatalf("romaji should be emitted before translation:\n%s", got)
+	}
+}
+
+func TestConvertVerbatimLRCMapsExtraTracksByTimestampBeforeIndex(t *testing.T) {
+	orig := ParseYRC("[0,200](0,200,0)作词\n[980,1000](980,500,0)家まで(1480,500,0)送って")
+	_, ts := ParseLRC("[00:00.98]希望你能送我回家")
+	_, roma := ParseLRC("[00:00.98]ie made okutte")
+
+	got := ConvertVerbatimLRC(nil, MultiData{
+		"orig": orig,
+		"ts":   ts,
+		"roma": roma,
+	}, DefaultDisplayOrder())
+
+	for _, wrong := range []string{
+		"[00:00.00][00:00.98]ie made okutte",
+		"[00:00.00][00:00.98]希望你能送我回家",
+		"[00:00.00]ie made okutte",
+		"[00:00.00]希望你能送我回家",
+	} {
+		if strings.Contains(got, wrong) {
+			t.Fatalf("extra tracks were incorrectly paired by index:\n%s", got)
+		}
+	}
+	if strings.Count(got, "ie made okutte") != 1 || strings.Count(got, "希望你能送我回家") != 1 {
+		t.Fatalf("extra tracks were incorrectly paired by index:\n%s", got)
+	}
+	for _, want := range []string{
+		"[00:00.00]作词[00:00.20]",
+		"[00:00.98]家まで[00:01.48]送って[00:01.98]",
+		"[00:00.98]ie made okutte[00:01.98]",
+		"[00:00.98]希望你能送我回家[00:01.98]",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("converted lrc missing %q:\n%s", want, got)

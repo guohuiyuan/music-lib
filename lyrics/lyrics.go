@@ -192,7 +192,7 @@ func ConvertVerbatimLRC(tags map[string]string, data MultiData, order []string) 
 	var b strings.Builder
 	writeTags(&b, tags)
 	if len(order) == 0 {
-		order = []string{"orig", "ts", "roma"}
+		order = DefaultDisplayOrder()
 	}
 	orig := data["orig"]
 	for i, origLine := range orig {
@@ -215,6 +215,10 @@ func ConvertVerbatimLRC(tags map[string]string, data MultiData, order []string) 
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func DefaultDisplayOrder() []string {
+	return []string{"orig", "roma", "ts"}
 }
 
 func DecryptKRC(content []byte) (string, error) {
@@ -362,17 +366,29 @@ func writeTags(b *strings.Builder, tags map[string]string) {
 }
 
 func mappedIndex(lines Data, i int, orig Line) int {
-	if i < len(lines) {
-		return i
-	}
 	if orig.Start.OK {
 		for idx, line := range lines {
-			if line.Start.OK && line.Start.MS == orig.Start.MS {
+			if line.Start.OK && line.Start.MS == orig.Start.MS && lineHasText(line) {
 				return idx
 			}
 		}
+		if hasTimedLines(lines) {
+			return -1
+		}
+	}
+	if i < len(lines) {
+		return i
 	}
 	return -1
+}
+
+func hasTimedLines(lines Data) bool {
+	for _, line := range lines {
+		if line.Start.OK {
+			return true
+		}
+	}
+	return false
 }
 
 func lineStart(line Line) Time {

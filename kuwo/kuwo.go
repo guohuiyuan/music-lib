@@ -1,10 +1,14 @@
 package kuwo
 
 import (
+	"bytes"
+	"compress/zlib"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"math/rand"
 	"net/url"
 	"regexp"
@@ -14,10 +18,18 @@ import (
 
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const (
 	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+)
+
+var (
+	kuwoNewLyricKey    = []byte("yeelion")
+	kuwoNewLyricLineRe = regexp.MustCompile(`^\[(\d{2}):(\d{2})\.(\d{3})\](.*)$`)
+	kuwoNewLyricTagRe  = regexp.MustCompile(`^\[[A-Za-z]+:[^\]]*\]$`)
+	kuwoNewLyricWordRe = regexp.MustCompile(`<(-?\d+),(-?\d+)>([^<]*)`)
 )
 
 type Kuwo struct {
@@ -957,6 +969,10 @@ func (k *Kuwo) GetLyrics(s *model.Song) (string, error) {
 		rid = s.Extra["rid"]
 	}
 
+	if lrc, err := k.fetchNewLyrics(rid); err == nil && strings.TrimSpace(lrc) != "" {
+		return lrc, nil
+	}
+
 	params := url.Values{}
 	params.Set("musicId", rid)
 	params.Set("httpsStatus", "1")
@@ -996,6 +1012,212 @@ func (k *Kuwo) GetLyrics(s *model.Song) (string, error) {
 		sb.WriteString(fmt.Sprintf("[%02d:%02d.%02d]%s\n", m, s, ms, line.LineLyric))
 	}
 	return sb.String(), nil
+}
+
+func (k *Kuwo) fetchNewLyrics(rid string) (string, error) {
+	apiURL := "http://newlyric.kuwo.cn/newlyric.lrc?" + buildKuwoNewLyricParams(rid, true)
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return "", err
+	}
+	raw, err := decodeKuwoNewLyric(body, true)
+	if err != nil {
+		return "", err
+	}
+	lrc := convertKuwoNewLyric(raw)
+	if strings.TrimSpace(lrc) == "" || !hasKuwoTimestampedLyric(lrc) {
+		return "", errors.New("kuwo newlyric content is empty")
+	}
+	return lrc, nil
+}
+
+func buildKuwoNewLyricParams(musicID string, lyricx bool) string {
+	params := "user=12345,web,web,web&requester=localhost&req=1&rid=MUSIC_" + musicID
+	if lyricx {
+		params += "&lrcx=1"
+	}
+	return base64.StdEncoding.EncodeToString(xorKuwoNewLyric([]byte(params)))
+}
+
+func decodeKuwoNewLyric(buf []byte, lyricx bool) (string, error) {
+	if !bytes.HasPrefix(buf, []byte("tp=content")) {
+		return "", errors.New("invalid kuwo newlyric response")
+	}
+	idx := bytes.Index(buf, []byte("\r\n\r\n"))
+	if idx < 0 {
+		return "", errors.New("invalid kuwo newlyric payload")
+	}
+	plain, err := inflateKuwoNewLyric(buf[idx+4:])
+	if err != nil {
+		return "", err
+	}
+
+	if lyricx {
+		decoded, err := base64.StdEncoding.DecodeString(compactBase64(string(plain)))
+		if err != nil {
+			return "", err
+		}
+		plain = xorKuwoNewLyric(decoded)
+	}
+
+	text, err := simplifiedchinese.GB18030.NewDecoder().String(string(plain))
+	if err != nil {
+		return "", err
+	}
+	return text, nil
+}
+
+func inflateKuwoNewLyric(data []byte) ([]byte, error) {
+	r, err := zlib.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+func xorKuwoNewLyric(data []byte) []byte {
+	out := make([]byte, len(data))
+	for i, b := range data {
+		out[i] = b ^ kuwoNewLyricKey[i%len(kuwoNewLyricKey)]
+	}
+	return out
+}
+
+func compactBase64(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\n', '\r', '\t':
+			return -1
+		default:
+			return r
+		}
+	}, s)
+}
+
+func convertKuwoNewLyric(raw string) string {
+	lines := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\r' || r == '\n'
+	})
+	var out []string
+
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		matches := kuwoNewLyricLineRe.FindStringSubmatch(line)
+		if matches == nil {
+			if kuwoNewLyricTagRe.MatchString(line) {
+				out = append(out, line)
+			}
+			continue
+		}
+
+		payload := matches[4]
+		if isKuwoChineseTranslationPayload(payload) {
+			continue
+		}
+		text := strings.TrimSpace(kuwoNewLyricPayloadText(payload))
+		if text == "" {
+			continue
+		}
+
+		timestamp := fmt.Sprintf("[%s:%s.%s]", matches[1], matches[2], matches[3])
+		out = append(out, timestamp+text)
+
+		var roma, translation string
+		for i+1 < len(lines) {
+			nextMatches := kuwoNewLyricLineRe.FindStringSubmatch(strings.TrimSpace(lines[i+1]))
+			if nextMatches == nil || !strings.HasPrefix(nextMatches[4], "<0,0>") {
+				break
+			}
+			nextText := strings.TrimSpace(kuwoNewLyricPayloadText(nextMatches[4]))
+			i++
+			if nextText == "" {
+				continue
+			}
+			switch {
+			case isKuwoChineseTranslationPayload(nextMatches[4]) && translation == "":
+				translation = nextText
+			case isKuwoRomajiPayload(nextText) && roma == "":
+				roma = nextText
+			}
+		}
+		if roma != "" {
+			out = append(out, timestamp+roma)
+		}
+		if translation != "" {
+			out = append(out, timestamp+translation)
+		}
+	}
+
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
+func kuwoNewLyricPayloadText(payload string) string {
+	matches := kuwoNewLyricWordRe.FindAllStringSubmatch(payload, -1)
+	if len(matches) == 0 {
+		return strings.TrimSpace(payload)
+	}
+	var b strings.Builder
+	for _, match := range matches {
+		b.WriteString(match[3])
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func isKuwoChineseTranslationPayload(payload string) bool {
+	if !strings.HasPrefix(payload, "<0,0>") {
+		return false
+	}
+	text := kuwoNewLyricPayloadText(payload)
+	return containsHan(text) && !containsKana(text)
+}
+
+func isKuwoRomajiPayload(text string) bool {
+	hasLatin := false
+	for _, r := range text {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+			hasLatin = true
+			continue
+		}
+		if containsHan(string(r)) || containsKana(string(r)) {
+			return false
+		}
+	}
+	return hasLatin
+}
+
+func containsHan(s string) bool {
+	for _, r := range s {
+		if r >= '\u4e00' && r <= '\u9fff' {
+			return true
+		}
+	}
+	return false
+}
+
+func containsKana(s string) bool {
+	for _, r := range s {
+		if (r >= '\u3040' && r <= '\u30ff') || (r >= '\uff66' && r <= '\uff9f') {
+			return true
+		}
+	}
+	return false
+}
+
+func hasKuwoTimestampedLyric(lrc string) bool {
+	for _, line := range strings.Split(lrc, "\n") {
+		if kuwoNewLyricLineRe.MatchString(strings.TrimSpace(line)) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseKuwoLegacyJSON(body []byte, out interface{}) error {

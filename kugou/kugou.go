@@ -1531,7 +1531,7 @@ func (k *Kugou) GetLyrics(s *model.Song) (string, error) {
 	if len(data["orig"]) == 0 {
 		return "", errors.New("lyrics content is empty")
 	}
-	return lyrics.ConvertVerbatimLRC(tags, data, []string{"orig", "ts", "roma"}), nil
+	return lyrics.ConvertVerbatimLRC(tags, data, lyrics.DefaultDisplayOrder()), nil
 }
 
 func isValidHash(h string) bool {

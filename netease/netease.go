@@ -1040,7 +1040,7 @@ func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 	if len(data["orig"]) == 0 {
 		return "", errors.New("lyric is empty or not found")
 	}
-	return lyrics.ConvertVerbatimLRC(tags, data, []string{"orig", "ts", "roma"}), nil
+	return lyrics.ConvertVerbatimLRC(tags, data, lyrics.DefaultDisplayOrder()), nil
 }
 
 // GetRecommendedPlaylists returns homepage recommended playlists.
