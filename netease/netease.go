@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/guohuiyuan/music-lib/lyrics"
 	"github.com/guohuiyuan/music-lib/model"
@@ -47,6 +49,30 @@ var (
 	errNeteaseInvalidListLink  = errors.New("invalid netease playlist link")
 	errNeteaseSongNotFound     = errors.New("netease song not found")
 )
+
+type cachedDownloadURL struct {
+	url       string
+	ext       string
+	expiresAt time.Time
+}
+
+type cachedVIPStatus struct {
+	isVip     bool
+	expiresAt time.Time
+}
+
+var downloadURLCache = struct {
+	sync.Mutex
+	items map[string]cachedDownloadURL
+}{items: make(map[string]cachedDownloadURL)}
+
+var vipStatusCache = struct {
+	sync.Mutex
+	items map[string]cachedVIPStatus
+}{items: make(map[string]cachedVIPStatus)}
+
+const downloadURLCacheTTL = 10 * time.Minute
+const vipStatusCacheTTL = 10 * time.Minute
 
 func New(cookie string) *Netease { return &Netease{cookie: cookie} }
 
@@ -92,6 +118,11 @@ func (n *Netease) IsVipAccount() (bool, error) {
 		return false, nil
 	}
 
+	if cached, ok := n.getCachedVIPStatus(); ok {
+		n.isVipCache = &cached
+		return cached, nil
+	}
+
 	reqData := map[string]interface{}{
 		"csrf_token": "",
 	}
@@ -126,7 +157,41 @@ func (n *Netease) IsVipAccount() (bool, error) {
 
 	isVip := resp.Code == 200 && resp.Profile.VipType != 0
 	n.isVipCache = &isVip
+	n.setCachedVIPStatus(isVip)
 	return isVip, nil
+}
+
+func (n *Netease) vipStatusCacheKey() string {
+	return utils.MD5(n.cookie)
+}
+
+func (n *Netease) getCachedVIPStatus() (bool, bool) {
+	key := n.vipStatusCacheKey()
+	now := time.Now()
+
+	vipStatusCache.Lock()
+	defer vipStatusCache.Unlock()
+
+	item, ok := vipStatusCache.items[key]
+	if !ok {
+		return false, false
+	}
+	if now.After(item.expiresAt) {
+		delete(vipStatusCache.items, key)
+		return false, false
+	}
+	return item.isVip, true
+}
+
+func (n *Netease) setCachedVIPStatus(isVip bool) {
+	key := n.vipStatusCacheKey()
+
+	vipStatusCache.Lock()
+	defer vipStatusCache.Unlock()
+	vipStatusCache.items[key] = cachedVIPStatus{
+		isVip:     isVip,
+		expiresAt: time.Now().Add(vipStatusCacheTTL),
+	}
 }
 
 // cloudSearch calls the shared Netease cloud search route.
@@ -853,16 +918,25 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 		songID = s.Extra["song_id"]
 	}
 
-	// Try the higher-quality eapi route for VIP accounts first.
-	isVip, _ := n.IsVipAccount()
-	if isVip {
-		// Prefer higher-quality levels when they are available.
-		if url, err := n.getEAPIDownloadURL(songID, "hires"); err == nil && url != "" {
-			return url, nil
-		} else if url, err := n.getEAPIDownloadURL(songID, "lossless"); err == nil && url != "" {
-			return url, nil
-		} else if url, err := n.getEAPIDownloadURL(songID, "exhigh"); err == nil && url != "" {
-			return url, nil
+	levels := preferredDownloadLevels(s)
+
+	if n.cookie != "" {
+		isVip, _ := n.IsVipAccount()
+		if isVip {
+			if cached, ok := n.getCachedDownloadURL(songID, strings.Join(levels, ",")); ok {
+				if cached.ext != "" {
+					s.Ext = cached.ext
+				}
+				return cached.url, nil
+			}
+
+			for _, level := range levels {
+				if url, ext, err := n.getEAPIDownloadURL(songID, level); err == nil && url != "" {
+					s.Ext = ext
+					n.setCachedDownloadURL(songID, strings.Join(levels, ","), url, s.Ext)
+					return url, nil
+				}
+			}
 		}
 	}
 
@@ -902,14 +976,66 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	if len(resp.Data) == 0 || resp.Data[0].URL == "" {
 		return "", errors.New("download url not found (might be vip or copyright restricted)")
 	}
+	n.setCachedDownloadURL(songID, strings.Join(levels, ","), resp.Data[0].URL, s.Ext)
 	return resp.Data[0].URL, nil
 }
 
+func (n *Netease) downloadURLCacheKey(songID string, levels string) string {
+	return songID + ":" + levels + ":" + utils.MD5(n.cookie)
+}
+
+func (n *Netease) getCachedDownloadURL(songID string, levels string) (cachedDownloadURL, bool) {
+	key := n.downloadURLCacheKey(songID, levels)
+	now := time.Now()
+
+	downloadURLCache.Lock()
+	defer downloadURLCache.Unlock()
+
+	item, ok := downloadURLCache.items[key]
+	if !ok {
+		return cachedDownloadURL{}, false
+	}
+	if now.After(item.expiresAt) {
+		delete(downloadURLCache.items, key)
+		return cachedDownloadURL{}, false
+	}
+	return item, true
+}
+
+func (n *Netease) setCachedDownloadURL(songID string, levels string, url string, ext string) {
+	if strings.TrimSpace(url) == "" {
+		return
+	}
+	key := n.downloadURLCacheKey(songID, levels)
+
+	downloadURLCache.Lock()
+	defer downloadURLCache.Unlock()
+	downloadURLCache.items[key] = cachedDownloadURL{
+		url:       url,
+		ext:       ext,
+		expiresAt: time.Now().Add(downloadURLCacheTTL),
+	}
+}
+
+func preferredDownloadLevels(s *model.Song) []string {
+	if s != nil && s.Extra != nil {
+		level := strings.ToLower(strings.TrimSpace(s.Extra["netease_level"]))
+		if level == "" {
+			level = strings.ToLower(strings.TrimSpace(s.Extra["level"]))
+		}
+		switch level {
+		case "standard", "exhigh", "lossless", "hires":
+			return []string{level}
+		}
+	}
+	return []string{"lossless", "hires", "exhigh"}
+}
+
 // getEAPIDownloadURL fetches a high-quality download URL via eapi.
-func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, error) {
+func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, string, error) {
 	idNum, err := strconv.Atoi(songID)
 	if err != nil {
-		return "", fmt.Errorf("invalid song id: %v", err)
+		return "", "", fmt.Errorf("invalid song id: %v", err)
 	}
 
 	headerJSON := `{"os":"pc","appver":"","osver":"","deviceId":"pyncm!","requestId":"12345678"}`
@@ -936,23 +1062,38 @@ func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, err
 
 	body, err := utils.Post(DownloadEAPI, strings.NewReader(form.Encode()), headers...)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var resp struct {
 		Data []struct {
 			URL  string `json:"url"`
 			Code int    `json:"code"`
+			Type string `json:"type"`
 		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("eapi json parse error: %w", err)
+		return "", "", fmt.Errorf("eapi json parse error: %w", err)
 	}
 	if len(resp.Data) == 0 || resp.Data[0].URL == "" {
-		return "", errors.New("eapi download url not found")
+		return "", "", errors.New("eapi download url not found")
 	}
-	return resp.Data[0].URL, nil
+	return resp.Data[0].URL, normalizeNeteaseAudioType(resp.Data[0].Type, quality), nil
+}
+
+func normalizeNeteaseAudioType(audioType string, quality string) string {
+	audioType = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(audioType, ".")))
+	switch audioType {
+	case "flac", "mp3", "m4a":
+		return audioType
+	}
+	switch quality {
+	case "lossless", "hires":
+		return "flac"
+	default:
+		return ""
+	}
 }
 
 // GetLyrics fetches lyrics.

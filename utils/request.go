@@ -10,7 +10,7 @@ import (
 )
 
 var defaultClient = &http.Client{
-	Timeout: 15 * time.Second,
+	Timeout: 2 * time.Minute,
 }
 
 // RequestOption 定义请求选项函数
