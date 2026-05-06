@@ -1,10 +1,13 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/guohuiyuan/music-lib/utils"
 )
+
+var ErrPlaylistCategoriesUnsupported = errors.New("playlist categories not supported")
 
 // Song 是所有音乐源通用的歌曲结构
 type Song struct {
@@ -45,6 +48,16 @@ type Playlist struct {
 
 	// [新增] 用于存储源特有的元数据，避免在 ID 中拼接字符串
 	Extra map[string]string `json:"extra,omitempty"`
+}
+
+type PlaylistCategory struct {
+	ID     string            `json:"id"`
+	Name   string            `json:"name"`
+	Group  string            `json:"group"`
+	Source string            `json:"source"`
+	Count  int               `json:"count"`
+	Hot    bool              `json:"hot,omitempty"`
+	Extra  map[string]string `json:"extra,omitempty"`
 }
 
 // FormatDuration 格式化时长 (e.g. 03:45)

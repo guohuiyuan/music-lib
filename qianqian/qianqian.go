@@ -6,15 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -54,134 +52,7 @@ type qianqianAlbumSearchItem struct {
 	TrackList      []json.RawMessage `json:"trackList"`
 }
 
-func Search(keyword string) ([]model.Song, error) { return defaultQianqian.Search(keyword) }
-func SearchAlbum(keyword string) ([]model.Playlist, error) {
-	return defaultQianqian.SearchAlbum(keyword)
-}
-func SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	return defaultQianqian.SearchPlaylist(keyword)
-}
-func GetAlbumSongs(id string) ([]model.Song, error) {
-	return defaultQianqian.GetAlbumSongs(id)
-}
-func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
-	return defaultQianqian.ParseAlbum(link)
-}
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	return defaultQianqian.ParsePlaylist(link)
-}
-func GetPlaylistSongs(id string) ([]model.Song, error) { return defaultQianqian.GetPlaylistSongs(id) } // [新增]
-func GetDownloadURL(s *model.Song) (string, error)     { return defaultQianqian.GetDownloadURL(s) }
-func GetLyrics(s *model.Song) (string, error)          { return defaultQianqian.GetLyrics(s) }
-func Parse(link string) (*model.Song, error)           { return defaultQianqian.Parse(link) }
-
-// Search 搜索歌曲
-func (q *Qianqian) Search(keyword string) ([]model.Song, error) {
-	params := url.Values{}
-	params.Set("word", keyword)
-	params.Set("type", "1")
-	params.Set("pageNo", "1")
-	params.Set("pageSize", "10")
-	params.Set("appid", AppID)
-	signParams(params)
-	apiURL := "https://music.91q.com/v1/search?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", q.cookie),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Data struct {
-			TypeTrack []struct {
-				TSID         string                          `json:"TSID"`
-				Title        string                          `json:"title"`
-				AlbumTitle   string                          `json:"albumTitle"`
-				AlbumAssetID string                          `json:"albumAssetCode"`
-				Pic          string                          `json:"pic"`
-				Duration     int                             `json:"duration"`
-				Lyric        string                          `json:"lyric"`
-				Artist       []qianqianArtist                `json:"artist"`
-				RateFileInfo map[string]qianqianRateFileInfo `json:"rateFileInfo"`
-				IsVip        int                             `json:"isVip"`
-			} `json:"typeTrack"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("qianqian json parse error: %w", err)
-	}
-
-	var songs []model.Song
-	for _, item := range resp.Data.TypeTrack {
-		if item.IsVip != 0 {
-			continue
-		}
-		size, bitrate := qianqianRateStats(item.RateFileInfo, item.Duration)
-
-		songs = append(songs, model.Song{
-			Source:   "qianqian",
-			ID:       item.TSID,
-			Name:     item.Title,
-			Artist:   joinQianqianArtists(item.Artist),
-			Album:    item.AlbumTitle,
-			AlbumID:  normalizeQianqianAlbumAssetCode(item.AlbumAssetID),
-			Duration: item.Duration,
-			Size:     size,
-			Bitrate:  bitrate,
-			Cover:    item.Pic,
-			Link:     fmt.Sprintf("https://music.91q.com/song/%s", item.TSID),
-			Extra: map[string]string{
-				"tsid":     item.TSID,
-				"album_id": normalizeQianqianAlbumAssetCode(item.AlbumAssetID),
-			},
-		})
-	}
-	return songs, nil
-}
-
-// SearchAlbum 搜索专辑
-func (q *Qianqian) SearchAlbum(keyword string) ([]model.Playlist, error) {
-	items, err := q.searchAlbumItems(keyword)
-	if err != nil {
-		return nil, err
-	}
-
-	albums := make([]model.Playlist, 0, len(items))
-	for _, item := range items {
-		albumID := normalizeQianqianAlbumAssetCode(item.AlbumAssetCode)
-		if albumID == "" {
-			continue
-		}
-
-		albums = append(albums, model.Playlist{
-			Source:      "qianqian",
-			ID:          albumID,
-			Name:        item.Title,
-			Cover:       item.Pic,
-			TrackCount:  len(item.TrackList),
-			Creator:     joinQianqianArtists(item.Artist),
-			Description: item.Introduce,
-			Link:        qianqianAlbumLink(albumID),
-			Extra: map[string]string{
-				"type":         "album",
-				"album_id":     albumID,
-				"release_date": qianqianReleaseDate(item.ReleaseDate),
-				"genre":        strings.TrimSpace(item.Genre),
-				"lang":         strings.TrimSpace(item.Lang),
-			},
-		})
-	}
-	if len(albums) == 0 {
-		return nil, errors.New("no albums found")
-	}
-
-	return albums, nil
-}
+// [新增]
 
 // SearchPlaylist 搜索歌单
 func (q *Qianqian) searchAlbumItems(keyword string) ([]qianqianAlbumSearchItem, error) {
@@ -262,104 +133,6 @@ func (q *Qianqian) searchAlbumItemsOnce(keyword string) ([]qianqianAlbumSearchIt
 	}
 
 	return dataObj.TypeAlbum, false, nil
-}
-
-func (q *Qianqian) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	// [参数修正] timestamp 是必须的，type=6 代表歌单 (之前可能用了 10000 导致报错)
-	params := url.Values{}
-	params.Set("word", keyword)
-	params.Set("type", "6") // 6 = 歌单
-	params.Set("pageNo", "1")
-	params.Set("pageSize", "10")
-	params.Set("appid", AppID)
-	params.Set("timestamp", strconv.FormatInt(time.Now().Unix(), 10))
-
-	// 签名参数 (Search 接口通常也需要签名)
-	signParams(params)
-
-	apiURL := "https://music.91q.com/v1/search?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", q.cookie),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// [结构修正] 兼容处理 Data 字段
-	// 成功时 Data 是对象，失败或空时 Data 可能是空数组 []
-	// 我们先定义一个外层结构检查 State
-	var rawResp struct {
-		State bool            `json:"state"`
-		Errno int             `json:"errno"`
-		Msg   string          `json:"errmsg"`
-		Data  json.RawMessage `json:"data"` // 延迟解析
-	}
-
-	if err := json.Unmarshal(body, &rawResp); err != nil {
-		return nil, fmt.Errorf("qianqian playlist json parse error: %w", err)
-	}
-
-	if !rawResp.State {
-		// 如果 API 返回失败，通常 Data 是 []，直接返回空或错误
-		// 忽略 "没有结果" 的错误，返回空列表
-		return nil, nil // 或者 fmt.Errorf("api error: %s", rawResp.Msg)
-	}
-
-	// 解析 Data 部分
-	var dataObj struct {
-		TypeSonglist []struct {
-			ID         interface{} `json:"id"` // 有时是 int 有时是 string，兼容一下
-			Title      string      `json:"title"`
-			Pic        string      `json:"pic"`
-			TrackCount int         `json:"trackCount"`
-			Tag        string      `json:"tag"`
-		} `json:"typeSonglist"`
-	}
-
-	// 尝试将 RawMessage 解析为对象
-	if err := json.Unmarshal(rawResp.Data, &dataObj); err != nil {
-		// 如果解析失败，可能是因为 Data 是 [] (空结果)
-		return nil, nil
-	}
-
-	var playlists []model.Playlist
-	for _, item := range dataObj.TypeSonglist {
-		// ID 转换
-		var id string
-		switch v := item.ID.(type) {
-		case float64:
-			id = strconv.FormatInt(int64(v), 10)
-		case string:
-			id = v
-		default:
-			continue
-		}
-
-		playlists = append(playlists, model.Playlist{
-			Source:      "qianqian",
-			ID:          id,
-			Name:        item.Title,
-			Cover:       item.Pic,
-			TrackCount:  item.TrackCount,
-			Description: item.Tag,
-			Link:        qianqianPlaylistLink(id),
-			Extra: map[string]string{
-				"type":        "playlist",
-				"playlist_id": id,
-			},
-			// 千千搜索结果不返回 Creator，留空
-		})
-	}
-
-	return playlists, nil
-}
-
-func (q *Qianqian) GetPlaylistSongs(id string) ([]model.Song, error) {
-	_, songs, err := q.fetchPlaylistDetail(id)
-	return songs, err
 }
 
 func (q *Qianqian) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
@@ -472,75 +245,6 @@ func (q *Qianqian) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song
 	}
 
 	return playlist, songs, nil
-}
-
-func (q *Qianqian) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`music\.91q\.com/(?:songlist|tracklist|playlist)/([A-Za-z0-9]+)`),
-		regexp.MustCompile(`(?:songlistid|tracklistid|playlistid|id)=([A-Za-z0-9]+)`),
-	}
-
-	for _, pattern := range patterns {
-		matches := pattern.FindStringSubmatch(link)
-		if len(matches) >= 2 {
-			return q.fetchPlaylistDetail(matches[1])
-		}
-	}
-
-	if len(link) > 0 && !strings.Contains(link, "/") {
-		return q.fetchPlaylistDetail(link)
-	}
-
-	return nil, nil, errors.New("invalid qianqian playlist link")
-}
-
-// GetAlbumSongs 获取专辑歌曲列表
-func (q *Qianqian) GetAlbumSongs(id string) ([]model.Song, error) {
-	_, songs, err := q.fetchAlbumDetail(id)
-	return songs, err
-}
-
-// ParseAlbum 解析专辑链接
-func (q *Qianqian) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`music\.91q\.com/album/([A-Za-z0-9]+)`),
-		regexp.MustCompile(`albumAssetCode=([A-Za-z0-9]+)`),
-		regexp.MustCompile(`albumid=(\d+)`),
-	}
-
-	for _, pattern := range patterns {
-		matches := pattern.FindStringSubmatch(link)
-		if len(matches) >= 2 {
-			return q.fetchAlbumDetail(matches[1])
-		}
-	}
-
-	return nil, nil, errors.New("invalid qianqian album link")
-}
-
-// Parse 解析链接并获取完整信息
-func (q *Qianqian) Parse(link string) (*model.Song, error) {
-	// 1. 提取 TSID
-	re := regexp.MustCompile(`music\.91q\.com/song/(\w+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return nil, errors.New("invalid qianqian link")
-	}
-	tsid := matches[1]
-
-	// 2. 获取 Metadata (通过 song/info 接口)
-	song, err := q.fetchSongInfo(tsid)
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. 获取下载链接 (直接调用 fetchDownloadURL)
-	url, err := q.fetchDownloadURL(tsid)
-	if err == nil {
-		song.URL = url
-	}
-
-	return song, nil
 }
 
 func (q *Qianqian) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
@@ -663,23 +367,6 @@ func (q *Qianqian) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, e
 	return album, songs, nil
 }
 
-// GetDownloadURL 获取下载链接
-func (q *Qianqian) GetDownloadURL(s *model.Song) (string, error) {
-	if s.Source != "qianqian" {
-		return "", errors.New("source mismatch")
-	}
-	if s.URL != "" {
-		return s.URL, nil
-	}
-
-	tsid := s.ID
-	if s.Extra != nil && s.Extra["tsid"] != "" {
-		tsid = s.Extra["tsid"]
-	}
-
-	return q.fetchDownloadURL(tsid)
-}
-
 // fetchDownloadURL 内部方法：获取下载链接
 func (q *Qianqian) fetchDownloadURL(tsid string) (string, error) {
 	qualities := []string{"3000", "320", "128", "64"}
@@ -777,55 +464,6 @@ func (q *Qianqian) fetchSongInfo(tsid string) (*model.Song, error) {
 	}, nil
 }
 
-// GetLyrics 获取歌词
-func (q *Qianqian) GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "qianqian" {
-		return "", errors.New("source mismatch")
-	}
-
-	tsid := s.ID
-	if s.Extra != nil && s.Extra["tsid"] != "" {
-		tsid = s.Extra["tsid"]
-	}
-
-	params := url.Values{}
-	params.Set("TSID", tsid)
-	params.Set("appid", AppID)
-	signParams(params)
-	apiURL := "https://music.91q.com/v1/song/info?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Referer", Referer),
-		utils.WithHeader("Cookie", q.cookie),
-	)
-	if err != nil {
-		return "", err
-	}
-
-	var resp struct {
-		Data []struct {
-			Lyric string `json:"lyric"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("qianqian song info parse error: %w", err)
-	}
-	if len(resp.Data) == 0 || resp.Data[0].Lyric == "" {
-		return "", errors.New("lyric url not found")
-	}
-
-	lyricURL := resp.Data[0].Lyric
-	lrcBody, err := utils.Get(lyricURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Cookie", q.cookie),
-	)
-	if err != nil {
-		return "", fmt.Errorf("download lyric failed: %w", err)
-	}
-	return string(lrcBody), nil
-}
-
 func (q *Qianqian) resolveAlbumAssetCode(id string) (string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -920,6 +558,23 @@ func qianqianAlbumLink(id string) string {
 
 func qianqianPlaylistLink(id string) string {
 	return fmt.Sprintf("https://music.91q.com/songlist/%s", id)
+}
+
+func qianqianValueString(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return strconv.FormatInt(int64(v), 10)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case json.Number:
+		return v.String()
+	default:
+		return ""
+	}
 }
 
 func qianqianReleaseDate(raw string) string {

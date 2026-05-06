@@ -2,17 +2,58 @@ package provider
 
 import "github.com/guohuiyuan/music-lib/model"
 
-// MusicProvider 定义了所有音乐源必须实现的方法
-type MusicProvider interface {
-	// Search 搜索歌曲
+type SongSearcher interface {
 	Search(keyword string) ([]model.Song, error)
-	
-	// Parse 解析分享链接，返回单首歌曲详情（包含下载链接）
+}
+
+type SongParser interface {
 	Parse(link string) (*model.Song, error)
-	
-	// GetDownloadURL 获取下载链接（主要用于搜索结果后续获取，Parse 结果通常已包含 URL）
+}
+
+type SongDownloader interface {
 	GetDownloadURL(s *model.Song) (string, error)
-	
-	// GetLyrics 获取歌词
+}
+
+type LyricProvider interface {
 	GetLyrics(s *model.Song) (string, error)
+}
+
+type MusicProvider interface {
+	SongSearcher
+	SongParser
+	SongDownloader
+	LyricProvider
+}
+
+type AlbumProvider interface {
+	SearchAlbum(keyword string) ([]model.Playlist, error)
+	GetAlbumSongs(id string) ([]model.Song, error)
+	ParseAlbum(link string) (*model.Playlist, []model.Song, error)
+}
+
+type PlaylistProvider interface {
+	SearchPlaylist(keyword string) ([]model.Playlist, error)
+	GetPlaylistSongs(id string) ([]model.Song, error)
+	ParsePlaylist(link string) (*model.Playlist, []model.Song, error)
+}
+
+type RecommendedPlaylistProvider interface {
+	GetRecommendedPlaylists() ([]model.Playlist, error)
+}
+
+type PlaylistCategoryProvider interface {
+	GetPlaylistCategories() ([]model.PlaylistCategory, error)
+	GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error)
+}
+
+type FullPlaylistProvider interface {
+	PlaylistProvider
+	RecommendedPlaylistProvider
+	PlaylistCategoryProvider
+}
+
+type FullMusicProvider interface {
+	MusicProvider
+	AlbumProvider
+	FullPlaylistProvider
 }

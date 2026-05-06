@@ -4,15 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 	"html"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -28,159 +26,6 @@ func New(cookie string) *Fivesing {
 }
 
 var defaultFivesing = New("")
-
-func Search(keyword string) ([]model.Song, error) { return defaultFivesing.Search(keyword) }
-func SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	return defaultFivesing.SearchPlaylist(keyword)
-}
-func GetPlaylistSongs(id string) ([]model.Song, error) {
-	return defaultFivesing.GetPlaylistSongs(id)
-}
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	return defaultFivesing.ParsePlaylist(link)
-}
-func GetDownloadURL(s *model.Song) (string, error) { return defaultFivesing.GetDownloadURL(s) }
-func GetLyrics(s *model.Song) (string, error)      { return defaultFivesing.GetLyrics(s) }
-func Parse(link string) (*model.Song, error)       { return defaultFivesing.Parse(link) }
-
-// Search 搜索歌曲
-func (f *Fivesing) Search(keyword string) ([]model.Song, error) {
-	params := url.Values{}
-	params.Set("keyword", keyword)
-	params.Set("sort", "1")
-	params.Set("page", "1")
-	params.Set("filter", "0")
-	params.Set("type", "0")
-
-	apiURL := "http://search.5sing.kugou.com/home/json?" + params.Encode()
-	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Cookie", f.cookie))
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		List []struct {
-			SongID    int64  `json:"songId"`
-			SongName  string `json:"songName"`
-			Singer    string `json:"singer"`
-			SongSize  int64  `json:"songSize"`
-			TypeEname string `json:"typeEname"`
-		} `json:"list"`
-	}
-
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("fivesing json parse error: %w", err)
-	}
-
-	var songs []model.Song
-	for _, item := range resp.List {
-		name := removeEmTags(html.UnescapeString(item.SongName))
-		artist := removeEmTags(html.UnescapeString(item.Singer))
-
-		duration := 0
-		if item.SongSize > 0 {
-			duration = int((item.SongSize * 8) / 320000)
-		}
-
-		songs = append(songs, model.Song{
-			Source:   "fivesing",
-			ID:       fmt.Sprintf("%d|%s", item.SongID, item.TypeEname),
-			Name:     name,
-			Artist:   artist,
-			Duration: duration,
-			Size:     item.SongSize,
-			Link:     fmt.Sprintf("http://5sing.kugou.com/%s/%d.html", item.TypeEname, item.SongID),
-			Extra: map[string]string{
-				"songid":   strconv.FormatInt(item.SongID, 10),
-				"songtype": item.TypeEname,
-			},
-		})
-	}
-	return songs, nil
-}
-
-// SearchPlaylist 搜索歌单
-func (f *Fivesing) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	params := url.Values{}
-	params.Set("keyword", keyword)
-	params.Set("sort", "1")
-	params.Set("page", "1")
-	params.Set("filter", "0")
-	params.Set("type", "1")
-
-	apiURL := "http://search.5sing.kugou.com/home/json?" + params.Encode()
-	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Cookie", f.cookie))
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		List []struct {
-			SongListId string `json:"songListId"`
-			Title      string `json:"title"`
-			Picture    string `json:"pictureUrl"`
-			PlayCount  int    `json:"playCount"`
-			UserName   string `json:"userName"`
-			SongCnt    int    `json:"songCnt"`
-			Content    string `json:"content"`
-			UserId     string `json:"userId"`
-		} `json:"list"`
-	}
-
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("fivesing playlist json parse error: %w", err)
-	}
-
-	playlists := make([]model.Playlist, len(resp.List))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 10)
-
-	for i, item := range resp.List {
-		title := removeEmTags(html.UnescapeString(item.Title))
-		desc := removeEmTags(html.UnescapeString(item.Content))
-		if desc == "0" {
-			desc = ""
-		}
-
-		link := fmt.Sprintf("http://5sing.kugou.com/%s/dj/%s.html", item.UserId, item.SongListId)
-		creator := item.UserName
-		if creator == "" {
-			creator = "ID: " + item.UserId
-		}
-
-		playlists[i] = model.Playlist{
-			Source:      "fivesing",
-			ID:          item.SongListId,
-			Name:        title,
-			Cover:       item.Picture,
-			TrackCount:  item.SongCnt,
-			PlayCount:   item.PlayCount,
-			Creator:     creator,
-			Description: desc,
-			Link:        link,
-			Extra: map[string]string{
-				"user_id": item.UserId,
-			},
-		}
-
-		// 并行获取缺失的创建者名称
-		if item.UserName == "" && item.SongListId != "" {
-			wg.Add(1)
-			go func(idx int, plID string) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				if name, err := f.fetchCreatorName(plID); err == nil && name != "" {
-					playlists[idx].Creator = name
-				}
-			}(i, item.SongListId)
-		}
-	}
-	wg.Wait()
-
-	return playlists, nil
-}
 
 // fetchCreatorName 辅助函数：仅获取创建者名称
 func (f *Fivesing) fetchCreatorName(id string) (string, error) {
@@ -214,25 +59,6 @@ func (f *Fivesing) fetchCreatorName(id string) (string, error) {
 		return "", err
 	}
 	return data.User.UserName, nil
-}
-
-// GetPlaylistSongs 获取歌单详情 (简化版：直接复用 fetchPlaylistDetail)
-func (f *Fivesing) GetPlaylistSongs(id string) ([]model.Song, error) {
-	// 复用核心逻辑，只返回歌曲切片
-	_, songs, err := f.fetchPlaylistDetail(id)
-	return songs, err
-}
-
-// ParsePlaylist 解析歌单链接并返回详情
-func (f *Fivesing) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	re := regexp.MustCompile(`5sing\.kugou\.com/(?:(\d+)/)?dj/([a-zA-Z0-9]+)\.html`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 3 {
-		return nil, nil, errors.New("invalid 5sing playlist link")
-	}
-	playlistId := matches[2]
-	// userId (matches[1]) 可选，因为 API 验证更准确，这里只用 ID
-	return f.fetchPlaylistDetail(playlistId)
 }
 
 // fetchPlaylistDetail [核心] 获取歌单详情 (API 获取元数据 + HTML 解析歌曲)
@@ -372,7 +198,7 @@ func (f *Fivesing) parseSongsFromHTML(htmlContent string) ([]model.Song, error) 
 			Source: "fivesing",
 			ID:     fmt.Sprintf("%s|%s", songID, kind),
 			Name:   name,
-			Artist:   artist,
+			Artist: artist,
 			Link:   fmt.Sprintf("http://5sing.kugou.com/%s/%s.html", kind, songID),
 			Extra: map[string]string{
 				"songid":   songID,
@@ -381,47 +207,6 @@ func (f *Fivesing) parseSongsFromHTML(htmlContent string) ([]model.Song, error) 
 		})
 	}
 	return songs, nil
-}
-
-// Parse 解析链接并获取完整信息
-func (f *Fivesing) Parse(link string) (*model.Song, error) {
-	re := regexp.MustCompile(`5sing\.kugou\.com/(\w+)/(\d+)\.html`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 3 {
-		return nil, errors.New("invalid 5sing link")
-	}
-	songType := matches[1]
-	songID := matches[2]
-
-	return f.fetchSongInfo(songID, songType)
-}
-
-// GetDownloadURL 获取下载链接
-func (f *Fivesing) GetDownloadURL(s *model.Song) (string, error) {
-	if s.Source != "fivesing" {
-		return "", errors.New("source mismatch")
-	}
-	if s.URL != "" {
-		return s.URL, nil
-	}
-
-	var songID, songType string
-	if s.Extra != nil {
-		songID = s.Extra["songid"]
-		songType = s.Extra["songtype"]
-	}
-
-	if songID == "" || songType == "" {
-		parts := strings.Split(s.ID, "|")
-		if len(parts) == 2 {
-			songID = parts[0]
-			songType = parts[1]
-		} else {
-			return "", errors.New("invalid id structure")
-		}
-	}
-
-	return f.fetchAudioLink(songID, songType)
 }
 
 // fetchSongInfo 获取完整的歌曲信息（Metadata + URL）
@@ -519,49 +304,6 @@ func (f *Fivesing) fetchAudioLink(songID, songType string) (string, error) {
 	}
 
 	return "", errors.New("no valid download url found")
-}
-
-func (f *Fivesing) GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "fivesing" {
-		return "", errors.New("source mismatch")
-	}
-
-	var songID, songType string
-	if s.Extra != nil {
-		songID = s.Extra["songid"]
-		songType = s.Extra["songtype"]
-	} else {
-		parts := strings.Split(s.ID, "|")
-		if len(parts) == 2 {
-			songID = parts[0]
-			songType = parts[1]
-		}
-	}
-
-	if songID == "" {
-		return "", errors.New("invalid id")
-	}
-
-	params := url.Values{}
-	params.Set("songid", songID)
-	params.Set("songtype", songType)
-	apiURL := "http://mobileapi.5sing.kugou.com/song/newget?" + params.Encode()
-
-	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Cookie", f.cookie))
-	if err != nil {
-		return "", err
-	}
-
-	var resp struct {
-		Data struct {
-			DynamicWords string `json:"dynamicWords"`
-		} `json:"data"`
-	}
-	json.Unmarshal(body, &resp)
-	if resp.Data.DynamicWords == "" {
-		return "", errors.New("lyrics not found")
-	}
-	return resp.Data.DynamicWords, nil
 }
 
 func getFirstValid(urls ...string) string {

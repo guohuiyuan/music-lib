@@ -6,15 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 	"math/rand"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -122,196 +120,6 @@ func New(cookie string) *Jamendo {
 }
 
 var defaultJamendo = New("")
-
-func Search(keyword string) ([]model.Song, error) { return defaultJamendo.Search(keyword) }
-func SearchAlbum(keyword string) ([]model.Playlist, error) {
-	return defaultJamendo.SearchAlbum(keyword)
-}
-func SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	return defaultJamendo.SearchPlaylist(keyword)
-}
-func GetAlbumSongs(id string) ([]model.Song, error) { return defaultJamendo.GetAlbumSongs(id) }
-func GetPlaylistSongs(id string) ([]model.Song, error) {
-	return defaultJamendo.GetPlaylistSongs(id)
-}
-func GetDownloadURL(s *model.Song) (string, error) { return defaultJamendo.GetDownloadURL(s) }
-func GetLyrics(s *model.Song) (string, error)      { return defaultJamendo.GetLyrics(s) }
-func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
-	return defaultJamendo.ParseAlbum(link)
-}
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	return defaultJamendo.ParsePlaylist(link)
-}
-func Parse(link string) (*model.Song, error) { return defaultJamendo.Parse(link) }
-
-func (j *Jamendo) Search(keyword string) ([]model.Song, error) {
-	body, err := j.searchByType(keyword, "track")
-	if err != nil {
-		return nil, err
-	}
-
-	var results []jamendoTrackItem
-	if err := json.Unmarshal(body, &results); err != nil {
-		return nil, fmt.Errorf("jamendo json parse error: %w", err)
-	}
-
-	songs := make([]model.Song, 0, len(results))
-	for _, item := range results {
-		song := buildSong(item, jamendoTrackMeta{})
-		if song == nil {
-			continue
-		}
-		songs = append(songs, *song)
-	}
-	return songs, nil
-}
-
-func (j *Jamendo) SearchAlbum(keyword string) ([]model.Playlist, error) {
-	body, err := j.searchByType(keyword, "album")
-	if err != nil {
-		return nil, err
-	}
-
-	var results []jamendoAlbumSearchItem
-	if err := json.Unmarshal(body, &results); err != nil {
-		return nil, fmt.Errorf("jamendo album json parse error: %w", err)
-	}
-
-	albums := make([]model.Playlist, 0, len(results))
-	for _, item := range results {
-		if item.ID == 0 {
-			continue
-		}
-
-		albumID := strconv.Itoa(item.ID)
-		extra := map[string]string{
-			"album_id": albumID,
-		}
-		if item.Artist.ID > 0 {
-			extra["artist_id"] = strconv.Itoa(item.Artist.ID)
-		}
-
-		albums = append(albums, model.Playlist{
-			Source:  "jamendo",
-			ID:      albumID,
-			Name:    item.Name,
-			Cover:   item.Cover.Big.Size300,
-			Creator: item.Artist.Name,
-			Link:    albumLink(albumID),
-			Extra:   extra,
-		})
-	}
-
-	if len(albums) == 0 {
-		return nil, errors.New("no albums found")
-	}
-
-	return albums, nil
-}
-
-func (j *Jamendo) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	body, err := j.searchByType(keyword, "playlist")
-	if err != nil {
-		return nil, err
-	}
-
-	var results []jamendoPlaylistItem
-
-	if err := json.Unmarshal(body, &results); err != nil {
-		return nil, fmt.Errorf("jamendo playlist json parse error: %w", err)
-	}
-
-	playlists := make([]model.Playlist, 0, len(results))
-	for _, item := range results {
-		if item.ID == 0 {
-			continue
-		}
-
-		playlists = append(playlists, model.Playlist{
-			Source:  "jamendo",
-			ID:      strconv.Itoa(item.ID),
-			Name:    item.Name,
-			Creator: item.UserName,
-			Cover:   item.Image,
-			Link:    fmt.Sprintf("https://www.jamendo.com/playlist/%d", item.ID),
-		})
-	}
-	return playlists, nil
-}
-
-func (j *Jamendo) GetAlbumSongs(id string) ([]model.Song, error) {
-	_, songs, err := j.fetchAlbumDetail(id)
-	return songs, err
-}
-
-func (j *Jamendo) GetPlaylistSongs(id string) ([]model.Song, error) {
-	playlistItem, err := j.getPlaylistByID(id)
-	if err != nil {
-		return nil, err
-	}
-	return j.fetchPlaylistTracks(playlistItem)
-}
-
-func (j *Jamendo) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	re := regexp.MustCompile(`jamendo\.com/playlist/(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) >= 2 {
-		return j.fetchPlaylistDetail(matches[1])
-	}
-
-	if len(link) > 0 && !strings.Contains(link, "/") {
-		return j.fetchPlaylistDetail(link)
-	}
-
-	return nil, nil, errors.New("invalid jamendo playlist link")
-}
-
-func (j *Jamendo) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
-	re := regexp.MustCompile(`jamendo\.com/album/(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return nil, nil, errors.New("invalid jamendo album link")
-	}
-
-	return j.fetchAlbumDetail(matches[1])
-}
-
-func (j *Jamendo) Parse(link string) (*model.Song, error) {
-	re := regexp.MustCompile(`jamendo\.com/track/(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
-		return nil, errors.New("invalid jamendo link")
-	}
-
-	return j.getTrackByID(matches[1], jamendoTrackMeta{})
-}
-
-func (j *Jamendo) GetDownloadURL(s *model.Song) (string, error) {
-	if s.Source != "jamendo" {
-		return "", errors.New("source mismatch")
-	}
-	if s.URL != "" {
-		return s.URL, nil
-	}
-
-	trackID := s.ID
-	if s.Extra != nil && s.Extra["track_id"] != "" {
-		trackID = s.Extra["track_id"]
-	}
-	if trackID == "" {
-		return "", errors.New("id missing")
-	}
-
-	info, err := j.getTrackByID(trackID, jamendoTrackMeta{
-		ArtistName: s.Artist,
-		AlbumName:  s.Album,
-		AlbumID:    s.AlbumID,
-	})
-	if err != nil {
-		return "", err
-	}
-	return info.URL, nil
-}
 
 func (j *Jamendo) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
 	albumItem, err := j.getAlbumByID(id)
@@ -758,11 +566,4 @@ func makeXJamCall(path string) string {
 	hash := sha1.Sum([]byte(data))
 	digest := hex.EncodeToString(hash[:])
 	return fmt.Sprintf("$%s*%s~", digest, randStr)
-}
-
-func (j *Jamendo) GetLyrics(s *model.Song) (string, error) {
-	if s.Source != "jamendo" {
-		return "", errors.New("source mismatch")
-	}
-	return "", nil
 }
