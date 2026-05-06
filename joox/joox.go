@@ -46,6 +46,9 @@ func GetLyrics(s *model.Song) (string, error)          { return defaultJoox.GetL
 func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return defaultJoox.ParseAlbum(link)
 }
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
+	return defaultJoox.ParsePlaylist(link)
+}
 func Parse(link string) (*model.Song, error) { return defaultJoox.Parse(link) }
 
 // Search 搜索歌曲
@@ -264,7 +267,8 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 			}
 
 			info := item.EditorPlaylist
-			if info.ID == "" {
+			playlistID := normalizeJooxID(info.ID)
+			if playlistID == "" {
 				continue
 			}
 
@@ -281,12 +285,12 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 			}
 
 			// Generate the public link
-			link := fmt.Sprintf("https://www.joox.com/hk/playlist/%s", info.ID)
+			link := jooxPlaylistLink(playlistID)
 
 			// Populate the Playlist model
 			playlists = append(playlists, model.Playlist{
 				Source: "joox", // Essential for universal player logic
-				ID:     info.ID,
+				ID:     playlistID,
 				Name:   info.Name,
 				Cover:  cover,
 				Link:   link,
@@ -299,7 +303,7 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 				// Optional: Store raw ID in Extra if needed for specific logic later
 				Extra: map[string]string{
-					"playlist_id": info.ID,
+					"playlist_id": playlistID,
 				},
 			})
 		}
@@ -334,6 +338,26 @@ func (j *Joox) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return nil, nil, errors.New("invalid joox album link")
 }
 
+func (j *Joox) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`joox\.com/.*/playlist/([^/?#]+)`),
+		regexp.MustCompile(`(?:playlistid|playlist_id|id)=([^&]+)`),
+	}
+
+	for _, pattern := range patterns {
+		matches := pattern.FindStringSubmatch(link)
+		if len(matches) >= 2 {
+			return j.fetchPlaylistDetail(matches[1])
+		}
+	}
+
+	if len(link) > 8 && !strings.Contains(link, "/") {
+		return j.fetchPlaylistDetail(link)
+	}
+
+	return nil, nil, errors.New("invalid joox playlist link")
+}
+
 func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 	params := url.Values{}
 	// The new v3 API uses "id" instead of "playlistid"
@@ -351,6 +375,9 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 		utils.WithHeader("X-Forwarded-For", XForwardedFor),
 	)
 	if err != nil {
+		if fallbackSongs, fallbackErr := j.fetchPlaylistSongsFromPage(id); fallbackErr == nil && len(fallbackSongs) > 0 {
+			return fallbackSongs, nil
+		}
 		return nil, err
 	}
 
@@ -382,6 +409,9 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
+		if fallbackSongs, fallbackErr := j.fetchPlaylistSongsFromPage(id); fallbackErr == nil && len(fallbackSongs) > 0 {
+			return fallbackSongs, nil
+		}
 		return nil, fmt.Errorf("joox playlist json error: %w", err)
 	}
 
@@ -444,11 +474,152 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 	}
 
 	if !foundSongs {
+		if fallbackSongs, fallbackErr := j.fetchPlaylistSongsFromPage(id); fallbackErr == nil && len(fallbackSongs) > 0 {
+			return fallbackSongs, nil
+		}
 		// If no songs found, the ID might be invalid or the playlist is empty
 		return nil, errors.New("no songs found in playlist or invalid playlist ID")
 	}
 
 	return songs, nil
+}
+
+func (j *Joox) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
+	playlist, songs, err := j.fetchPlaylistPageData(id)
+	if err == nil {
+		return playlist, songs, nil
+	}
+
+	playlistID := normalizeJooxID(id)
+	if playlistID == "" {
+		return nil, nil, errors.New("playlist id is empty")
+	}
+
+	songs, songsErr := j.GetPlaylistSongs(playlistID)
+	if songsErr != nil {
+		return nil, nil, err
+	}
+
+	playlist = &model.Playlist{
+		Source:     "joox",
+		ID:         playlistID,
+		Name:       playlistID,
+		TrackCount: len(songs),
+		Link:       jooxPlaylistLink(playlistID),
+		Extra: map[string]string{
+			"type":        "playlist",
+			"playlist_id": playlistID,
+		},
+	}
+	if len(songs) > 0 {
+		playlist.Cover = songs[0].Cover
+	}
+
+	return playlist, songs, nil
+}
+
+func (j *Joox) fetchPlaylistSongsFromPage(id string) ([]model.Song, error) {
+	_, songs, err := j.fetchPlaylistPageData(id)
+	return songs, err
+}
+
+func (j *Joox) fetchPlaylistPageData(id string) (*model.Playlist, []model.Song, error) {
+	playlistID := normalizeJooxID(id)
+	if playlistID == "" {
+		return nil, nil, errors.New("playlist id is empty")
+	}
+
+	body, err := utils.Get(jooxPlaylistLink(playlistID),
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", j.cookie),
+		utils.WithHeader("X-Forwarded-For", XForwardedFor),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	matches := regexp.MustCompile(`(?s)<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>`).FindSubmatch(body)
+	if len(matches) < 2 {
+		return nil, nil, errors.New("joox playlist page data not found")
+	}
+
+	var nextData struct {
+		Props struct {
+			PageProps struct {
+				AllPlaylistTracks jooxAllPlaylistTracks `json:"allPlaylistTracks"`
+				PlaylistDetail    jooxPlaylistPageData  `json:"playlistDetailList"`
+				Content           struct {
+					Page struct {
+						AllPlaylistTracks jooxAllPlaylistTracks `json:"allPlaylistTracks"`
+						PlaylistDetail    jooxPlaylistPageData  `json:"playlistDetailList"`
+					} `json:"page"`
+				} `json:"content"`
+			} `json:"pageProps"`
+		} `json:"props"`
+	}
+
+	if err := json.Unmarshal(matches[1], &nextData); err != nil {
+		return nil, nil, fmt.Errorf("joox playlist page json error: %w", err)
+	}
+
+	detail := nextData.Props.PageProps.PlaylistDetail
+	tracks := nextData.Props.PageProps.AllPlaylistTracks.Tracks.Items
+	trackCount := firstNonZero(
+		nextData.Props.PageProps.AllPlaylistTracks.Tracks.TotalCount,
+		nextData.Props.PageProps.AllPlaylistTracks.Tracks.TotalCountCamel,
+		nextData.Props.PageProps.AllPlaylistTracks.Tracks.ListCount,
+	)
+	if len(tracks) == 0 {
+		tracks = detail.TrackList
+	}
+	if len(tracks) == 0 {
+		detail = nextData.Props.PageProps.Content.Page.PlaylistDetail
+		tracks = nextData.Props.PageProps.Content.Page.AllPlaylistTracks.Tracks.Items
+		trackCount = firstNonZero(
+			nextData.Props.PageProps.Content.Page.AllPlaylistTracks.Tracks.TotalCount,
+			nextData.Props.PageProps.Content.Page.AllPlaylistTracks.Tracks.TotalCountCamel,
+			nextData.Props.PageProps.Content.Page.AllPlaylistTracks.Tracks.ListCount,
+		)
+		if len(tracks) == 0 {
+			tracks = detail.TrackList
+		}
+	}
+	if len(tracks) == 0 {
+		return nil, nil, errors.New("playlist has no songs")
+	}
+
+	playlistID = normalizeJooxID(firstNonEmpty(detail.ID, detail.ListID, detail.PlaylistID, playlistID))
+	name := firstNonEmpty(detail.Name, detail.Title, detail.PlaylistName, playlistID)
+	cover := firstNonEmpty(detail.ImgSrc, detail.Cover, detail.Image, detail.Pic)
+	trackCount = firstNonZero(trackCount, detail.TrackCount, detail.TotalCount, detail.TotalCountCamel, detail.ListCount, len(tracks))
+
+	playlist := &model.Playlist{
+		Source:      "joox",
+		ID:          playlistID,
+		Name:        name,
+		Cover:       cover,
+		TrackCount:  trackCount,
+		Creator:     firstNonEmpty(detail.Creator, detail.CreatorName, detail.UserName, detail.NickName, detail.OwnerName, detail.Author, detail.AuthorName, detail.User.Name, detail.User.UserName, detail.User.NickName, detail.User.Nick, detail.Owner.Name, detail.Owner.UserName, detail.Owner.NickName, detail.Owner.Nick, detail.CreatorInfo.Name, detail.CreatorInfo.UserName, detail.CreatorInfo.NickName, detail.CreatorInfo.Nick),
+		Description: firstNonEmpty(detail.Description, detail.Intro, detail.Desc),
+		Link:        jooxPlaylistLink(playlistID),
+		Extra: map[string]string{
+			"type":        "playlist",
+			"playlist_id": playlistID,
+		},
+	}
+
+	songs := make([]model.Song, 0, len(tracks))
+	for _, item := range tracks {
+		song := jooxSongFromTrack(item, name, cover, "")
+		if song != nil {
+			songs = append(songs, *song)
+		}
+	}
+	if len(songs) == 0 {
+		return nil, nil, errors.New("playlist has no playable songs")
+	}
+
+	return playlist, songs, nil
 }
 
 // Parse 解析链接并获取完整信息
@@ -582,13 +753,23 @@ type jooxImage struct {
 }
 
 type jooxAlbumTrack struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	AlbumID      string       `json:"album_id"`
-	AlbumName    string       `json:"album_name"`
-	ArtistList   []jooxArtist `json:"artist_list"`
-	PlayDuration int          `json:"play_duration"`
-	Images       []jooxImage  `json:"images"`
+	ID                string       `json:"id"`
+	Name              string       `json:"name"`
+	Title             string       `json:"title"`
+	AlbumID           string       `json:"album_id"`
+	AlbumIDCamel      string       `json:"albumId"`
+	AlbumName         string       `json:"album_name"`
+	AlbumNameCamel    string       `json:"albumName"`
+	ArtistList        []jooxArtist `json:"artist_list"`
+	ArtistListCamel   []jooxArtist `json:"artistList"`
+	PlayDuration      int          `json:"play_duration"`
+	PlayDurationCamel int          `json:"playDuration"`
+	Duration          int          `json:"duration"`
+	Images            []jooxImage  `json:"images"`
+	ImgSrc            string       `json:"imgSrc"`
+	Cover             string       `json:"cover"`
+	Image             string       `json:"image"`
+	Pic               string       `json:"pic"`
 }
 
 type jooxAlbumPageData struct {
@@ -603,6 +784,53 @@ type jooxAlbumPageData struct {
 		ListCount  int              `json:"list_count"`
 		TotalCount int              `json:"total_count"`
 	} `json:"trackList"`
+}
+
+type jooxAllPlaylistTracks struct {
+	Tracks struct {
+		Items           []jooxAlbumTrack `json:"items"`
+		ListCount       int              `json:"list_count"`
+		TotalCount      int              `json:"total_count"`
+		TotalCountCamel int              `json:"totalCount"`
+	} `json:"tracks"`
+}
+
+type jooxPlaylistPageData struct {
+	ID              string           `json:"id"`
+	ListID          string           `json:"listId"`
+	PlaylistID      string           `json:"playlistId"`
+	Name            string           `json:"name"`
+	Title           string           `json:"title"`
+	PlaylistName    string           `json:"playlistName"`
+	ImgSrc          string           `json:"imgSrc"`
+	Cover           string           `json:"cover"`
+	Image           string           `json:"image"`
+	Pic             string           `json:"pic"`
+	Creator         string           `json:"creator"`
+	CreatorName     string           `json:"creatorName"`
+	UserName        string           `json:"userName"`
+	NickName        string           `json:"nickName"`
+	OwnerName       string           `json:"ownerName"`
+	Author          string           `json:"author"`
+	AuthorName      string           `json:"authorName"`
+	User            jooxNamedUser    `json:"user"`
+	Owner           jooxNamedUser    `json:"owner"`
+	CreatorInfo     jooxNamedUser    `json:"creatorInfo"`
+	Description     string           `json:"description"`
+	Intro           string           `json:"intro"`
+	Desc            string           `json:"desc"`
+	TrackCount      int              `json:"trackCount"`
+	TotalCount      int              `json:"total_count"`
+	TotalCountCamel int              `json:"totalCount"`
+	ListCount       int              `json:"list_count"`
+	TrackList       []jooxAlbumTrack `json:"trackList"`
+}
+
+type jooxNamedUser struct {
+	Name     string `json:"name"`
+	UserName string `json:"userName"`
+	NickName string `json:"nickName"`
+	Nick     string `json:"nick"`
 }
 
 func joinJooxArtists(artists []jooxArtist) string {
@@ -652,6 +880,10 @@ func jooxAlbumLink(id string) string {
 	return fmt.Sprintf("https://www.joox.com/hk/album/%s", normalizeJooxID(id))
 }
 
+func jooxPlaylistLink(id string) string {
+	return fmt.Sprintf("https://www.joox.com/hk/playlist/%s", normalizeJooxID(id))
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -661,14 +893,56 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func jooxSongFromTrack(item jooxAlbumTrack, fallbackAlbum, fallbackCover, fallbackAlbumID string) *model.Song {
+	songID := normalizeJooxID(item.ID)
+	if songID == "" {
+		return nil
+	}
+
+	artists := item.ArtistList
+	if len(artists) == 0 {
+		artists = item.ArtistListCamel
+	}
+
+	albumID := normalizeJooxID(firstNonEmpty(item.AlbumID, item.AlbumIDCamel, fallbackAlbumID))
+	extra := map[string]string{
+		"songid": songID,
+	}
+	if albumID != "" {
+		extra["album_id"] = albumID
+	}
+
+	return &model.Song{
+		Source:   "joox",
+		ID:       songID,
+		Name:     firstNonEmpty(item.Name, item.Title, "Unknown"),
+		Artist:   firstNonEmpty(joinJooxArtists(artists), "Unknown"),
+		Album:    firstNonEmpty(item.AlbumName, item.AlbumNameCamel, fallbackAlbum),
+		AlbumID:  albumID,
+		Duration: firstNonZero(item.PlayDuration, item.PlayDurationCamel, item.Duration),
+		Cover:    firstNonEmpty(pickJooxImage(item.Images), item.ImgSrc, item.Cover, item.Image, item.Pic, fallbackCover),
+		Link:     fmt.Sprintf("https://www.joox.com/hk/single/%s", songID),
+		Extra:    extra,
+	}
+}
+
 func (j *Joox) Parse(link string) (*model.Song, error) {
 	// 1. 提取 ID
 	// 支持格式: https://www.joox.com/hk/single/C+Q0... 或纯 ID
-	re := regexp.MustCompile(`joox\.com/.*/single/([a-zA-Z0-9]+)`)
+	re := regexp.MustCompile(`joox\.com/.*/single/([^/?#]+)`)
 	matches := re.FindStringSubmatch(link)
 	var songID string
 	if len(matches) >= 2 {
-		songID = matches[1]
+		songID = normalizeJooxID(matches[1])
 	} else {
 		// 尝试直接匹配 ID (如果是纯 ID 字符串)
 		if len(link) > 10 && !strings.Contains(link, "/") {
@@ -778,6 +1052,10 @@ func (j *Joox) fetchSongInfo(songID string) (*model.Song, error) {
 				break
 			}
 		}
+	}
+
+	if downloadURL == "" {
+		downloadURL = firstNonEmpty(resp.R320Url, resp.R192Url, resp.Mp3Url, resp.M4aUrl)
 	}
 
 	if downloadURL == "" {

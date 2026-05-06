@@ -94,6 +94,18 @@ type jamendoAlbumItem struct {
 	} `json:"tracks"`
 }
 
+type jamendoPlaylistItem struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	UserName    string `json:"user_name"`
+	Image       string `json:"image"`
+	Description string `json:"description"`
+	Tracks      []struct {
+		Position int `json:"position"`
+		ID       int `json:"id"`
+	} `json:"tracks"`
+}
+
 type jamendoArtistItem struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -126,6 +138,9 @@ func GetDownloadURL(s *model.Song) (string, error) { return defaultJamendo.GetDo
 func GetLyrics(s *model.Song) (string, error)      { return defaultJamendo.GetLyrics(s) }
 func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return defaultJamendo.ParseAlbum(link)
+}
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
+	return defaultJamendo.ParsePlaylist(link)
 }
 func Parse(link string) (*model.Song, error) { return defaultJamendo.Parse(link) }
 
@@ -200,12 +215,7 @@ func (j *Jamendo) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 		return nil, err
 	}
 
-	var results []struct {
-		ID       int    `json:"id"`
-		Name     string `json:"name"`
-		UserName string `json:"user_name"`
-		Image    string `json:"image"`
-	}
+	var results []jamendoPlaylistItem
 
 	if err := json.Unmarshal(body, &results); err != nil {
 		return nil, fmt.Errorf("jamendo playlist json parse error: %w", err)
@@ -235,36 +245,25 @@ func (j *Jamendo) GetAlbumSongs(id string) ([]model.Song, error) {
 }
 
 func (j *Jamendo) GetPlaylistSongs(id string) ([]model.Song, error) {
-	params := url.Values{}
-	params.Set("id", id)
-
-	body, err := j.apiGet(PlaylistTracksAPI+"?"+params.Encode(), PlaylistTracksPath)
+	playlistItem, err := j.getPlaylistByID(id)
 	if err != nil {
 		return nil, err
 	}
+	return j.fetchPlaylistTracks(playlistItem)
+}
 
-	var results []jamendoTrackItem
-	if err := json.Unmarshal(body, &results); err != nil {
-		return nil, fmt.Errorf("jamendo playlist tracks json error: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, errors.New("playlist is empty or invalid")
-	}
-
-	songs := make([]model.Song, 0, len(results))
-	for _, item := range results {
-		song := buildSong(item, jamendoTrackMeta{})
-		if song == nil {
-			continue
-		}
-		songs = append(songs, *song)
+func (j *Jamendo) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
+	re := regexp.MustCompile(`jamendo\.com/playlist/(\d+)`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) >= 2 {
+		return j.fetchPlaylistDetail(matches[1])
 	}
 
-	if len(songs) == 0 {
-		return nil, errors.New("playlist has no playable tracks")
+	if len(link) > 0 && !strings.Contains(link, "/") {
+		return j.fetchPlaylistDetail(link)
 	}
 
-	return songs, nil
+	return nil, nil, errors.New("invalid jamendo playlist link")
 }
 
 func (j *Jamendo) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
@@ -351,6 +350,103 @@ func (j *Jamendo) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, er
 	}
 
 	return album, songs, nil
+}
+
+func (j *Jamendo) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
+	playlistID := strings.TrimSpace(id)
+	if playlistID == "" {
+		return nil, nil, errors.New("playlist id is empty")
+	}
+
+	playlistItem, err := j.getPlaylistByID(playlistID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	songs, err := j.GetPlaylistSongs(playlistID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	playlist := &model.Playlist{
+		Source:      "jamendo",
+		ID:          strconv.Itoa(playlistItem.ID),
+		Name:        playlistItem.Name,
+		Cover:       playlistItem.Image,
+		TrackCount:  len(songs),
+		Creator:     playlistItem.UserName,
+		Description: strings.TrimSpace(playlistItem.Description),
+		Link:        playlistLink(strconv.Itoa(playlistItem.ID)),
+		Extra: map[string]string{
+			"type":        "playlist",
+			"playlist_id": strconv.Itoa(playlistItem.ID),
+		},
+	}
+
+	return playlist, songs, nil
+}
+
+func (j *Jamendo) fetchPlaylistTracks(playlistItem *jamendoPlaylistItem) ([]model.Song, error) {
+	if playlistItem == nil || len(playlistItem.Tracks) == 0 {
+		return nil, errors.New("playlist is empty or invalid")
+	}
+
+	songs := make([]model.Song, len(playlistItem.Tracks))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+
+	var firstErr error
+	var errMu sync.Mutex
+
+	for idx, track := range playlistItem.Tracks {
+		idx := idx
+		trackID := track.ID
+		if trackID == 0 {
+			continue
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			song, err := j.getTrackByID(strconv.Itoa(trackID), jamendoTrackMeta{})
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				return
+			}
+			if song == nil {
+				return
+			}
+
+			songs[idx] = *song
+		}()
+	}
+
+	wg.Wait()
+
+	filtered := make([]model.Song, 0, len(songs))
+	for _, song := range songs {
+		if song.ID == "" {
+			continue
+		}
+		filtered = append(filtered, song)
+	}
+
+	if len(filtered) == 0 {
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, errors.New("playlist has no playable tracks")
+	}
+
+	return filtered, nil
 }
 
 func (j *Jamendo) fetchAlbumTracks(albumItem *jamendoAlbumItem, creator string) ([]model.Song, error) {
@@ -505,6 +601,26 @@ func (j *Jamendo) getAlbumByID(id string) (*jamendoAlbumItem, error) {
 	return &results[0], nil
 }
 
+func (j *Jamendo) getPlaylistByID(id string) (*jamendoPlaylistItem, error) {
+	params := url.Values{}
+	params.Set("id", id)
+
+	body, err := j.apiGet(PlaylistAPI+"?"+params.Encode(), PlaylistApiPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []jamendoPlaylistItem
+	if err := json.Unmarshal(body, &results); err != nil {
+		return nil, fmt.Errorf("jamendo playlist json error: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, errors.New("playlist not found")
+	}
+
+	return &results[0], nil
+}
+
 func (j *Jamendo) getArtistNameByID(id int) (string, error) {
 	if id == 0 {
 		return "", nil
@@ -625,6 +741,10 @@ func firstNonEmpty(values ...string) string {
 
 func albumLink(id string) string {
 	return fmt.Sprintf("https://www.jamendo.com/album/%s", id)
+}
+
+func playlistLink(id string) string {
+	return fmt.Sprintf("https://www.jamendo.com/playlist/%s", id)
 }
 
 func trackLink(id string) string {
