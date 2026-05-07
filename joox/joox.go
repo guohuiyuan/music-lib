@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -78,7 +79,22 @@ func (j *Joox) fetchPlaylistPageData(id string) (*model.Playlist, []model.Song, 
 		return nil, nil, errors.New("playlist id is empty")
 	}
 
-	body, err := utils.Get(jooxPlaylistLink(playlistID),
+	var lastErr error
+	for _, pageURL := range jooxPlaylistLinks(playlistID) {
+		playlist, songs, err := j.fetchPlaylistPageDataFromURL(playlistID, pageURL)
+		if err == nil {
+			return playlist, songs, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, nil, lastErr
+	}
+	return nil, nil, errors.New("joox playlist page data not found")
+}
+
+func (j *Joox) fetchPlaylistPageDataFromURL(playlistID string, pageURL string) (*model.Playlist, []model.Song, error) {
+	body, err := utils.Get(pageURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Cookie", j.cookie),
 		utils.WithHeader("X-Forwarded-For", XForwardedFor),
@@ -150,7 +166,7 @@ func (j *Joox) fetchPlaylistPageData(id string) (*model.Playlist, []model.Song, 
 		TrackCount:  trackCount,
 		Creator:     firstNonEmpty(detail.Creator, detail.CreatorName, detail.UserName, detail.NickName, detail.OwnerName, detail.Author, detail.AuthorName, detail.User.Name, detail.User.UserName, detail.User.NickName, detail.User.Nick, detail.Owner.Name, detail.Owner.UserName, detail.Owner.NickName, detail.Owner.Nick, detail.CreatorInfo.Name, detail.CreatorInfo.UserName, detail.CreatorInfo.NickName, detail.CreatorInfo.Nick),
 		Description: firstNonEmpty(detail.Description, detail.Intro, detail.Desc),
-		Link:        jooxPlaylistLink(playlistID),
+		Link:        pageURL,
 		Extra: map[string]string{
 			"type":        "playlist",
 			"playlist_id": playlistID,
@@ -430,7 +446,19 @@ func jooxAlbumLink(id string) string {
 }
 
 func jooxPlaylistLink(id string) string {
-	return fmt.Sprintf("https://www.joox.com/hk/playlist/%s", normalizeJooxID(id))
+	return jooxRegionalPlaylistLink("id", id)
+}
+
+func jooxRegionalPlaylistLink(region string, id string) string {
+	return fmt.Sprintf("https://www.joox.com/%s/playlist/%s", region, normalizeJooxID(id))
+}
+
+func jooxPlaylistLinks(id string) []string {
+	return []string{
+		jooxRegionalPlaylistLink("id", id),
+		jooxRegionalPlaylistLink("sg", id),
+		jooxRegionalPlaylistLink("hk", id),
+	}
 }
 
 func firstNonEmpty(values ...string) string {
