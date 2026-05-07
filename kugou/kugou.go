@@ -4,14 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -20,6 +21,10 @@ const (
 	PCUserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 	VIPInfoAPI      = "https://vip.kugou.com/recharge/roleinfo"
 	KugouSignKey    = "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt"
+	KugouLiteSign   = "LnT6xpN3khm36zse0QzvmgTZ3waWdRSA"
+	KugouLiteAppID  = "3116"
+	KugouLiteVer    = "11440"
+	KugouLiteKey    = "185672dd44712f60bb1736df5a377e82"
 )
 
 type Kugou struct {
@@ -610,30 +615,186 @@ func (k *Kugou) fetchVIPSongInfo(s *model.Song) (*model.Song, error) {
 		return nil, errors.New("cookie required for kugou vip download")
 	}
 
+	var fallback *model.Song
+	var lastErr error
 	for _, hash := range collectCandidateHashes(s) {
-		info, err := k.fetchSonginfoV2(hash)
+		info, err := k.fetchURLV5(s, hash)
 		if err == nil && info != nil && info.URL != "" {
 			if looksLossless(info.Ext, info.Bitrate, info.Size) {
 				isVip := true
 				k.isVipCache = &isVip
+				return info, nil
 			}
-			return info, nil
+			if fallback == nil {
+				fallback = info
+			}
+		} else if err != nil {
+			lastErr = err
+		}
+
+		info, err = k.fetchPrivURLV6(s, hash)
+		if err == nil && info != nil && info.URL != "" {
+			if looksLossless(info.Ext, info.Bitrate, info.Size) {
+				isVip := true
+				k.isVipCache = &isVip
+				return info, nil
+			}
+			if fallback == nil {
+				fallback = info
+			}
+		} else if err != nil {
+			lastErr = err
+		}
+
+		info, err = k.fetchSonginfoV2(hash)
+		if err == nil && info != nil && info.URL != "" {
+			if looksLossless(info.Ext, info.Bitrate, info.Size) {
+				isVip := true
+				k.isVipCache = &isVip
+				return info, nil
+			}
+			if fallback == nil {
+				fallback = info
+			}
+		} else if err != nil {
+			lastErr = err
 		}
 
 		info, err = k.fetchTrackerSongInfo(hash)
-		if err != nil || info == nil || info.URL == "" {
-			continue
+		if err == nil && info != nil && info.URL != "" {
+			if looksLossless(info.Ext, info.Bitrate, info.Size) {
+				isVip := true
+				k.isVipCache = &isVip
+				return info, nil
+			}
+			if fallback == nil {
+				fallback = info
+			}
+		} else if err != nil {
+			lastErr = err
 		}
-		if looksLossless(info.Ext, info.Bitrate, info.Size) {
-			isVip := true
-			k.isVipCache = &isVip
-		}
-		return info, nil
+	}
+
+	if fallback != nil {
+		return fallback, nil
 	}
 
 	isVip := false
 	k.isVipCache = &isVip
+	if lastErr != nil {
+		return nil, lastErr
+	}
 	return nil, errors.New("kugou vip download url not found")
+}
+
+func (k *Kugou) fetchURLV5(s *model.Song, hash string) (*model.Song, error) {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if !isValidHash(hash) {
+		return nil, errors.New("invalid kugou hash")
+	}
+
+	cookie := parseKugouCookie(k.cookie)
+	token := strings.TrimSpace(cookie["token"])
+	userID := strings.TrimSpace(cookie["userid"])
+	mid := strings.TrimSpace(cookie["KUGOU_API_MID"])
+	if token == "" || userID == "" || userID == "0" || mid == "" {
+		return nil, errors.New("kugou v5 url requires app token, userid and KUGOU_API_MID")
+	}
+
+	albumAudioID := "0"
+	albumID := "0"
+	name, artist, album := "", "", ""
+	if s != nil {
+		name = s.Name
+		artist = s.Artist
+		album = s.Album
+		albumID = firstNonEmpty(s.AlbumID, albumID)
+		if s.Extra != nil {
+			albumAudioID = firstNonEmpty(s.Extra["album_audio_id"], s.Extra["audio_id"], albumAudioID)
+			albumID = firstNonEmpty(s.Extra["album_id"], albumID)
+		}
+	}
+
+	clienttime := strconv.FormatInt(time.Now().Unix(), 10)
+	dfid := firstNonEmpty(cookie["dfid"], randomKugouDFID())
+	params := map[string]string{
+		"dfid":           dfid,
+		"mid":            mid,
+		"uuid":           "-",
+		"appid":          KugouLiteAppID,
+		"clientver":      KugouLiteVer,
+		"clienttime":     clienttime,
+		"token":          token,
+		"userid":         userID,
+		"album_id":       albumID,
+		"area_code":      "1",
+		"hash":           hash,
+		"ssa_flag":       "is_fromtrack",
+		"version":        "11436",
+		"page_id":        "967177915",
+		"quality":        "flac",
+		"album_audio_id": albumAudioID,
+		"behavior":       "play",
+		"pid":            "411",
+		"cmd":            "26",
+		"pidversion":     "3001",
+		"IsFreePart":     "0",
+		"ppage_id":       "356753938,823673182,967485191",
+		"cdnBackup":      "1",
+		"kcard":          "0",
+		"module":         "",
+	}
+	params["key"] = utils.MD5(hash + KugouLiteKey + KugouLiteAppID + mid + userID)
+	apiURL := buildKugouAndroidURL("https://gateway.kugou.com/v5/url", params, "")
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi"),
+		utils.WithHeader("x-router", "trackercdn.kugou.com"),
+		utils.WithHeader("dfid", dfid),
+		utils.WithHeader("clienttime", clienttime),
+		utils.WithHeader("mid", mid),
+		utils.WithHeader("kg-rc", "1"),
+		utils.WithHeader("kg-thash", "5d816a0"),
+		utils.WithHeader("kg-rec", "1"),
+		utils.WithHeader("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F"),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kugou v5 url json parse error: %w", err)
+	}
+	downloadURL := pickKugouResponseURL(resp)
+	if strings.TrimSpace(downloadURL) == "" {
+		return nil, fmt.Errorf("kugou v5 url unavailable, status=%d error_code=%d", findKugouInt(resp, "status"), findKugouInt(resp, "error_code", "errcode"))
+	}
+
+	ext := normalizeKugouExt(findKugouString(resp, "fileType", "extName", "extname"), downloadURL)
+	if ext == "" {
+		ext = "flac"
+	}
+	return &model.Song{
+		Source:  "kugou",
+		ID:      hash,
+		Name:    firstNonEmpty(findKugouString(resp, "songName", "song_name", "audio_name"), name),
+		Artist:  firstNonEmpty(findKugouString(resp, "authorName", "author_name", "singerName"), artist),
+		Album:   album,
+		AlbumID: albumID,
+		Size:    findKugouInt64(resp, "fileSize", "filesize"),
+		Bitrate: normalizeKugouBitrate(findKugouInt(resp, "bitRate", "bitrate")),
+		Ext:     ext,
+		URL:     downloadURL,
+		Link:    fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
+		Extra: map[string]string{
+			"hash":           hash,
+			"album_audio_id": albumAudioID,
+			"album_id":       albumID,
+		},
+	}, nil
 }
 
 func (k *Kugou) fetchSonginfoV2(hash string) (*model.Song, error) {
@@ -660,12 +821,13 @@ func (k *Kugou) fetchSonginfoV2(hash string) (*model.Song, error) {
 
 	var step1Resp struct {
 		Data struct {
-			Hash               string `json:"hash"`
-			SongName           string `json:"song_name"`
-			AuthorName         string `json:"author_name"`
-			Img                string `json:"img"`
-			AlbumName          string `json:"album_name"`
-			EncodeAlbumAudioID string `json:"encode_album_audio_id"`
+			Hash               string      `json:"hash"`
+			SongName           string      `json:"song_name"`
+			AuthorName         string      `json:"author_name"`
+			Img                string      `json:"img"`
+			AlbumName          string      `json:"album_name"`
+			EncodeAlbumAudioID string      `json:"encode_album_audio_id"`
+			AlbumAudioID       interface{} `json:"album_audio_id"`
 		} `json:"data"`
 		Status int `json:"status"`
 	}
@@ -722,9 +884,148 @@ func (k *Kugou) fetchSonginfoV2(hash string) (*model.Song, error) {
 		Extra: map[string]string{
 			"hash":                  hash,
 			"encode_album_audio_id": step1Resp.Data.EncodeAlbumAudioID,
+			"album_audio_id":        formatKugouNumericString(step1Resp.Data.AlbumAudioID),
 		},
 	}
 	return info, nil
+}
+
+func (k *Kugou) fetchPrivURLV6(s *model.Song, hash string) (*model.Song, error) {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if !isValidHash(hash) {
+		return nil, errors.New("invalid kugou hash")
+	}
+
+	cookie := parseKugouCookie(k.cookie)
+	token := strings.TrimSpace(cookie["token"])
+	userID := strings.TrimSpace(cookie["userid"])
+	mid := strings.TrimSpace(cookie["KUGOU_API_MID"])
+	if token == "" || userID == "" || userID == "0" || mid == "" {
+		return nil, errors.New("kugou priv_url v6 requires app token, userid and KUGOU_API_MID")
+	}
+
+	albumAudioID := ""
+	if s != nil && s.Extra != nil {
+		albumAudioID = firstNonEmpty(s.Extra["album_audio_id"], s.Extra["audio_id"])
+	}
+	if albumAudioID == "" {
+		if info, err := k.fetchSonginfoV2(hash); err == nil && info != nil && info.Extra != nil {
+			albumAudioID = firstNonEmpty(info.Extra["album_audio_id"], info.Extra["audio_id"])
+		}
+	}
+	if albumAudioID == "" {
+		albumAudioID = "0"
+	}
+
+	dfid := firstNonEmpty(cookie["dfid"], randomKugouDFID())
+	vipToken := firstNonEmpty(cookie["vip_token"], cookie["viptoken"])
+	vipType := firstNonEmpty(cookie["vip_type"], cookie["vipType"], "6")
+	clienttimeMS := time.Now().UnixMilli()
+
+	bodyData := map[string]interface{}{
+		"area_code": "1",
+		"behavior":  "play",
+		"qualities": []string{"128", "320", "flac", "high", "multitrack", "viper_atmos", "viper_tape", "viper_clear", "super"},
+		"resource": map[string]interface{}{
+			"album_audio_id":  albumAudioID,
+			"collect_list_id": "3",
+			"collect_time":    clienttimeMS,
+			"hash":            hash,
+			"id":              0,
+			"page_id":         1,
+			"type":            "audio",
+		},
+		"token": token,
+		"tracker_param": map[string]interface{}{
+			"all_m":         1,
+			"auth":          "",
+			"is_free_part":  0,
+			"key":           utils.MD5(hash + KugouLiteKey + KugouLiteAppID + mid + userID),
+			"module_id":     0,
+			"need_climax":   1,
+			"need_xcdn":     1,
+			"open_time":     "",
+			"pid":           "411",
+			"pidversion":    "3001",
+			"priv_vip_type": "6",
+			"viptoken":      vipToken,
+		},
+		"userid": userID,
+		"vip":    vipType,
+	}
+	jsonData, err := json.Marshal(bodyData)
+	if err != nil {
+		return nil, err
+	}
+
+	clienttime := strconv.FormatInt(time.Now().Unix(), 10)
+	params := map[string]string{
+		"dfid":       dfid,
+		"mid":        mid,
+		"uuid":       "-",
+		"appid":      KugouLiteAppID,
+		"clientver":  KugouLiteVer,
+		"clienttime": clienttime,
+		"token":      token,
+		"userid":     userID,
+	}
+	apiURL := buildKugouAndroidURL("http://tracker.kugou.com/v6/priv_url", params, string(jsonData))
+
+	body, err := utils.Post(apiURL, strings.NewReader(string(jsonData)),
+		utils.WithHeader("User-Agent", "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi"),
+		utils.WithHeader("Content-Type", "application/json"),
+		utils.WithHeader("dfid", dfid),
+		utils.WithHeader("clienttime", clienttime),
+		utils.WithHeader("mid", mid),
+		utils.WithHeader("kg-rc", "1"),
+		utils.WithHeader("kg-thash", "5d816a0"),
+		utils.WithHeader("kg-rec", "1"),
+		utils.WithHeader("kg-rf", "B9EDA08A64250DEFFBCADDEE00F8F25F"),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kugou priv_url v6 json parse error: %w", err)
+	}
+
+	downloadURL := pickKugouResponseURL(resp)
+	if strings.TrimSpace(downloadURL) == "" {
+		return nil, fmt.Errorf("kugou priv_url v6 unavailable, status=%d error_code=%d", findKugouInt(resp, "status"), findKugouInt(resp, "error_code", "errcode"))
+	}
+
+	ext := normalizeKugouExt(findKugouString(resp, "fileType", "extName", "extname"), downloadURL)
+	bitrate := normalizeKugouBitrate(findKugouInt(resp, "bitRate", "bitrate"))
+	size := findKugouInt64(resp, "fileSize", "filesize")
+	name, artist, album, albumID := "", "", "", ""
+	if s != nil {
+		name = s.Name
+		artist = s.Artist
+		album = s.Album
+		albumID = s.AlbumID
+	}
+
+	return &model.Song{
+		Source:  "kugou",
+		ID:      hash,
+		Name:    firstNonEmpty(findKugouString(resp, "songName", "song_name", "audio_name"), name),
+		Artist:  firstNonEmpty(findKugouString(resp, "authorName", "author_name", "singerName"), artist),
+		Album:   album,
+		AlbumID: albumID,
+		Size:    size,
+		Bitrate: bitrate,
+		Ext:     ext,
+		URL:     downloadURL,
+		Link:    fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
+		Extra: map[string]string{
+			"hash":           hash,
+			"album_audio_id": albumAudioID,
+		},
+	}, nil
 }
 
 func (k *Kugou) getSonginfoV2(params map[string]string, out interface{}) error {
@@ -940,6 +1241,15 @@ func buildKugouSonginfoURL(params map[string]string) string {
 	return "https://wwwapi.kugou.com/play/songinfo?" + query.Encode()
 }
 
+func buildKugouAndroidURL(baseURL string, params map[string]string, data string) string {
+	query := url.Values{}
+	for key, value := range params {
+		query.Set(key, value)
+	}
+	query.Set("signature", signKugouAndroidParams(params, data))
+	return baseURL + "?" + query.Encode()
+}
+
 func signKugouSonginfoParams(params map[string]string) string {
 	pairs := make([]string, 0, len(params))
 	for key, value := range params {
@@ -947,6 +1257,15 @@ func signKugouSonginfoParams(params map[string]string) string {
 	}
 	sort.Strings(pairs)
 	return utils.MD5(KugouSignKey + strings.Join(pairs, "") + KugouSignKey)
+}
+
+func signKugouAndroidParams(params map[string]string, data string) string {
+	pairs := make([]string, 0, len(params))
+	for key, value := range params {
+		pairs = append(pairs, key+"="+value)
+	}
+	sort.Strings(pairs)
+	return utils.MD5(KugouLiteSign + strings.Join(pairs, "") + data + KugouLiteSign)
 }
 
 func cloneStringMap(src map[string]string) map[string]string {
@@ -1011,6 +1330,106 @@ func pickKugouURL(v interface{}) string {
 		}
 	}
 	return ""
+}
+
+func randomKugouDFID() string {
+	value := strings.ToUpper(utils.MD5(strconv.FormatInt(time.Now().UnixNano(), 10)))
+	if len(value) > 24 {
+		return value[:24]
+	}
+	return value
+}
+
+func pickKugouResponseURL(resp map[string]interface{}) string {
+	if downloadURL := pickKugouURL(resp["url"]); downloadURL != "" {
+		return strings.ReplaceAll(downloadURL, "\\/", "/")
+	}
+	if downloadURL := pickKugouURL(resp["backup_url"]); downloadURL != "" {
+		return strings.ReplaceAll(downloadURL, "\\/", "/")
+	}
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	if downloadURL := pickKugouURL(data["url"]); downloadURL != "" {
+		return strings.ReplaceAll(downloadURL, "\\/", "/")
+	}
+	if downloadURL := pickKugouURL(data["backup_url"]); downloadURL != "" {
+		return strings.ReplaceAll(downloadURL, "\\/", "/")
+	}
+	for _, key := range []string{"flac", "high", "320", "128", "super"} {
+		item, ok := data[key].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if downloadURL := pickKugouURL(item["url"]); downloadURL != "" {
+			return strings.ReplaceAll(downloadURL, "\\/", "/")
+		}
+		if downloadURL := pickKugouURL(item["backup_url"]); downloadURL != "" {
+			return strings.ReplaceAll(downloadURL, "\\/", "/")
+		}
+	}
+	return ""
+}
+
+func findKugouString(resp map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := resp[key]; ok {
+			if s := strings.TrimSpace(formatKugouNumericString(value)); s != "" {
+				return s
+			}
+		}
+	}
+	if data, ok := resp["data"].(map[string]interface{}); ok {
+		return findKugouString(data, keys...)
+	}
+	return ""
+}
+
+func findKugouInt(resp map[string]interface{}, keys ...string) int {
+	for _, key := range keys {
+		if value, ok := resp[key]; ok {
+			switch n := value.(type) {
+			case int:
+				return n
+			case int64:
+				return int(n)
+			case float64:
+				return int(n)
+			case string:
+				if i, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
+					return i
+				}
+			}
+		}
+	}
+	if data, ok := resp["data"].(map[string]interface{}); ok {
+		return findKugouInt(data, keys...)
+	}
+	return 0
+}
+
+func findKugouInt64(resp map[string]interface{}, keys ...string) int64 {
+	for _, key := range keys {
+		if value, ok := resp[key]; ok {
+			switch n := value.(type) {
+			case int:
+				return int64(n)
+			case int64:
+				return n
+			case float64:
+				return int64(n)
+			case string:
+				if i, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64); err == nil {
+					return i
+				}
+			}
+		}
+	}
+	if data, ok := resp["data"].(map[string]interface{}); ok {
+		return findKugouInt64(data, keys...)
+	}
+	return 0
 }
 
 func normalizeKugouDuration(v int) int {

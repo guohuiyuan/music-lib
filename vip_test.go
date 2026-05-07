@@ -35,6 +35,13 @@ func getEnvCookie(key string) string {
 	return ""
 }
 
+func getKugouDownloadCookie() string {
+	if cookie := getEnvCookie("KUGOU_APP_COOKIE"); cookie != "" {
+		return cookie
+	}
+	return getEnvCookie("KUGOU_COOKIE")
+}
+
 func isStandardFLAC(data []byte) bool {
 	return len(data) >= 4 && bytes.Equal(data[:4], []byte{'f', 'L', 'a', 'C'})
 }
@@ -82,16 +89,17 @@ func findKugouVIPTestSong(t *testing.T, k *kugou.Kugou) model.Song {
 
 func getKugouHashSnapshot(song model.Song) map[string]string {
 	snapshot := map[string]string{
-		"hash":         song.Extra["hash"],
-		"ogg_320_hash": song.Extra["ogg_320_hash"],
-		"ogg_128_hash": song.Extra["ogg_128_hash"],
-		"sq_hash":      song.Extra["sq_hash"],
-		"file_hash":    song.Extra["file_hash"],
-		"res_hash":     song.Extra["res_hash"],
-		"mv_hash":      song.Extra["mv_hash"],
-		"hq_hash":      song.Extra["hq_hash"],
-		"audio_id":     song.Extra["audio_id"],
-		"album_id":     song.Extra["album_id"],
+		"hash":           song.Extra["hash"],
+		"ogg_320_hash":   song.Extra["ogg_320_hash"],
+		"ogg_128_hash":   song.Extra["ogg_128_hash"],
+		"sq_hash":        song.Extra["sq_hash"],
+		"file_hash":      song.Extra["file_hash"],
+		"res_hash":       song.Extra["res_hash"],
+		"mv_hash":        song.Extra["mv_hash"],
+		"hq_hash":        song.Extra["hq_hash"],
+		"audio_id":       song.Extra["audio_id"],
+		"album_audio_id": song.Extra["album_audio_id"],
+		"album_id":       song.Extra["album_id"],
 	}
 
 	if song.AlbumID != "" && snapshot["album_id"] == "" {
@@ -282,9 +290,9 @@ func TestKugouVIPSearchHashes(t *testing.T) {
 }
 
 func TestKugouVIPStatusAndDownload(t *testing.T) {
-	cookie := getEnvCookie("KUGOU_COOKIE")
+	cookie := getKugouDownloadCookie()
 	if cookie == "" {
-		t.Skip("KUGOU_COOKIE not set")
+		t.Skip("KUGOU_APP_COOKIE or KUGOU_COOKIE not set")
 	}
 	k := kugou.New(cookie)
 
@@ -296,17 +304,18 @@ func TestKugouVIPStatusAndDownload(t *testing.T) {
 		AlbumID: "82564821",
 		Source:  "kugou",
 		Extra: map[string]string{
-			"hash":         "83368470292244265486BF864701222C",
-			"ogg_320_hash": "878D0D6E847F402299D29D4295BC21CB",
-			"ogg_128_hash": "A76E5E3C04E98737DBDD0C8C550EDAE5",
-			"sq_hash":      "83368470292244265486BF864701222C",
-			"file_hash":    "AB05B8F658851282DCB2CBAD548AEB9B",
-			"res_hash":     "983AA9AF17E1688CC70EDEAAF6256D5B",
-			"mv_hash":      "4CDC3359A8D45114153D68F26AEF0A9A",
-			"hq_hash":      "7DD13522B6C143A39E10507B74B0A876",
-			"audio_id":     "281733352",
-			"album_id":     "82564821",
-			"privilege":    "10",
+			"hash":           "83368470292244265486BF864701222C",
+			"ogg_320_hash":   "878D0D6E847F402299D29D4295BC21CB",
+			"ogg_128_hash":   "A76E5E3C04E98737DBDD0C8C550EDAE5",
+			"sq_hash":        "83368470292244265486BF864701222C",
+			"file_hash":      "AB05B8F658851282DCB2CBAD548AEB9B",
+			"res_hash":       "983AA9AF17E1688CC70EDEAAF6256D5B",
+			"mv_hash":        "4CDC3359A8D45114153D68F26AEF0A9A",
+			"hq_hash":        "7DD13522B6C143A39E10507B74B0A876",
+			"audio_id":       "281733352",
+			"album_audio_id": "590964610",
+			"album_id":       "82564821",
+			"privilege":      "10",
 		},
 	}
 	hashes := getKugouHashSnapshot(song)

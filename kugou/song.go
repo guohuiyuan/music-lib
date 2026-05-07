@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func Search(keyword string) ([]model.Song, error) { return defaultKugou.Search(keyword) }
@@ -40,6 +41,8 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 		Data struct {
 			Lists []struct {
 				Scid        interface{} `json:"Scid"`
+				ID          interface{} `json:"ID"`
+				MixSongID   interface{} `json:"MixSongID"`
 				SongName    string      `json:"SongName"`
 				SingerName  string      `json:"SingerName"`
 				AlbumName   string      `json:"AlbumName"`
@@ -150,17 +153,18 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 			Cover:    coverURL,
 			Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", finalHash),
 			Extra: map[string]string{
-				"hash":         finalHash,
-				"ogg_320_hash": item.TransParam.Ogg320Hash,
-				"ogg_128_hash": item.TransParam.Ogg128Hash,
-				"sq_hash":      item.SQFileHash,
-				"file_hash":    item.FileHash,
-				"res_hash":     item.ResFileHash,
-				"mv_hash":      item.MvHash,
-				"hq_hash":      item.HQFileHash,
-				"audio_id":     formatKugouNumericString(item.Audioid),
-				"album_id":     item.AlbumID,
-				"privilege":    strconv.Itoa(item.Privilege),
+				"hash":           finalHash,
+				"ogg_320_hash":   item.TransParam.Ogg320Hash,
+				"ogg_128_hash":   item.TransParam.Ogg128Hash,
+				"sq_hash":        item.SQFileHash,
+				"file_hash":      item.FileHash,
+				"res_hash":       item.ResFileHash,
+				"mv_hash":        item.MvHash,
+				"hq_hash":        item.HQFileHash,
+				"audio_id":       formatKugouNumericString(item.Audioid),
+				"album_audio_id": firstNonEmpty(formatKugouNumericString(item.MixSongID), formatKugouNumericString(item.ID)),
+				"album_id":       item.AlbumID,
+				"privilege":      strconv.Itoa(item.Privilege),
 			},
 		})
 	}
