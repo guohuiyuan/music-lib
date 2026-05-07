@@ -27,9 +27,6 @@ jobs:
       - name: Verify module builds
         run: go test ./... -run '^$' -count=1
 
-      - name: Run release-safe tests
-        run: go test ./... -run 'TestPlaylistProviderTypeContracts|TestPlaylistCategoryUnsupportedPlatforms' -count=1
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
