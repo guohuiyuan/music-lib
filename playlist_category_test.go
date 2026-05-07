@@ -27,6 +27,11 @@ func TestPlaylistCategoryPlatforms(t *testing.T) {
 	}{
 		{name: "netease", source: "netease", getCategories: netease.GetPlaylistCategories, getCategoryPlaylists: netease.GetCategoryPlaylists},
 		{name: "qianqian", source: "qianqian", getCategories: qianqian.GetPlaylistCategories, getCategoryPlaylists: qianqian.GetCategoryPlaylists},
+		{name: "qq", source: "qq", getCategories: qq.GetPlaylistCategories, getCategoryPlaylists: qq.GetCategoryPlaylists},
+		{name: "kugou", source: "kugou", getCategories: kugou.GetPlaylistCategories, getCategoryPlaylists: kugou.GetCategoryPlaylists},
+		{name: "kuwo", source: "kuwo", getCategories: kuwo.GetPlaylistCategories, getCategoryPlaylists: kuwo.GetCategoryPlaylists},
+		{name: "joox", source: "joox", getCategories: joox.GetPlaylistCategories, getCategoryPlaylists: joox.GetCategoryPlaylists},
+		{name: "migu", source: "migu", getCategories: migu.GetPlaylistCategories, getCategoryPlaylists: migu.GetCategoryPlaylists},
 	}
 
 	for _, suite := range suites {
@@ -92,11 +97,6 @@ func TestPlaylistCategoryUnsupportedPlatforms(t *testing.T) {
 		{name: "bilibili", getCategories: bilibili.GetPlaylistCategories, getPlaylists: bilibili.GetCategoryPlaylists},
 		{name: "fivesing", getCategories: fivesing.GetPlaylistCategories, getPlaylists: fivesing.GetCategoryPlaylists},
 		{name: "jamendo", getCategories: jamendo.GetPlaylistCategories, getPlaylists: jamendo.GetCategoryPlaylists},
-		{name: "joox", getCategories: joox.GetPlaylistCategories, getPlaylists: joox.GetCategoryPlaylists},
-		{name: "kugou", getCategories: kugou.GetPlaylistCategories, getPlaylists: kugou.GetCategoryPlaylists},
-		{name: "kuwo", getCategories: kuwo.GetPlaylistCategories, getPlaylists: kuwo.GetCategoryPlaylists},
-		{name: "migu", getCategories: migu.GetPlaylistCategories, getPlaylists: migu.GetCategoryPlaylists},
-		{name: "qq", getCategories: qq.GetPlaylistCategories, getPlaylists: qq.GetCategoryPlaylists},
 		{name: "soda", getCategories: soda.GetPlaylistCategories, getPlaylists: soda.GetCategoryPlaylists},
 	}
 

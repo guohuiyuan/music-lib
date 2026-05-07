@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -40,11 +41,214 @@ func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist,
 }
 
 func (k *Kugou) GetPlaylistCategories() ([]model.PlaylistCategory, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	apiURL := "http://mobilecdnbj.kugou.com/api/v3/tag/list?pid=0&apiver=2&plat=0"
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", MobileUserAgent),
+		utils.WithHeader("Referer", MobileReferer),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Status  int    `json:"status"`
+		Errcode int    `json:"errcode"`
+		Error   string `json:"error"`
+		Data    struct {
+			Info []struct {
+				ID       int    `json:"id"`
+				Name     string `json:"name"`
+				Children []struct {
+					ID           int    `json:"id"`
+					Name         string `json:"name"`
+					SpecialTagID int    `json:"special_tag_id"`
+					IsHot        int    `json:"is_hot"`
+				} `json:"children"`
+			} `json:"info"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kugou playlist category json parse error: %w", err)
+	}
+	if resp.Status != 1 || resp.Errcode != 0 {
+		return nil, fmt.Errorf("kugou playlist category api error: %s (status %d errcode %d)", resp.Error, resp.Status, resp.Errcode)
+	}
+
+	categories := []model.PlaylistCategory{{
+		Source: "kugou",
+		ID:     "",
+		Name:   "全部",
+		Group:  "全部",
+	}}
+	for _, group := range resp.Data.Info {
+		groupName := strings.TrimSpace(group.Name)
+		if group.ID > 0 && groupName != "" {
+			categoryID := kugouPlaylistCategoryID(group.ID, 0)
+			categories = append(categories, model.PlaylistCategory{
+				Source: "kugou",
+				ID:     categoryID,
+				Name:   groupName,
+				Group:  groupName,
+				Extra: map[string]string{
+					"id":     strconv.Itoa(group.ID),
+					"tag_id": "0",
+				},
+			})
+		}
+		for _, child := range group.Children {
+			name := strings.TrimSpace(child.Name)
+			if child.ID == 0 || name == "" {
+				continue
+			}
+			categoryID := kugouPlaylistCategoryID(child.ID, child.SpecialTagID)
+			categories = append(categories, model.PlaylistCategory{
+				Source: "kugou",
+				ID:     categoryID,
+				Name:   name,
+				Group:  groupName,
+				Hot:    child.IsHot == 1,
+				Extra: map[string]string{
+					"id":     strconv.Itoa(child.ID),
+					"tag_id": strconv.Itoa(child.SpecialTagID),
+				},
+			})
+		}
+	}
+	return categories, nil
 }
 
 func (k *Kugou) GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	categoryID = strings.TrimSpace(categoryID)
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if categoryID == "" {
+		categories, err := k.GetPlaylistCategories()
+		if err != nil {
+			return nil, err
+		}
+		for _, category := range categories {
+			if strings.TrimSpace(category.ID) != "" {
+				categoryID = category.ID
+				break
+			}
+		}
+		if categoryID == "" {
+			return nil, errors.New("no playlist categories found")
+		}
+	}
+	id, tagID := parseKugouPlaylistCategoryID(categoryID)
+	if id == "" {
+		return nil, errors.New("invalid kugou playlist category id")
+	}
+
+	params := url.Values{}
+	params.Set("plat", "0")
+	params.Set("page", strconv.Itoa(page))
+	params.Set("tagid", tagID)
+	params.Set("pagesize", strconv.Itoa(limit))
+	params.Set("ugc", "1")
+	params.Set("id", id)
+	params.Set("sort", "2")
+	apiURL := "http://mobilecdnbj.kugou.com/api/v3/tag/specialList?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", MobileUserAgent),
+		utils.WithHeader("Referer", MobileReferer),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Status  int    `json:"status"`
+		Errcode int    `json:"errcode"`
+		Error   string `json:"error"`
+		Data    struct {
+			Info []struct {
+				SpecialID       int    `json:"specialid"`
+				GlobalSpecialID string `json:"global_specialid"`
+				SpecialName     string `json:"specialname"`
+				ImgURL          string `json:"imgurl"`
+				Intro           string `json:"intro"`
+				PlayCount       int    `json:"playcount"`
+				SongCount       int    `json:"songcount"`
+				Username        string `json:"username"`
+				SingerName      string `json:"singername"`
+				PubTime         string `json:"publishtime"`
+			} `json:"info"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kugou category playlist json parse error: %w", err)
+	}
+	if resp.Status != 1 || resp.Errcode != 0 {
+		return nil, fmt.Errorf("kugou category playlist api error: %s (status %d errcode %d)", resp.Error, resp.Status, resp.Errcode)
+	}
+
+	playlists := make([]model.Playlist, 0, len(resp.Data.Info))
+	for _, item := range resp.Data.Info {
+		playlistID := ""
+		if item.SpecialID > 0 {
+			playlistID = strconv.Itoa(item.SpecialID)
+		} else {
+			playlistID = strings.TrimSpace(item.GlobalSpecialID)
+		}
+		name := strings.TrimSpace(item.SpecialName)
+		if playlistID == "" || name == "" {
+			continue
+		}
+		cover := strings.Replace(item.ImgURL, "{size}", "240", 1)
+		creator := strings.TrimSpace(item.Username)
+		if creator == "" {
+			creator = strings.TrimSpace(item.SingerName)
+		}
+		playlists = append(playlists, model.Playlist{
+			Source:      "kugou",
+			ID:          playlistID,
+			Name:        name,
+			Cover:       cover,
+			TrackCount:  item.SongCount,
+			PlayCount:   item.PlayCount,
+			Creator:     creator,
+			Description: item.Intro,
+			Link:        fmt.Sprintf("https://www.kugou.com/yy/special/single/%s.html", playlistID),
+			Extra: map[string]string{
+				"category_id":      categoryID,
+				"id":               id,
+				"tag_id":           tagID,
+				"global_specialid": item.GlobalSpecialID,
+				"publish_time":     item.PubTime,
+			},
+		})
+	}
+	if len(playlists) == 0 {
+		return nil, errors.New("no category playlists found")
+	}
+	return playlists, nil
+}
+
+func kugouPlaylistCategoryID(id, tagID int) string {
+	return strconv.Itoa(id) + ":" + strconv.Itoa(tagID)
+}
+
+func parseKugouPlaylistCategoryID(categoryID string) (string, string) {
+	parts := strings.SplitN(categoryID, ":", 2)
+	id := strings.TrimSpace(parts[0])
+	tagID := "0"
+	if len(parts) == 2 {
+		tagID = strings.TrimSpace(parts[1])
+	}
+	if tagID == "" {
+		tagID = "0"
+	}
+	return id, tagID
 }
 
 func (k *Kugou) SearchPlaylist(keyword string) ([]model.Playlist, error) {

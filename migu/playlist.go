@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -31,20 +32,88 @@ func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist,
 }
 
 func (m *Migu) GetPlaylistCategories() ([]model.PlaylistCategory, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	categories := []model.PlaylistCategory{{
+		Source: "migu",
+		ID:     "",
+		Name:   "全部",
+		Group:  "全部",
+	}}
+	for _, item := range miguPlaylistCategoryKeywords {
+		categories = append(categories, model.PlaylistCategory{
+			Source: "migu",
+			ID:     item.Name,
+			Name:   item.Name,
+			Group:  item.Group,
+			Hot:    item.Hot,
+		})
+	}
+	return categories, nil
 }
 
 func (m *Migu) GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	categoryID = strings.TrimSpace(categoryID)
+	if categoryID == "" {
+		categoryID = "华语"
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+
+	playlists, err := m.searchPlaylists(categoryID, page, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range playlists {
+		if playlists[i].Extra == nil {
+			playlists[i].Extra = map[string]string{}
+		}
+		playlists[i].Extra["category_id"] = categoryID
+	}
+	if len(playlists) == 0 {
+		return nil, errors.New("no category playlists found")
+	}
+	return playlists, nil
+}
+
+var miguPlaylistCategoryKeywords = []struct {
+	Name  string
+	Group string
+	Hot   bool
+}{
+	{Name: "华语", Group: "语种", Hot: true},
+	{Name: "欧美", Group: "语种", Hot: true},
+	{Name: "日语", Group: "语种"},
+	{Name: "韩语", Group: "语种"},
+	{Name: "粤语", Group: "语种"},
+	{Name: "流行", Group: "风格", Hot: true},
+	{Name: "摇滚", Group: "风格", Hot: true},
+	{Name: "民谣", Group: "风格", Hot: true},
+	{Name: "电子", Group: "风格"},
+	{Name: "说唱", Group: "风格"},
+	{Name: "古风", Group: "风格"},
+	{Name: "轻音乐", Group: "风格"},
+	{Name: "影视", Group: "场景", Hot: true},
+	{Name: "ACG", Group: "场景"},
+	{Name: "治愈", Group: "场景"},
+	{Name: "运动", Group: "场景"},
+	{Name: "学习", Group: "场景"},
+	{Name: "睡前", Group: "场景"},
 }
 
 func (m *Migu) SearchPlaylist(keyword string) ([]model.Playlist, error) {
+	return m.searchPlaylists(keyword, 1, 10)
+}
+
+func (m *Migu) searchPlaylists(keyword string, page, limit int) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("ua", "Android_migu")
 	params.Set("version", "5.0.1")
 	params.Set("text", keyword)
-	params.Set("pageNo", "1")
-	params.Set("pageSize", "10")
+	params.Set("pageNo", strconv.Itoa(page))
+	params.Set("pageSize", strconv.Itoa(limit))
 	// 切换开关：songlist:1
 	params.Set("searchSwitch", `{"song":0,"album":0,"singer":0,"tagSong":0,"mvSong":0,"songlist":1,"bestShow":1}`)
 
@@ -81,22 +150,27 @@ func (m *Migu) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 	var playlists []model.Playlist
 	for _, item := range resp.SongListResultData.Result {
+		playlistID := strings.TrimSpace(item.ID)
+		name := strings.TrimSpace(item.Name)
+		if playlistID == "" || name == "" {
+			continue
+		}
 		trackCount, _ := strconv.Atoi(item.MusicNum)
 		playCount, _ := strconv.Atoi(item.PlayNum)
 		cover := firstNonEmpty(item.MusicListPicURL, pickMiguImage(item.ImgItems))
 
 		playlists = append(playlists, model.Playlist{
 			Source:     "migu",
-			ID:         item.ID,
-			Name:       item.Name,
+			ID:         playlistID,
+			Name:       name,
 			Cover:      cover,
 			TrackCount: trackCount,
 			PlayCount:  playCount,
 			Creator:    firstNonEmpty(item.UserName, item.OwnerName),
-			Link:       miguPlaylistLink(item.ID),
+			Link:       miguPlaylistLink(playlistID),
 			Extra: map[string]string{
 				"type":          "playlist",
-				"playlist_id":   item.ID,
+				"playlist_id":   playlistID,
 				"resource_type": firstNonEmpty(item.ResourceType, "2021"),
 			},
 		})

@@ -1,14 +1,17 @@
 package joox
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -30,11 +33,120 @@ func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist,
 }
 
 func (j *Joox) GetPlaylistCategories() ([]model.PlaylistCategory, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	data, err := j.fetchJooxPlaylistCategoriesPage()
+	if err != nil {
+		return nil, err
+	}
+
+	categories := []model.PlaylistCategory{{
+		Source: "joox",
+		ID:     "",
+		Name:   "全部",
+		Group:  "全部",
+	}}
+	for index, category := range data.Categories {
+		name := decodeJooxBase64Text(category.Title)
+		if name == "" || len(category.ItemList) == 0 {
+			continue
+		}
+		categoryID := strconv.Itoa(index)
+		categories = append(categories, model.PlaylistCategory{
+			Source: "joox",
+			ID:     categoryID,
+			Name:   name,
+			Group:  "JOOX",
+			Count:  len(category.ItemList),
+			Extra: map[string]string{
+				"title": category.Title,
+				"type":  strconv.Itoa(category.Type),
+			},
+		})
+	}
+	if len(categories) == 1 {
+		return nil, errors.New("no playlist categories found")
+	}
+	return categories, nil
 }
 
 func (j *Joox) GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	categoryID = strings.TrimSpace(categoryID)
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+
+	data, err := j.fetchJooxPlaylistCategoriesPage()
+	if err != nil {
+		return nil, err
+	}
+
+	var items []jooxCategoryPlaylistItem
+	categoryName := "全部"
+	if categoryID == "" {
+		seen := map[string]struct{}{}
+		for _, category := range data.Categories {
+			for _, item := range category.ItemList {
+				playlistID := jooxCategoryPlaylistID(item.ID)
+				if playlistID == "" {
+					continue
+				}
+				if _, ok := seen[playlistID]; ok {
+					continue
+				}
+				seen[playlistID] = struct{}{}
+				items = append(items, item)
+			}
+		}
+	} else {
+		for index, category := range data.Categories {
+			name := decodeJooxBase64Text(category.Title)
+			if strconv.Itoa(index) == categoryID || strings.EqualFold(name, categoryID) {
+				items = category.ItemList
+				categoryName = name
+				break
+			}
+		}
+		if len(items) == 0 {
+			return nil, errors.New("playlist category not found")
+		}
+	}
+
+	start := (page - 1) * limit
+	if start >= len(items) {
+		return nil, errors.New("no category playlists found")
+	}
+	end := start + limit
+	if end > len(items) {
+		end = len(items)
+	}
+
+	playlists := make([]model.Playlist, 0, end-start)
+	for _, item := range items[start:end] {
+		playlistID := jooxCategoryPlaylistID(item.ID)
+		name := decodeJooxBase64Text(item.Title)
+		if playlistID == "" || name == "" {
+			continue
+		}
+		cover := strings.ReplaceAll(item.PicURL, "%d", "300")
+		playlists = append(playlists, model.Playlist{
+			Source: "joox",
+			ID:     playlistID,
+			Name:   name,
+			Cover:  cover,
+			Link:   jooxPlaylistLink(playlistID),
+			Extra: map[string]string{
+				"category_id":   categoryID,
+				"category_name": categoryName,
+				"playlist_id":   playlistID,
+			},
+		})
+	}
+	if len(playlists) == 0 {
+		return nil, errors.New("no category playlists found")
+	}
+	return playlists, nil
 }
 
 func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -274,4 +386,83 @@ func (j *Joox) ParsePlaylist(link string) (*model.Playlist, []model.Song, error)
 	}
 
 	return nil, nil, errors.New("invalid joox playlist link")
+}
+
+type jooxPlaylistCategoryPage struct {
+	Categories []jooxPlaylistCategory `json:"category"`
+}
+
+type jooxPlaylistCategory struct {
+	Type     int                        `json:"type"`
+	Title    string                     `json:"title"`
+	ItemList []jooxCategoryPlaylistItem `json:"itemlist"`
+}
+
+type jooxCategoryPlaylistItem struct {
+	ID     interface{} `json:"id"`
+	Title  string      `json:"title"`
+	PicURL string      `json:"picurl"`
+}
+
+func (j *Joox) fetchJooxPlaylistCategoriesPage() (*jooxPlaylistCategoryPage, error) {
+	body, err := utils.Get("https://www.joox.com/sg/playlist",
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", j.cookie),
+		utils.WithHeader("X-Forwarded-For", XForwardedFor),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := regexp.MustCompile(`(?s)<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>`).FindSubmatch(body)
+	if len(matches) < 2 {
+		return nil, errors.New("joox playlist category page data not found")
+	}
+
+	var nextData struct {
+		Props struct {
+			PageProps struct {
+				MLList jooxPlaylistCategoryPage `json:"mlList"`
+			} `json:"pageProps"`
+		} `json:"props"`
+	}
+	if err := json.Unmarshal(matches[1], &nextData); err != nil {
+		return nil, fmt.Errorf("joox playlist category page json error: %w", err)
+	}
+	if len(nextData.Props.PageProps.MLList.Categories) == 0 {
+		return nil, errors.New("joox playlist categories not found")
+	}
+	return &nextData.Props.PageProps.MLList, nil
+}
+
+func decodeJooxBase64Text(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	padded := value
+	if rem := len(padded) % 4; rem != 0 {
+		padded += strings.Repeat("=", 4-rem)
+	}
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding} {
+		if decoded, err := encoding.DecodeString(padded); err == nil {
+			return strings.TrimSpace(string(decoded))
+		}
+	}
+	return value
+}
+
+func jooxCategoryPlaylistID(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return normalizeJooxID(v)
+	case float64:
+		return strconv.FormatInt(int64(v), 10)
+	case int:
+		return strconv.Itoa(v)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }

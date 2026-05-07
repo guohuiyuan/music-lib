@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -38,11 +39,174 @@ func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist,
 }
 
 func (q *QQ) GetPlaylistCategories() ([]model.PlaylistCategory, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	params := url.Values{}
+	params.Set("format", "json")
+	params.Set("inCharset", "utf8")
+	params.Set("outCharset", "utf-8")
+	apiURL := "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_tag_conf.fcg?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/"),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			Categories []struct {
+				CategoryGroupName string `json:"categoryGroupName"`
+				Items             []struct {
+					CategoryID   int    `json:"categoryId"`
+					CategoryName string `json:"categoryName"`
+					Usable       int    `json:"usable"`
+				} `json:"items"`
+			} `json:"categories"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq playlist category json parse error: %w", err)
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("qq playlist category api error: %s (code %d)", resp.Message, resp.Code)
+	}
+
+	categories := []model.PlaylistCategory{{
+		Source: "qq",
+		ID:     "",
+		Name:   "全部",
+		Group:  "全部",
+	}}
+	for _, group := range resp.Data.Categories {
+		groupName := strings.TrimSpace(group.CategoryGroupName)
+		for _, item := range group.Items {
+			if item.Usable == 0 || item.CategoryID == 0 || item.CategoryID == 10000000 {
+				continue
+			}
+			name := strings.TrimSpace(item.CategoryName)
+			if name == "" {
+				continue
+			}
+			categoryID := strconv.Itoa(item.CategoryID)
+			categories = append(categories, model.PlaylistCategory{
+				Source: "qq",
+				ID:     categoryID,
+				Name:   name,
+				Group:  groupName,
+				Extra: map[string]string{
+					"category_id": categoryID,
+				},
+			})
+		}
+	}
+	return categories, nil
 }
 
 func (q *QQ) GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
-	return nil, model.ErrPlaylistCategoriesUnsupported
+	categoryID = strings.TrimSpace(categoryID)
+	if categoryID == "" {
+		categoryID = "10000000"
+	}
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	params := url.Values{}
+	params.Set("picmid", "1")
+	params.Set("rnd", "0.1")
+	params.Set("g_tk", "5381")
+	params.Set("loginUin", "0")
+	params.Set("hostUin", "0")
+	params.Set("format", "json")
+	params.Set("inCharset", "utf8")
+	params.Set("outCharset", "utf-8")
+	params.Set("notice", "0")
+	params.Set("platform", "yqq.json")
+	params.Set("needNewCode", "0")
+	params.Set("categoryId", categoryID)
+	params.Set("sortId", "5")
+	params.Set("sin", strconv.Itoa(offset))
+	params.Set("ein", strconv.Itoa(offset+limit-1))
+	apiURL := "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/"),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			List []struct {
+				DissID       string `json:"dissid"`
+				DissName     string `json:"dissname"`
+				ImgURL       string `json:"imgurl"`
+				Introduction string `json:"introduction"`
+				ListenNum    int    `json:"listennum"`
+				SongCount    int    `json:"song_count"`
+				SongNum      int    `json:"song_num"`
+				Creator      struct {
+					Name string `json:"name"`
+				} `json:"creator"`
+			} `json:"list"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq category playlist json parse error: %w", err)
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("qq category playlist api error: %s (code %d)", resp.Message, resp.Code)
+	}
+
+	playlists := make([]model.Playlist, 0, len(resp.Data.List))
+	for _, item := range resp.Data.List {
+		playlistID := strings.TrimSpace(item.DissID)
+		name := strings.TrimSpace(item.DissName)
+		if playlistID == "" || name == "" {
+			continue
+		}
+		cover := item.ImgURL
+		if strings.HasPrefix(cover, "http://") {
+			cover = strings.Replace(cover, "http://", "https://", 1)
+		}
+		trackCount := item.SongCount
+		if trackCount == 0 {
+			trackCount = item.SongNum
+		}
+		playlists = append(playlists, model.Playlist{
+			Source:      "qq",
+			ID:          playlistID,
+			Name:        name,
+			Cover:       cover,
+			TrackCount:  trackCount,
+			PlayCount:   item.ListenNum,
+			Creator:     item.Creator.Name,
+			Description: item.Introduction,
+			Link:        fmt.Sprintf("https://y.qq.com/n/ryqq/playlist/%s", playlistID),
+			Extra: map[string]string{
+				"category_id": categoryID,
+			},
+		})
+	}
+	if len(playlists) == 0 {
+		return nil, errors.New("no category playlists found")
+	}
+	return playlists, nil
 }
 
 // SearchPlaylist searches playlists.
