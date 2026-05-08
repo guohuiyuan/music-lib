@@ -188,7 +188,7 @@ func registerKugouLoginDevice(cookies map[string]string) error {
 	aesKey := []byte(digest[:16])
 	aesIV := []byte(digest[16:32])
 	deviceData := map[string]interface{}{
-		"availableRamSize":   4983533568,
+		"availableRamSize":   int64(4983533568),
 		"availableRomSize":   48114719,
 		"availableSDSize":    48114717,
 		"basebandVer":        "",
