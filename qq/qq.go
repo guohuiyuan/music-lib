@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -295,27 +296,11 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 	params.Set("platform", "yqq")
 	params.Set("needNewCode", "0")
 
-	apiURL := "http://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
-		utils.WithHeader("Referer", "https://y.qq.com/"),
-		utils.WithHeader("Cookie", q.cookie),
-		utils.WithRandomIPHeader(),
-	)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Unwrap JSONP when needed.
-	sBody := string(body)
-	if idx := strings.Index(sBody, "("); idx >= 0 && strings.HasSuffix(strings.TrimSpace(sBody), ")") {
-		sBody = sBody[idx+1 : len(sBody)-1]
-		body = []byte(sBody)
-	}
-
 	var resp struct {
-		Cdlist []struct {
+		Code    int    `json:"code"`
+		Subcode int    `json:"subcode"`
+		Msg     string `json:"msg"`
+		Cdlist  []struct {
 			Dissname string `json:"dissname"`
 			Logo     string `json:"logo"`
 			Nickname string `json:"nickname"`
@@ -342,11 +327,75 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 		} `json:"cdlist"`
 	}
 
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil, fmt.Errorf("qq playlist detail json error: %w", err)
+	endpoints := []string{
+		"https://i.y.qq.com/qzone-music/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg",
+		"http://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg",
+	}
+	var lastErr error
+	for _, endpoint := range endpoints {
+		apiURL := endpoint + "?" + params.Encode()
+		body, err := utils.Get(apiURL,
+			utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+			utils.WithHeader("Referer", "https://y.qq.com/"),
+			utils.WithHeader("Cookie", q.cookie),
+			utils.WithRandomIPHeader(),
+		)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		sBody := string(body)
+		if idx := strings.Index(sBody, "("); idx >= 0 && strings.HasSuffix(strings.TrimSpace(sBody), ")") {
+			sBody = sBody[idx+1 : len(sBody)-1]
+			body = []byte(sBody)
+		}
+
+		resp = struct {
+			Code    int    `json:"code"`
+			Subcode int    `json:"subcode"`
+			Msg     string `json:"msg"`
+			Cdlist  []struct {
+				Dissname string `json:"dissname"`
+				Logo     string `json:"logo"`
+				Nickname string `json:"nickname"`
+				Desc     string `json:"desc"`
+				Visitnum int    `json:"visitnum"`
+				Songnum  int    `json:"songnum"`
+				Songlist []struct {
+					SongID    int64  `json:"songid"`
+					SongName  string `json:"songname"`
+					SongMID   string `json:"songmid"`
+					AlbumName string `json:"albumname"`
+					AlbumMID  string `json:"albummid"`
+					Interval  int    `json:"interval"`
+					Size128   int64  `json:"size128"`
+					Size320   int64  `json:"size320"`
+					SizeFlac  int64  `json:"sizeflac"`
+					Pay       struct {
+						PayPlay int `json:"payplay"`
+					} `json:"pay"`
+					Singer []struct {
+						Name string `json:"name"`
+					} `json:"singer"`
+				} `json:"songlist"`
+			} `json:"cdlist"`
+		}{}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			lastErr = fmt.Errorf("qq playlist detail json error: %w", err)
+			continue
+		}
+		if len(resp.Cdlist) > 0 && resp.Subcode == 0 {
+			lastErr = nil
+			break
+		}
+		lastErr = fmt.Errorf("qq playlist detail api error: subcode=%d msg=%s", resp.Subcode, resp.Msg)
 	}
 
 	if len(resp.Cdlist) == 0 {
+		if lastErr != nil {
+			return nil, nil, lastErr
+		}
 		return nil, nil, errors.New("playlist not found (empty cdlist)")
 	}
 

@@ -238,9 +238,6 @@ func (q *QQ) fetchProfileOrderPlaylists(uin string, page, limit int) ([]model.Pl
 			continue
 		}
 		playlistID := strconv.FormatInt(item.DissID, 10)
-		if _, _, err := q.fetchPlaylistDetail(playlistID); err != nil {
-			continue
-		}
 		creator := strings.TrimSpace(item.Nickname)
 		if creator == "" && item.Uin > 0 {
 			creator = strconv.FormatInt(item.Uin, 10)
