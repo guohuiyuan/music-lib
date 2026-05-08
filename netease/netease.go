@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -22,6 +23,7 @@ const (
 	PlaylistAPI            = "https://music.163.com/weapi/v3/playlist/detail"
 	PlaylistCategoryAPI    = "https://music.163.com/weapi/playlist/catalogue"
 	CategoryPlaylistAPI    = "https://music.163.com/weapi/playlist/list"
+	UserPlaylistAPI        = "https://music.163.com/weapi/user/playlist"
 	AlbumAPI               = "https://music.163.com/weapi/v1/album/%s"
 	UserAccountAPI         = "https://music.163.com/weapi/nuser/account/get"
 	RecommendedPlaylistAPI = "https://music.163.com/weapi/personalized/playlist"

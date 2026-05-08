@@ -3,11 +3,12 @@ package netease
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -33,6 +34,10 @@ func GetPlaylistCategories() ([]model.PlaylistCategory, error) {
 
 func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
 	return defaultNetease.GetCategoryPlaylists(categoryID, page, limit)
+}
+
+func GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
+	return defaultNetease.GetUserPlaylists(page, limit)
 }
 
 // SearchPlaylist searches playlists.

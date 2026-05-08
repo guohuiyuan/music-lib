@@ -46,6 +46,10 @@ type PlaylistCategoryProvider interface {
 	GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error)
 }
 
+type UserPlaylistProvider interface {
+	GetUserPlaylists(page, limit int) ([]model.Playlist, error)
+}
+
 type QRLoginProvider interface {
 	CreateQRLogin() (*model.QRLoginSession, error)
 	CheckQRLogin(key string) (*model.QRLoginResult, error)

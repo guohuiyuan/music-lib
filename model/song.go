@@ -8,6 +8,7 @@ import (
 )
 
 var ErrPlaylistCategoriesUnsupported = errors.New("playlist categories not supported")
+var ErrUserPlaylistsUnsupported = errors.New("user playlists not supported")
 
 // Song 是所有音乐源通用的歌曲结构
 type Song struct {
