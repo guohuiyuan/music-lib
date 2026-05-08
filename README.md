@@ -25,6 +25,22 @@
 > `⚠️` 表示方法已接入，但平台搜索接口结果不稳定；优先使用已知 ID 或链接解析。
 > 本次从 `❌` 升级的能力已在 `go-music-dl` 侧通过集成测试验证；千千音乐和 Jamendo 的歌单搜索仍按不稳定能力标记。
 
+个人化、登录和歌单分类能力支持情况：
+
+| 平台       | 个人歌单 | 扫码登录 | 歌单分类 |
+| ---------- | -------- | -------- | -------- |
+| 网易云音乐 | ✅       | ✅       | ✅       |
+| QQ 音乐    | ✅       | ✅ QQ / 微信 | ✅       |
+| 酷狗音乐   | ✅       | ✅       | ✅       |
+| 酷我音乐   | ❌       | ❌       | ✅       |
+| 咪咕音乐   | ❌       | ❌       | ✅       |
+| 千千音乐   | ❌       | ❌       | ✅       |
+| 汽水音乐   | ❌       | ❌       | ❌       |
+| 5sing      | ❌       | ❌       | ❌       |
+| Jamendo    | ❌       | ❌       | ❌       |
+| JOOX       | ❌       | ❌       | ✅       |
+| Bilibili   | ❌       | ✅       | ❌       |
+
 ## 安装
 
 ```bash
@@ -116,6 +132,133 @@ func main() {
 	}
 
 	fmt.Printf("%s 共有 %d 首歌\n", playlist.Name, len(songs))
+}
+```
+
+### 4. 获取个人歌单
+
+个人歌单需要登录 Cookie。支持的平台可以使用 `New(cookie)` 创建实例，再调用 `GetUserPlaylists`。
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/guohuiyuan/music-lib/qq"
+)
+
+func main() {
+	q := qq.New(os.Getenv("QQ_COOKIE"))
+
+	playlists, err := q.GetUserPlaylists(1, 20)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(playlists) == 0 {
+		fmt.Println("没有个人歌单")
+		return
+	}
+
+	playlist := playlists[0]
+	songs, err := q.GetPlaylistSongs(playlist.ID)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("歌单: %s, 共 %d 首歌\n", playlist.Name, len(songs))
+}
+```
+
+QQ 音乐个人歌单里可能出现一些内部 ID：
+
+- `profile:favorites`：我喜欢的歌曲。
+- `profile:dir:<dirid>`：微信登录用户的个人目录歌单。
+
+这些 ID 可以直接传给 `GetPlaylistSongs`，不需要自己转换成公开歌单 ID。
+
+### 5. 扫码登录
+
+已支持网易云、QQ、QQ 微信、酷狗、Bilibili 的扫码登录。登录成功后会返回 Cookie，建议由上层应用保存到配置或环境变量，不要硬编码在代码里。
+
+下面是 QQ 音乐微信扫码登录示例：
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/qq"
+)
+
+func main() {
+	session, err := qq.CreateWXQRLogin()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("请用微信扫描二维码:", session.ImageURL)
+
+	for {
+		time.Sleep(2 * time.Second)
+
+		result, err := qq.CheckWXQRLogin(session.Key)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		switch result.Status {
+		case model.QRLoginStatusWaiting, model.QRLoginStatusScanned:
+			fmt.Println("登录状态:", result.Status)
+		case model.QRLoginStatusSuccess:
+			fmt.Println("登录成功，Cookie 长度:", len(result.Cookie))
+			return
+		case model.QRLoginStatusExpired, model.QRLoginStatusFailed:
+			log.Fatalf("登录失败: %s", result.Message)
+		}
+	}
+}
+```
+
+QQ 音乐默认扫码登录使用 `qq.CreateQRLogin` / `qq.CheckQRLogin`，微信扫码使用 `qq.CreateWXQRLogin` / `qq.CheckWXQRLogin`。如果想按类型切换，也可以使用 `qq.CreateQRLoginByType("qq")` / `qq.CheckQRLoginByType("qq", key)`，或 `qq.CreateQRLoginByType("wx")` / `qq.CheckQRLoginByType("wx", key)`。
+
+### 6. 获取歌单分类
+
+支持歌单分类的平台可以先获取分类，再按分类分页拉取歌单。
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/guohuiyuan/music-lib/qq"
+)
+
+func main() {
+	categories, err := qq.GetPlaylistCategories()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(categories) == 0 {
+		fmt.Println("没有分类")
+		return
+	}
+
+	category := categories[0]
+	playlists, err := qq.GetCategoryPlaylists(category.ID, 1, 20)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("分类: %s, 歌单数: %d\n", category.Name, len(playlists))
 }
 ```
 
