@@ -15,6 +15,8 @@ func GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 	return defaultQQ.GetUserPlaylists(page, limit)
 }
 
+const qqFavoriteSongsPlaylistID = "profile:favorites"
+
 func (q *QQ) GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 	if strings.TrimSpace(q.cookie) == "" {
 		return nil, fmt.Errorf("qq user playlists require cookie")
@@ -28,16 +30,24 @@ func (q *QQ) GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 	if limit > 100 {
 		limit = 100
 	}
-	uin := qqCookieValue(q.cookie, "uin")
-	if uin == "" {
-		uin = qqCookieValue(q.cookie, "ptui_loginuin")
-	}
-	if uin == "" {
-		uin = qqCookieValue(q.cookie, "luin")
-	}
-	uin = strings.TrimLeft(strings.TrimPrefix(uin, "o"), "0")
+	uin := normalizeQQUIN(q.cookie)
 	if uin == "" {
 		return nil, fmt.Errorf("qq user playlists require uin cookie")
+	}
+	playlists := make([]model.Playlist, 0)
+	seen := make(map[string]bool)
+	addPlaylist := func(playlist model.Playlist) {
+		playlist.ID = strings.TrimSpace(playlist.ID)
+		playlist.Name = strings.TrimSpace(playlist.Name)
+		if playlist.ID == "" || playlist.Name == "" || seen[playlist.ID] {
+			return
+		}
+		seen[playlist.ID] = true
+		playlists = append(playlists, playlist)
+	}
+
+	if favorite, err := q.fetchFavoriteSongsPlaylistSummary(uin); err == nil && favorite.TrackCount > 0 {
+		addPlaylist(favorite)
 	}
 
 	params := url.Values{}
@@ -95,14 +105,12 @@ func (q *QQ) GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 		return nil, fmt.Errorf("qq user playlist api error: %s (code %d)", resp.Message, resp.Code)
 	}
 
-	playlists := make([]model.Playlist, 0, len(resp.Data.DissList)+len(resp.Data.List))
 	for _, item := range resp.Data.DissList {
 		playlistID := ""
-		if item.DissID > 0 {
-			playlistID = strconv.FormatInt(item.DissID, 10)
-		} else if item.DirID > 0 {
-			playlistID = strconv.FormatInt(item.DirID, 10)
+		if item.DissID <= 0 {
+			continue
 		}
+		playlistID = strconv.FormatInt(item.DissID, 10)
 		name := firstNonEmptyQQ(item.DissName, item.Title)
 		if playlistID == "" || name == "" {
 			continue
@@ -115,7 +123,7 @@ func (q *QQ) GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 		if playCount == 0 {
 			playCount = item.VisitNum
 		}
-		playlists = append(playlists, model.Playlist{
+		addPlaylist(model.Playlist{
 			Source:      "qq",
 			ID:          playlistID,
 			Name:        name,
@@ -141,7 +149,7 @@ func (q *QQ) GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 		if trackCount == 0 {
 			trackCount = item.SongNum
 		}
-		playlists = append(playlists, model.Playlist{
+		addPlaylist(model.Playlist{
 			Source:      "qq",
 			ID:          playlistID,
 			Name:        name,
@@ -156,7 +164,228 @@ func (q *QQ) GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 			},
 		})
 	}
+	if collected, err := q.fetchProfileOrderPlaylists(uin, page, limit); err == nil {
+		for _, playlist := range collected {
+			addPlaylist(playlist)
+		}
+	}
 	return playlists, nil
+}
+
+func (q *QQ) fetchFavoriteSongsPlaylistSummary(uin string) (model.Playlist, error) {
+	total, songs, err := q.fetchProfileOrderSongs(uin, 1, 1)
+	if err != nil {
+		return model.Playlist{}, err
+	}
+	cover := ""
+	if len(songs) > 0 {
+		cover = songs[0].Cover
+	}
+	return model.Playlist{
+		Source:      "qq",
+		ID:          qqFavoriteSongsPlaylistID,
+		Name:        "我喜欢的歌曲",
+		Cover:       cover,
+		TrackCount:  total,
+		Creator:     uin,
+		Description: "QQ音乐我喜欢的歌曲",
+		Link:        "https://y.qq.com/n/ryqq/profile",
+		Extra: map[string]string{
+			"uin":     uin,
+			"virtual": "favorite_songs",
+		},
+	}, nil
+}
+
+func (q *QQ) fetchProfileOrderPlaylists(uin string, page, limit int) ([]model.Playlist, error) {
+	params := q.profileOrderAssetParams(uin, "3", page, limit)
+	apiURL := "https://c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset.fcg?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/"),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			CDList []struct {
+				DissID    int64  `json:"dissid"`
+				DissName  string `json:"dissname"`
+				SongNum   int    `json:"songnum"`
+				ListenNum int    `json:"listennum"`
+				Logo      string `json:"logo"`
+				Nickname  string `json:"nickname"`
+				Uin       int64  `json:"uin"`
+			} `json:"cdlist"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq profile playlist json parse error: %w", err)
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("qq profile playlist api error: %s (code %d)", resp.Msg, resp.Code)
+	}
+
+	playlists := make([]model.Playlist, 0, len(resp.Data.CDList))
+	for _, item := range resp.Data.CDList {
+		if item.DissID <= 0 || strings.TrimSpace(item.DissName) == "" {
+			continue
+		}
+		playlistID := strconv.FormatInt(item.DissID, 10)
+		if _, _, err := q.fetchPlaylistDetail(playlistID); err != nil {
+			continue
+		}
+		creator := strings.TrimSpace(item.Nickname)
+		if creator == "" && item.Uin > 0 {
+			creator = strconv.FormatInt(item.Uin, 10)
+		}
+		playlists = append(playlists, model.Playlist{
+			Source:     "qq",
+			ID:         playlistID,
+			Name:       item.DissName,
+			Cover:      normalizeQQCover(item.Logo),
+			TrackCount: item.SongNum,
+			PlayCount:  item.ListenNum,
+			Creator:    creator,
+			Link:       fmt.Sprintf("https://y.qq.com/n/ryqq/playlist/%s", playlistID),
+			Extra: map[string]string{
+				"uin": uin,
+			},
+		})
+	}
+	return playlists, nil
+}
+
+func (q *QQ) fetchProfileOrderSongs(uin string, page, limit int) (int, []model.Song, error) {
+	params := q.profileOrderAssetParams(uin, "1", page, limit)
+	apiURL := "https://c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset.fcg?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
+		utils.WithHeader("Referer", "https://y.qq.com/"),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			TotalSong int `json:"totalsong"`
+			SongList  []struct {
+				Data struct {
+					SongID    int64  `json:"songid"`
+					SongName  string `json:"songname"`
+					SongMid   string `json:"songmid"`
+					AlbumName string `json:"albumname"`
+					AlbumMid  string `json:"albummid"`
+					Interval  int    `json:"interval"`
+					Size128   int64  `json:"size128"`
+					Size320   int64  `json:"size320"`
+					SizeFlac  int64  `json:"sizeflac"`
+					Singer    []struct {
+						Name string `json:"name"`
+					} `json:"singer"`
+				} `json:"data"`
+			} `json:"songlist"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, nil, fmt.Errorf("qq profile songs json parse error: %w", err)
+	}
+	if resp.Code != 0 {
+		return 0, nil, fmt.Errorf("qq profile songs api error: %s (code %d)", resp.Msg, resp.Code)
+	}
+
+	songs := make([]model.Song, 0, len(resp.Data.SongList))
+	for _, item := range resp.Data.SongList {
+		song := qqProfileSongToModel(item.Data.SongID, item.Data.SongName, item.Data.SongMid, item.Data.AlbumName, item.Data.AlbumMid, item.Data.Interval, item.Data.Size128, item.Data.Size320, item.Data.SizeFlac, item.Data.Singer)
+		if song.ID != "" && song.Name != "" {
+			songs = append(songs, song)
+		}
+	}
+	return resp.Data.TotalSong, songs, nil
+}
+
+func (q *QQ) profileOrderAssetParams(uin, reqtype string, page, limit int) url.Values {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 50
+	}
+	offset := (page - 1) * limit
+	params := url.Values{}
+	params.Set("format", "json")
+	params.Set("inCharset", "utf8")
+	params.Set("outCharset", "utf-8")
+	params.Set("platform", "yqq.json")
+	params.Set("needNewCode", "0")
+	params.Set("loginUin", uin)
+	params.Set("hostUin", "0")
+	params.Set("notice", "0")
+	params.Set("g_tk", "5381")
+	params.Set("ct", "20")
+	params.Set("cid", "205360956")
+	params.Set("userid", uin)
+	params.Set("reqtype", reqtype)
+	params.Set("sin", strconv.Itoa(offset))
+	params.Set("ein", strconv.Itoa(offset+limit-1))
+	return params
+}
+
+func qqProfileSongToModel(songID int64, name, songMID, albumName, albumMID string, interval int, size128, size320, sizeFlac int64, singers []struct {
+	Name string `json:"name"`
+}) model.Song {
+	artistNames := make([]string, 0, len(singers))
+	for _, singer := range singers {
+		if strings.TrimSpace(singer.Name) != "" {
+			artistNames = append(artistNames, strings.TrimSpace(singer.Name))
+		}
+	}
+	fileSize := size128
+	bitrate := 128
+	if sizeFlac > 0 {
+		fileSize = sizeFlac
+		if interval > 0 {
+			bitrate = int(fileSize * 8 / 1000 / int64(interval))
+		} else {
+			bitrate = 800
+		}
+	} else if size320 > 0 {
+		fileSize = size320
+		bitrate = 320
+	}
+	coverURL := ""
+	if albumMID != "" {
+		coverURL = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", albumMID)
+	}
+	if songMID == "" && songID > 0 {
+		songMID = strconv.FormatInt(songID, 10)
+	}
+	return model.Song{
+		Source:   "qq",
+		ID:       songMID,
+		Name:     name,
+		Artist:   strings.Join(artistNames, "、"),
+		Album:    albumName,
+		Duration: interval,
+		Size:     fileSize,
+		Bitrate:  bitrate,
+		Cover:    coverURL,
+		Link:     fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", songMID),
+		Extra: map[string]string{
+			"songmid": songMID,
+		},
+	}
 }
 
 func qqCookieValue(cookie, key string) string {
@@ -168,6 +397,19 @@ func qqCookieValue(cookie, key string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeQQUIN(cookie string) string {
+	uin := firstNonEmptyQQ(
+		qqCookieValue(cookie, "uin"),
+		qqCookieValue(cookie, "ptui_loginuin"),
+		qqCookieValue(cookie, "luin"),
+		qqCookieValue(cookie, "pt2gguin"),
+		qqCookieValue(cookie, "superuin"),
+		qqCookieValue(cookie, "p_uin"),
+	)
+	uin = strings.TrimLeft(strings.TrimPrefix(uin, "o"), "0")
+	return strings.TrimSpace(uin)
 }
 
 func normalizeQQCover(cover string) string {

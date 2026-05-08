@@ -170,29 +170,61 @@ func mapQQQRStatus(code string) model.QRLoginStatus {
 }
 
 func parseQQQRCheck(raw string) (code, message, redirectURL string) {
-	re := regexp.MustCompile(`ptuiCB\('([^']*)','([^']*)','([^']*)','([^']*)','([^']*)',\s*'([^']*)'\)`)
-	matches := re.FindStringSubmatch(raw)
-	if len(matches) >= 7 {
-		return matches[1], matches[5], matches[3]
+	re := regexp.MustCompile(`'([^']*)'`)
+	matches := re.FindAllStringSubmatch(raw, -1)
+	if len(matches) >= 5 {
+		return matches[0][1], matches[4][1], matches[2][1]
 	}
 	return "", raw, ""
 }
 
 func fetchQQRedirectCookies(redirectURL string, cookies map[string]string) (map[string]string, error) {
 	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
-	req, err := http.NewRequest("GET", redirectURL, nil)
-	if err != nil {
-		return nil, err
+	currentURL := strings.TrimSpace(redirectURL)
+	collected := make(map[string]string, len(cookies)+8)
+	for k, v := range cookies {
+		collected[k] = v
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	req.Header.Set("Referer", "https://y.qq.com/")
-	req.Header.Set("Cookie", joinCookieMap(cookies))
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	referer := "https://y.qq.com/"
+
+	for i := 0; i < 8 && currentURL != ""; i++ {
+		req, err := http.NewRequest("GET", currentURL, nil)
+		if err != nil {
+			return collected, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		req.Header.Set("Referer", referer)
+		req.Header.Set("Cookie", joinCookieMap(collected))
+		resp, err := client.Do(req)
+		if err != nil {
+			return collected, err
+		}
+
+		for k, v := range responseCookies(resp) {
+			collected[k] = v
+		}
+
+		location := strings.TrimSpace(resp.Header.Get("Location"))
+		resp.Body.Close()
+		if location == "" || resp.StatusCode < 300 || resp.StatusCode >= 400 {
+			break
+		}
+		nextURL, err := url.Parse(location)
+		if err != nil {
+			return collected, err
+		}
+		if !nextURL.IsAbs() {
+			baseURL, err := url.Parse(currentURL)
+			if err != nil {
+				return collected, err
+			}
+			nextURL = baseURL.ResolveReference(nextURL)
+		}
+		referer = currentURL
+		currentURL = nextURL.String()
 	}
-	defer resp.Body.Close()
-	return responseCookies(resp), nil
+
+	return collected, nil
 }
 
 func normalizeQQMusicCookies(cookies map[string]string) map[string]string {
@@ -201,7 +233,7 @@ func normalizeQQMusicCookies(cookies map[string]string) map[string]string {
 		result[k] = v
 	}
 	if result["uin"] == "" {
-		result["uin"] = firstNonEmptyQQ(result["ptui_loginuin"], result["luin"])
+		result["uin"] = firstNonEmptyQQ(result["ptui_loginuin"], result["luin"], result["pt2gguin"], result["superuin"], result["p_uin"])
 	}
 	if result["qqmusic_key"] == "" {
 		result["qqmusic_key"] = firstNonEmptyQQ(result["p_skey"], result["skey"])

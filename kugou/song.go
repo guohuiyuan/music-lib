@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
@@ -17,6 +18,42 @@ func Search(keyword string) ([]model.Song, error) { return defaultKugou.Search(k
 
 func Parse(link string) (*model.Song, error) { return defaultKugou.Parse(link) }
 
+type kugouSearchResponse struct {
+	Data struct {
+		Lists []kugouSearchItem `json:"lists"`
+	} `json:"data"`
+}
+
+type kugouSearchItem struct {
+	Scid        interface{} `json:"Scid"`
+	ID          interface{} `json:"ID"`
+	MixSongID   interface{} `json:"MixSongID"`
+	SongName    string      `json:"SongName"`
+	SingerName  string      `json:"SingerName"`
+	AlbumName   string      `json:"AlbumName"`
+	AlbumID     string      `json:"AlbumID"`
+	Audioid     interface{} `json:"Audioid"`
+	Duration    int         `json:"Duration"`
+	FileHash    string      `json:"FileHash"`
+	SQFileHash  string      `json:"SQFileHash"`
+	HQFileHash  string      `json:"HQFileHash"`
+	ResFileHash string      `json:"ResFileHash"`
+	MvHash      string      `json:"MvHash"`
+	SQFileSize  int64       `json:"SQFileSize"`
+	HQFileSize  int64       `json:"HQFileSize"`
+	ResFileSize int64       `json:"ResFileSize"`
+	FileSize    interface{} `json:"FileSize"`
+	Image       string      `json:"Image"`
+	PayType     int         `json:"PayType"`
+	Privilege   int         `json:"Privilege"`
+	TransParam  struct {
+		Ogg320Hash     string `json:"ogg_320_hash"`
+		Ogg128Hash     string `json:"ogg_128_hash"`
+		Ogg320FileSize int64  `json:"ogg_320_filesize"`
+		Ogg128FileSize int64  `json:"ogg_128_filesize"`
+	} `json:"trans_param"`
+}
+
 // Search 搜索歌曲
 func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 	params := url.Values{}
@@ -25,64 +62,50 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 	params.Set("format", "json")
 	params.Set("page", "1")
 	params.Set("pagesize", "10")
+	params.Set("userid", "-1")
+	params.Set("clientver", "")
+	params.Set("tag", "em")
+	params.Set("filter", "2")
+	params.Set("iscorrection", "1")
+	params.Set("privilege_filter", "0")
+	params.Set("_", strconv.FormatInt(time.Now().UnixMilli(), 10))
 
 	apiURL := "http://songsearch.kugou.com/song_search_v2?" + params.Encode()
 
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36"),
-		utils.WithRandomIPHeader(),
-		utils.WithHeader("Cookie", k.cookie),
-	)
+	fetchSearch := func(withCookie bool) ([]byte, error) {
+		options := []utils.RequestOption{
+			utils.WithHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36"),
+			utils.WithRandomIPHeader(),
+		}
+		if withCookie && strings.TrimSpace(k.cookie) != "" {
+			options = append(options, utils.WithHeader("Cookie", k.cookie))
+		}
+		return utils.Get(apiURL, options...)
+	}
+
+	body, err := fetchSearch(true)
 	if err != nil {
 		return nil, err
 	}
 
-	var resp struct {
-		Data struct {
-			Lists []struct {
-				Scid        interface{} `json:"Scid"`
-				ID          interface{} `json:"ID"`
-				MixSongID   interface{} `json:"MixSongID"`
-				SongName    string      `json:"SongName"`
-				SingerName  string      `json:"SingerName"`
-				AlbumName   string      `json:"AlbumName"`
-				AlbumID     string      `json:"AlbumID"`
-				Audioid     interface{} `json:"Audioid"`
-				Duration    int         `json:"Duration"`
-				FileHash    string      `json:"FileHash"`
-				SQFileHash  string      `json:"SQFileHash"`
-				HQFileHash  string      `json:"HQFileHash"`
-				ResFileHash string      `json:"ResFileHash"`
-				MvHash      string      `json:"MvHash"`
-				SQFileSize  int64       `json:"SQFileSize"`
-				HQFileSize  int64       `json:"HQFileSize"`
-				ResFileSize int64       `json:"ResFileSize"`
-				FileSize    interface{} `json:"FileSize"`
-				Image       string      `json:"Image"`
-				PayType     int         `json:"PayType"`
-				Privilege   int         `json:"Privilege"`
-				TransParam  struct {
-					Ogg320Hash     string `json:"ogg_320_hash"`
-					Ogg128Hash     string `json:"ogg_128_hash"`
-					Ogg320FileSize int64  `json:"ogg_320_filesize"`
-					Ogg128FileSize int64  `json:"ogg_128_filesize"`
-				} `json:"trans_param"`
-			} `json:"lists"`
-		} `json:"data"`
-	}
+	var resp kugouSearchResponse
 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("json parse error: %w", err)
+	}
+	if len(resp.Data.Lists) == 0 && strings.TrimSpace(k.cookie) != "" {
+		if retryBody, retryErr := fetchSearch(false); retryErr == nil {
+			var retryResp kugouSearchResponse
+			if retryErr := json.Unmarshal(retryBody, &retryResp); retryErr == nil && len(retryResp.Data.Lists) > 0 {
+				resp = retryResp
+			}
+		}
 	}
 
 	isVip, _ := k.IsVipAccount()
 
 	var songs []model.Song
 	for _, item := range resp.Data.Lists {
-		if item.Privilege == 10 && !isVip {
-			continue
-		}
-
 		finalHash := item.FileHash
 		if item.Privilege != 10 && isVip {
 			finalHash = item.SQFileHash

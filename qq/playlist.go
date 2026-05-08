@@ -290,6 +290,14 @@ func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 // GetPlaylistSongs returns songs in a playlist.
 func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
+	if strings.TrimSpace(id) == qqFavoriteSongsPlaylistID {
+		uin := normalizeQQUIN(q.cookie)
+		if uin == "" {
+			return nil, fmt.Errorf("qq favorite songs require uin cookie")
+		}
+		_, songs, err := q.fetchProfileOrderSongs(uin, 1, 300)
+		return songs, err
+	}
 	_, songs, err := q.fetchPlaylistDetail(id)
 	return songs, err
 }
