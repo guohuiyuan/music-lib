@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -166,9 +167,9 @@ func (k *Kugou) Search(keyword string) ([]model.Song, error) {
 		songs = append(songs, model.Song{
 			Source:   "kugou",
 			ID:       finalHash,
-			Name:     item.SongName,
-			Artist:   item.SingerName,
-			Album:    item.AlbumName,
+			Name:     cleanKugouSearchText(item.SongName),
+			Artist:   cleanKugouSearchText(item.SingerName),
+			Album:    cleanKugouSearchText(item.AlbumName),
 			AlbumID:  item.AlbumID,
 			Duration: item.Duration,
 			Size:     size,
@@ -203,4 +204,10 @@ func (k *Kugou) Parse(link string) (*model.Song, error) {
 	}
 	hash := matches[1]
 	return k.fetchSongInfo(hash)
+}
+
+func cleanKugouSearchText(value string) string {
+	value = html.UnescapeString(value)
+	value = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(value, "")
+	return strings.TrimSpace(value)
 }
