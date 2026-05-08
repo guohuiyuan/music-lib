@@ -19,8 +19,7 @@ func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 func GetPlaylistSongs(id string) ([]model.Song, error) {
-	_, songs, err := defaultQQ.fetchPlaylistDetail(id)
-	return songs, err
+	return defaultQQ.GetPlaylistSongs(id)
 }
 
 func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
@@ -290,13 +289,17 @@ func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 // GetPlaylistSongs returns songs in a playlist.
 func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
-	if strings.TrimSpace(id) == qqFavoriteSongsPlaylistID {
+	id = strings.TrimSpace(id)
+	if id == qqFavoriteSongsPlaylistID {
 		uin := normalizeQQUIN(q.cookie)
 		if uin == "" {
 			return nil, fmt.Errorf("qq favorite songs require uin cookie")
 		}
 		_, songs, err := q.fetchProfileOrderSongs(uin, 1, 300)
 		return songs, err
+	}
+	if strings.HasPrefix(id, qqProfileDirPlaylistPrefix) {
+		return q.fetchProfileDirPlaylistSongs(strings.TrimPrefix(id, qqProfileDirPlaylistPrefix))
 	}
 	_, songs, err := q.fetchPlaylistDetail(id)
 	return songs, err
