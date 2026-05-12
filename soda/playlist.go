@@ -7,7 +7,6 @@ import (
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
-	"regexp"
 	"strings"
 )
 
@@ -141,12 +140,10 @@ func (s *Soda) GetPlaylistSongs(id string) ([]model.Song, error) {
 }
 
 func (s *Soda) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	re := regexp.MustCompile(`playlist/(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
+	playlistID, err := s.extractPlaylistID(link)
+	if err != nil || playlistID == "" {
 		return nil, nil, errors.New("invalid soda playlist link")
 	}
-	playlistID := matches[1]
 	return s.fetchPlaylistDetail(playlistID)
 }
 

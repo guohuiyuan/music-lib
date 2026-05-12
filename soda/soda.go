@@ -687,6 +687,54 @@ func sodaExtractAlbumID(link string) string {
 	return ""
 }
 
+func sodaExtractPlaylistIDFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if text != "" && isSodaDigits(text) && !strings.Contains(text, "/") {
+		return text
+	}
+
+	candidates := []string{text}
+	if decoded, err := url.QueryUnescape(text); err == nil && decoded != text {
+		candidates = append(candidates, decoded)
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?:^|[?&])playlist_id=(\d+)`),
+		regexp.MustCompile(`(?:^|[?&])playlistId=(\d+)`),
+		regexp.MustCompile(`"playlist_id"\s*:\s*"?(\d+)"?`),
+		regexp.MustCompile(`"playlistId"\s*:\s*"?(\d+)"?`),
+		regexp.MustCompile(`(?i)(?:/|%2f)playlist(?:/|%2f)(\d+)`),
+		regexp.MustCompile(`playlist/(\d+)`),
+	}
+	for _, candidate := range candidates {
+		for _, pattern := range patterns {
+			matches := pattern.FindStringSubmatch(candidate)
+			if len(matches) >= 2 {
+				return matches[1]
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Soda) extractPlaylistID(link string) (string, error) {
+	if playlistID := sodaExtractPlaylistIDFromText(link); playlistID != "" {
+		return playlistID, nil
+	}
+
+	finalURL, body, err := s.fetchSharePage(link)
+	if err != nil {
+		return "", err
+	}
+	if playlistID := sodaExtractPlaylistIDFromText(finalURL); playlistID != "" {
+		return playlistID, nil
+	}
+	if playlistID := sodaExtractPlaylistIDFromText(string(body)); playlistID != "" {
+		return playlistID, nil
+	}
+	return "", errors.New("soda playlist id not found")
+}
+
 func (s *Soda) extractTrackID(link string) (string, error) {
 	if trackID := sodaExtractTrackIDFromText(link); trackID != "" {
 		return trackID, nil

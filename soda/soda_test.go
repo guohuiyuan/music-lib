@@ -21,6 +21,24 @@ func TestSodaExtractTrackIDFromText(t *testing.T) {
 	}
 }
 
+func TestSodaExtractPlaylistIDFromText(t *testing.T) {
+	const id = "7291667294287183907"
+
+	cases := []string{
+		id,
+		"https://www.qishui.com/playlist/" + id,
+		"https://music.douyin.com/qishui/share/playlist?playlist_id=" + id + "&auto_play_bgm=1",
+		`_ROUTER_DATA = {"loaderData":{"playlist_page":{"playlist_id":"` + id + `"}}}`,
+		"https%3A%2F%2Fmusic.douyin.com%2Fqishui%2Fshare%2Fplaylist%3Fplaylist_id%3D" + id,
+	}
+
+	for _, tc := range cases {
+		if got := sodaExtractPlaylistIDFromText(tc); got != id {
+			t.Fatalf("sodaExtractPlaylistIDFromText(%q) = %q, want %q", tc, got, id)
+		}
+	}
+}
+
 func TestSodaLabelInfoIsVIP(t *testing.T) {
 	if (sodaLabelInfo{}).IsVIP() {
 		t.Fatal("empty label info should not be VIP")
