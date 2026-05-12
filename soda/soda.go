@@ -45,6 +45,19 @@ type sodaBitRate struct {
 	Size    int64  `json:"size"`
 }
 
+type sodaTrackPlayInfo struct {
+	MainPlayURL   string `json:"main_play_url"`
+	BackupPlayURL string `json:"backup_play_url"`
+	PlayAuth      string `json:"play_auth"`
+	Size          int64  `json:"size"`
+	Format        string `json:"format"`
+	Bitrate       int    `json:"bitrate"`
+}
+
+type sodaTrackAudioInfo struct {
+	PlayInfoList []sodaTrackPlayInfo `json:"play_info_list"`
+}
+
 type sodaAlbum struct {
 	ID       string    `json:"id"`
 	Name     string    `json:"name"`
@@ -78,24 +91,70 @@ type sodaLabelInfo struct {
 }
 
 type sodaTrack struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Duration  int           `json:"duration"`
-	VID       string        `json:"vid"`
-	Artists   []sodaArtist  `json:"artists"`
-	Album     sodaAlbum     `json:"album"`
-	BitRates  []sodaBitRate `json:"bit_rates"`
-	Preview   sodaPreview   `json:"preview"`
-	LabelInfo sodaLabelInfo `json:"label_info"`
+	ID        string             `json:"id"`
+	Name      string             `json:"name"`
+	Duration  int                `json:"duration"`
+	VID       string             `json:"vid"`
+	Artists   []sodaArtist       `json:"artists"`
+	Album     sodaAlbum          `json:"album"`
+	BitRates  []sodaBitRate      `json:"bit_rates"`
+	Preview   sodaPreview        `json:"preview"`
+	LabelInfo sodaLabelInfo      `json:"label_info"`
+	AudioInfo sodaTrackAudioInfo `json:"audio_info"`
+}
+
+type sodaAPIStatusInfo struct {
+	StatusMsg string `json:"status_msg"`
+}
+
+type sodaUserPlaylistOwner struct {
+	ID         string `json:"id"`
+	Nickname   string `json:"nickname"`
+	PublicName string `json:"public_name"`
+}
+
+type sodaUserPlaylistItem struct {
+	ID           string                `json:"id"`
+	Title        string                `json:"title"`
+	PublicTitle  string                `json:"public_title"`
+	Desc         string                `json:"desc"`
+	URLCover     sodaImage             `json:"url_cover"`
+	CountTracks  int                   `json:"count_tracks"`
+	PlayCount    int                   `json:"play_count"`
+	Owner        sodaUserPlaylistOwner `json:"owner"`
+	ReviewStatus string                `json:"review_status"`
+	Type         int                   `json:"type"`
+	ResourceCnt  struct {
+		TrackCnt int `json:"track_cnt"`
+	} `json:"resource_cnt"`
+	Stats struct {
+		CountPlayed    int `json:"count_played"`
+		CountCollected int `json:"count_collected"`
+	} `json:"stats"`
+}
+
+type sodaPlaylistDetailResponse struct {
+	StatusCode int               `json:"status_code"`
+	StatusInfo sodaAPIStatusInfo `json:"status_info"`
+	NextCursor string            `json:"next_cursor"`
+	HasMore    bool              `json:"has_more"`
+	Playlist   sodaUserPlaylistItem
+
+	MediaResources []struct {
+		Type   string `json:"type"`
+		Entity struct {
+			TrackWrapper struct {
+				Track sodaTrack `json:"track"`
+			} `json:"track_wrapper"`
+		} `json:"entity"`
+	} `json:"media_resources"`
 }
 
 type sodaTrackV2Response struct {
-	StatusCode int `json:"status_code"`
-	StatusInfo struct {
-		StatusMsg string `json:"status_msg"`
-	} `json:"status_info"`
-	Track       sodaTrack `json:"track"`
-	TrackInfo   sodaTrack `json:"track_info"`
+	StatusCode  int               `json:"status_code"`
+	StatusInfo  sodaAPIStatusInfo `json:"status_info"`
+	Track       sodaTrack         `json:"track"`
+	TrackInfo   sodaTrack         `json:"track_info"`
 	TrackPlayer struct {
 		MediaID       string `json:"media_id"`
 		URLPlayerInfo string `json:"url_player_info"`
@@ -301,6 +360,10 @@ func (s *Soda) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error
 }
 
 func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
+	return s.fetchPlaylistDetailPaged(id)
+}
+
+func (s *Soda) fetchPlaylistDetailWeb(id string) (*model.Playlist, []model.Song, error) {
 	params := url.Values{}
 	params.Set("playlist_id", id)
 	params.Set("cursor", "0")
@@ -478,6 +541,93 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 }
 
 // GetDownloadInfo 获取下载信息
+func (s *Soda) fetchPlaylistDetailPaged(id string) (*model.Playlist, []model.Song, error) {
+	playlistID := strings.TrimSpace(id)
+	if playlistID == "" {
+		return nil, nil, errors.New("playlist id is empty")
+	}
+
+	const pageSize = 100
+	cursor := ""
+	seenCursors := make(map[string]bool)
+	seenTracks := make(map[string]bool)
+	var playlist *model.Playlist
+	songs := make([]model.Song, 0)
+
+	for page := 0; page < 20; page++ {
+		resp, err := s.fetchPlaylistDetailPage(playlistID, cursor, pageSize)
+		if err != nil {
+			if page == 0 {
+				return s.fetchPlaylistDetailWeb(playlistID)
+			}
+			return nil, nil, err
+		}
+		if playlist == nil {
+			pl := sodaBuildPlaylistFromUserItem(resp.Playlist, "", "")
+			if pl.ID == "" {
+				pl.ID = playlistID
+				pl.Source = "soda"
+				pl.Link = fmt.Sprintf("https://www.qishui.com/playlist/%s", playlistID)
+			}
+			playlist = &pl
+		}
+
+		for _, item := range resp.MediaResources {
+			if item.Type != "track" {
+				continue
+			}
+			track := item.Entity.TrackWrapper.Track
+			if track.ID == "" || seenTracks[track.ID] {
+				continue
+			}
+			seenTracks[track.ID] = true
+			song := sodaBuildSongFromTrack(track)
+			if song.Cover == "" && playlist != nil {
+				song.Cover = playlist.Cover
+			}
+			songs = append(songs, song)
+		}
+
+		nextCursor := strings.TrimSpace(resp.NextCursor)
+		if nextCursor == "" || nextCursor == cursor || seenCursors[nextCursor] {
+			break
+		}
+		if !resp.HasMore && len(resp.MediaResources) < pageSize {
+			break
+		}
+		seenCursors[nextCursor] = true
+		cursor = nextCursor
+	}
+
+	if playlist == nil || playlist.ID == "" {
+		return nil, nil, errors.New("playlist not found")
+	}
+	if playlist.TrackCount == 0 {
+		playlist.TrackCount = len(songs)
+	}
+	return playlist, songs, nil
+}
+
+func (s *Soda) fetchPlaylistDetailPage(playlistID, cursor string, count int) (*sodaPlaylistDetailResponse, error) {
+	body, err := utils.Get(sodaPCPlaylistDetailURL(playlistID, cursor, count), s.pcRequestOptions()...)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp sodaPlaylistDetailResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("soda playlist detail json error: %w", err)
+	}
+	if resp.StatusCode != 0 {
+		msg := strings.TrimSpace(resp.StatusInfo.StatusMsg)
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("soda playlist detail api error: status_code=%d status_msg=%s", resp.StatusCode, msg)
+	}
+	return &resp, nil
+}
+
 func parseSodaShareAlbumPage(body []byte) (*sodaShareAlbumPage, error) {
 	routerJSON, err := extractSodaJSONBlock(string(body), "_ROUTER_DATA = ")
 	if err != nil {
@@ -608,7 +758,7 @@ func sodaBuildSongFromTrack(track sodaTrack) model.Song {
 	albumID := strings.TrimSpace(track.Album.ID)
 	artist := sodaJoinArtists(track.Artists)
 
-	return model.Song{
+	song := model.Song{
 		Source:   "soda",
 		ID:       track.ID,
 		Name:     track.Name,
@@ -623,6 +773,36 @@ func sodaBuildSongFromTrack(track sodaTrack) model.Song {
 		Extra:    sodaTrackExtra(track.ID, track.LabelInfo, map[string]string{"album_id": albumID}),
 		IsVIP:    track.LabelInfo.IsVIP(),
 	}
+
+	if len(track.AudioInfo.PlayInfoList) > 0 {
+		best := track.AudioInfo.PlayInfoList[0]
+		for _, info := range track.AudioInfo.PlayInfoList {
+			if info.Size > best.Size {
+				best = info
+			}
+		}
+		downloadURL := strings.TrimSpace(best.MainPlayURL)
+		if downloadURL == "" {
+			downloadURL = strings.TrimSpace(best.BackupPlayURL)
+		}
+		if downloadURL != "" {
+			song.URL = downloadURL
+			if strings.TrimSpace(best.PlayAuth) != "" {
+				song.URL += "#auth=" + url.QueryEscape(best.PlayAuth)
+			}
+			if best.Size > song.Size {
+				song.Size = best.Size
+			}
+			if best.Format != "" {
+				song.Ext = best.Format
+			}
+			if best.Bitrate > 0 {
+				song.Bitrate = normalizeSodaBitrate(best.Bitrate)
+			}
+		}
+	}
+
+	return song
 }
 
 func sodaDownloadInfoURL(info *DownloadInfo) string {
@@ -840,7 +1020,7 @@ func sodaWebTrackV2URL(trackID string) string {
 	return "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
 }
 
-func sodaPCTrackV2URL() string {
+func sodaPCAppParams() url.Values {
 	now := time.Now().UnixMilli()
 	deviceID := strconv.FormatInt(now, 10)
 	iid := strconv.FormatInt(now+1, 10)
@@ -867,7 +1047,39 @@ func sodaPCTrackV2URL() string {
 	params.Set("device_type", "Windows")
 	params.Set("os_version", "Windows 11")
 	params.Set("fp", deviceID)
+	return params
+}
+
+func sodaPCTrackV2URL() string {
+	params := sodaPCAppParams()
 	return "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
+}
+
+func sodaPCMeURL() string {
+	params := sodaPCAppParams()
+	return "https://api.qishui.com/luna/pc/me?" + params.Encode()
+}
+
+func sodaPCUserPlaylistURL(userID, cursor string, count int) string {
+	if count <= 0 {
+		count = 50
+	}
+	params := sodaPCAppParams()
+	params.Set("user_id", strings.TrimSpace(userID))
+	params.Set("cursor", strings.TrimSpace(cursor))
+	params.Set("count", strconv.Itoa(count))
+	return "https://api.qishui.com/luna/pc/user/playlist?" + params.Encode()
+}
+
+func sodaPCPlaylistDetailURL(playlistID, cursor string, count int) string {
+	if count <= 0 {
+		count = 100
+	}
+	params := sodaPCAppParams()
+	params.Set("playlist_id", strings.TrimSpace(playlistID))
+	params.Set("cursor", strings.TrimSpace(cursor))
+	params.Set("count", strconv.Itoa(count))
+	return "https://api.qishui.com/luna/pc/playlist/detail?" + params.Encode()
 }
 
 func (s *Soda) fetchWebTrackV2(trackID string) (*sodaTrackV2Response, error) {
@@ -879,6 +1091,20 @@ func (s *Soda) fetchWebTrackV2(trackID string) (*sodaTrackV2Response, error) {
 		return nil, err
 	}
 	return parseSodaTrackV2Response(body)
+}
+
+func (s *Soda) pcRequestOptions(extra ...utils.RequestOption) []utils.RequestOption {
+	opts := []utils.RequestOption{
+		utils.WithHeader("User-Agent", pcAppUserAgent),
+		utils.WithHeader("x-luna-background-type", "foreground"),
+		utils.WithHeader("x-luna-is-background-req", "0"),
+		utils.WithHeader("x-luna-is-local-user", "1"),
+	}
+	if strings.TrimSpace(s.cookie) != "" {
+		opts = append(opts, utils.WithHeader("Cookie", s.cookie))
+	}
+	opts = append(opts, extra...)
+	return opts
 }
 
 func (s *Soda) fetchPCTrackV2(trackID string) (*sodaTrackV2Response, error) {
@@ -898,12 +1124,7 @@ func (s *Soda) fetchPCTrackV2(trackID string) (*sodaTrackV2Response, error) {
 	}
 
 	body, err := utils.Post(sodaPCTrackV2URL(), bytes.NewReader(jsonData),
-		utils.WithHeader("User-Agent", pcAppUserAgent),
-		utils.WithHeader("Content-Type", "application/json; charset=utf-8"),
-		utils.WithHeader("Cookie", s.cookie),
-		utils.WithHeader("x-luna-background-type", "foreground"),
-		utils.WithHeader("x-luna-is-background-req", "0"),
-		utils.WithHeader("x-luna-is-local-user", "1"),
+		s.pcRequestOptions(utils.WithHeader("Content-Type", "application/json; charset=utf-8"))...,
 	)
 	if err != nil {
 		return nil, err

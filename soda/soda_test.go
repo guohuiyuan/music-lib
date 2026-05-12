@@ -39,6 +39,39 @@ func TestSodaExtractPlaylistIDFromText(t *testing.T) {
 	}
 }
 
+func TestSodaBuildPlaylistFromUserItem(t *testing.T) {
+	item := sodaUserPlaylistItem{
+		ID:          "7444529378593275956",
+		Title:       "My Favorite Music",
+		PublicTitle: "Tester Favorite Music",
+		Type:        1,
+		URLCover: sodaImage{
+			Urls: []string{"https://p3-luna.douyinpic.com/img/"},
+			Uri:  "tos-cn-v-2774c002/cover",
+		},
+	}
+	item.ResourceCnt.TrackCnt = 78
+	item.Owner.ID = "109953989288"
+	item.Owner.Nickname = "Tester"
+
+	playlist := sodaBuildPlaylistFromUserItem(item, "109953989288", "Tester")
+	if playlist.ID != item.ID || playlist.Source != "soda" {
+		t.Fatalf("playlist identity mismatch: %#v", playlist)
+	}
+	if playlist.TrackCount != 78 {
+		t.Fatalf("playlist TrackCount = %d, want 78", playlist.TrackCount)
+	}
+	if playlist.Creator != "Tester" {
+		t.Fatalf("playlist Creator = %q, want Tester", playlist.Creator)
+	}
+	if playlist.Extra["user_id"] != "109953989288" || playlist.Extra["type"] != "1" {
+		t.Fatalf("playlist extra mismatch: %#v", playlist.Extra)
+	}
+	if playlist.Cover == "" || playlist.Link == "" {
+		t.Fatalf("playlist should include cover and link: %#v", playlist)
+	}
+}
+
 func TestSodaLabelInfoIsVIP(t *testing.T) {
 	if (sodaLabelInfo{}).IsVIP() {
 		t.Fatal("empty label info should not be VIP")
