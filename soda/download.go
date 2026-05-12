@@ -1,11 +1,9 @@
 package soda
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,6 +18,9 @@ func GetDownloadURL(s *model.Song) (string, error) { return defaultSoda.GetDownl
 func Download(s *model.Song, outputPath string) error { return defaultSoda.Download(s, outputPath) }
 
 func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
+	if song == nil {
+		return nil, errors.New("song is nil")
+	}
 	if strings.Contains(song.URL, "#auth=") {
 		parts := strings.Split(song.URL, "#auth=")
 		if len(parts) == 2 {
@@ -29,6 +30,7 @@ func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 				PlayAuth: auth,
 				Format:   song.Ext,
 				Size:     song.Size,
+				Bitrate:  song.Bitrate,
 			}, nil
 		}
 	}
@@ -37,40 +39,100 @@ func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 		return nil, errors.New("source mismatch")
 	}
 
-	trackID := song.ID
-	if song.Extra != nil && song.Extra["track_id"] != "" {
-		trackID = song.Extra["track_id"]
+	trackID := sodaSongTrackID(song)
+	return s.resolveDownloadInfo(trackID, nil)
+}
+
+func sodaSongTrackID(song *model.Song) string {
+	if song == nil {
+		return ""
+	}
+	if song.Extra != nil && strings.TrimSpace(song.Extra["track_id"]) != "" {
+		return strings.TrimSpace(song.Extra["track_id"])
+	}
+	return strings.TrimSpace(song.ID)
+}
+
+func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response) (*DownloadInfo, error) {
+	trackID = strings.TrimSpace(trackID)
+	if trackID == "" {
+		return nil, errors.New("track id is empty")
 	}
 
-	params := url.Values{}
-	params.Set("track_id", trackID)
-	params.Set("media_type", "track")
-	params.Set("aid", "386088")
-	params.Set("device_platform", "web")
-	params.Set("channel", "pc_web")
-
-	v2URL := "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
-	v2Body, err := utils.Get(v2URL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Cookie", s.cookie),
-	)
-	if err != nil {
-		return nil, err
+	var err error
+	if webResp == nil {
+		webResp, err = s.fetchWebTrackV2(trackID)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	var v2Resp struct {
-		TrackPlayer struct {
-			URLPlayerInfo string `json:"url_player_info"`
-		} `json:"track_player"`
-	}
-	if err := json.Unmarshal(v2Body, &v2Resp); err != nil {
-		return nil, fmt.Errorf("parse track_v2 response error: %w", err)
-	}
-	if v2Resp.TrackPlayer.URLPlayerInfo == "" {
-		return nil, errors.New("player info url not found")
+	track := webResp.primaryTrack()
+	fullDuration := sodaTrackDurationSeconds(track)
+	isVIPTrack := track.LabelInfo.IsVIP()
+
+	var lastErr error
+	var webInfo *DownloadInfo
+	if webResp.TrackPlayer.URLPlayerInfo != "" {
+		webInfo, err = s.fetchPlayerInfo(webResp.TrackPlayer.URLPlayerInfo)
+		if err != nil {
+			lastErr = err
+		}
 	}
 
-	return s.fetchPlayerInfo(v2Resp.TrackPlayer.URLPlayerInfo)
+	webIsPreview := sodaDownloadInfoIsPreview(webInfo, fullDuration)
+	if strings.TrimSpace(s.cookie) != "" && (isVIPTrack || webIsPreview) {
+		if pcResp, pcErr := s.fetchPCTrackV2(trackID); pcErr == nil {
+			pcTrack := pcResp.primaryTrack()
+			if fullDuration == 0 {
+				fullDuration = sodaTrackDurationSeconds(pcTrack)
+			}
+			if pcTrack.LabelInfo.IsVIP() {
+				isVIPTrack = true
+			}
+
+			if pcResp.TrackPlayer.URLPlayerInfo != "" {
+				if pcInfo, infoErr := s.fetchPlayerInfo(pcResp.TrackPlayer.URLPlayerInfo); infoErr == nil {
+					if !sodaDownloadInfoIsPreview(pcInfo, fullDuration) {
+						if isVIPTrack {
+							isVip := true
+							s.isVipCache = &isVip
+						}
+						return pcInfo, nil
+					}
+					lastErr = errors.New("soda pc track_v2 returned preview stream")
+				} else {
+					lastErr = infoErr
+				}
+			} else {
+				lastErr = errors.New("soda pc track_v2 missing player info url")
+			}
+		} else {
+			lastErr = pcErr
+		}
+	}
+
+	if webInfo != nil && webInfo.URL != "" {
+		if isVIPTrack && webIsPreview {
+			if strings.TrimSpace(s.cookie) != "" {
+				isVip := false
+				s.isVipCache = &isVip
+			}
+			if lastErr != nil {
+				return nil, fmt.Errorf("soda vip full stream unavailable: %w", lastErr)
+			}
+			if strings.TrimSpace(s.cookie) == "" {
+				return nil, errors.New("soda vip download requires cookie")
+			}
+			return nil, errors.New("soda vip full stream unavailable")
+		}
+		return webInfo, nil
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("player info url not found")
 }
 
 // GetDownloadURL 返回下载链接
@@ -79,7 +141,7 @@ func (s *Soda) GetDownloadURL(song *model.Song) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return info.URL + "#auth=" + url.QueryEscape(info.PlayAuth), nil
+	return sodaDownloadInfoURL(info), nil
 }
 
 // Download 下载并解密歌曲

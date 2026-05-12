@@ -33,6 +33,9 @@ type Song struct {
 
 	// [新增] 标记歌曲是否无效 (经过 Probe 探测后)
 	IsInvalid bool `json:"is_invalid,omitempty"`
+
+	// IsVIP marks tracks that require a paid/VIP entitlement for full playback or download.
+	IsVIP bool `json:"is_vip,omitempty"`
 }
 
 // Playlist 是所有音乐源通用的歌单结构 [修改]

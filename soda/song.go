@@ -7,8 +7,6 @@ import (
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
-	"regexp"
-	"strings"
 )
 
 func Search(keyword string) ([]model.Song, error) { return defaultSoda.Search(keyword) }
@@ -38,25 +36,7 @@ func (s *Soda) Search(keyword string) ([]model.Song, error) {
 		ResultGroups []struct {
 			Data []struct {
 				Entity struct {
-					Track struct {
-						ID       string `json:"id"`
-						Name     string `json:"name"`
-						Duration int    `json:"duration"`
-						Artists  []struct {
-							Name string `json:"name"`
-						} `json:"artists"`
-						Album struct {
-							Name     string `json:"name"`
-							UrlCover struct {
-								Urls []string `json:"urls"`
-								Uri  string   `json:"uri"`
-							} `json:"url_cover"`
-						} `json:"album"`
-						BitRates []struct {
-							Size    int64  `json:"size"`
-							Quality string `json:"quality"`
-						} `json:"bit_rates"`
-					} `json:"track"`
+					Track sodaTrack `json:"track"`
 				} `json:"entity"`
 			} `json:"data"`
 		} `json:"result_groups"`
@@ -75,61 +55,16 @@ func (s *Soda) Search(keyword string) ([]model.Song, error) {
 		if track.ID == "" {
 			continue
 		}
-
-		// 计算最大文件大小
-		var displaySize int64
-		for _, br := range track.BitRates {
-			if br.Size > displaySize {
-				displaySize = br.Size
-			}
-		}
-
-		var artistNames []string
-		for _, ar := range track.Artists {
-			artistNames = append(artistNames, ar.Name)
-		}
-
-		var cover string
-		if len(track.Album.UrlCover.Urls) > 0 {
-			domain := track.Album.UrlCover.Urls[0]
-			uri := track.Album.UrlCover.Uri
-			if domain != "" && uri != "" {
-				cover = domain + uri + "~c5_375x375.jpg"
-			}
-		}
-
-		bitrate := 0
-		seconds := track.Duration / 1000
-		if seconds > 0 && displaySize > 0 {
-			bitrate = int(displaySize * 8 / 1000 / int64(seconds))
-		}
-
-		songs = append(songs, model.Song{
-			Source:   "soda",
-			ID:       track.ID,
-			Name:     track.Name,
-			Artist:   strings.Join(artistNames, "、"),
-			Album:    track.Album.Name,
-			Duration: track.Duration / 1000,
-			Size:     displaySize,
-			Bitrate:  bitrate,
-			Cover:    cover,
-			Link:     fmt.Sprintf("https://www.qishui.com/track/%s", track.ID),
-			Extra: map[string]string{
-				"track_id": track.ID,
-			},
-		})
+		songs = append(songs, sodaBuildSongFromTrack(track))
 	}
 	return songs, nil
 }
 
 // Parse 解析链接并获取完整信息
 func (s *Soda) Parse(link string) (*model.Song, error) {
-	re := regexp.MustCompile(`track/(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
+	trackID, err := s.extractTrackID(link)
+	if err != nil || trackID == "" {
 		return nil, errors.New("invalid soda link")
 	}
-	trackID := matches[1]
 	return s.fetchSongDetail(trackID)
 }

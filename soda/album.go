@@ -23,8 +23,7 @@ func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return defaultSoda.ParseAlbum(link)
 }
 
-// SearchPlaylist 搜索歌单 (PC API)
-// SearchAlbum 鎼滅储涓撹緫 (PC API)
+// SearchAlbum 搜索专辑 (PC API)
 func (s *Soda) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("q", keyword)
@@ -98,13 +97,13 @@ func (s *Soda) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	return albums, nil
 }
 
-// GetPlaylistSongs 获取歌单所有歌曲
+// GetAlbumSongs 获取专辑所有歌曲
 func (s *Soda) GetAlbumSongs(id string) ([]model.Song, error) {
 	_, songs, err := s.fetchAlbumDetail(id)
 	return songs, err
 }
 
-// ParsePlaylist 解析歌单链接
+// ParseAlbum 解析专辑链接
 func (s *Soda) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	albumID := sodaExtractAlbumID(link)
 	if albumID == "" {

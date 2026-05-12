@@ -1,25 +1,33 @@
 package soda
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/utils"
+	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
 	// PC端 UserAgent
-	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+	UserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+	pcAppUserAgent   = "LunaPC/3.3.0(359450208)"
+	vipProbeTrackID  = "7304719759323564095"
+	vipProbeTrackURL = "https://qishui.douyin.com/s/iQeFw9cE/"
 )
 
 type Soda struct {
-	cookie string
+	cookie     string
+	isVipCache *bool
 }
 
 type sodaArtist struct {
@@ -32,7 +40,69 @@ type sodaImage struct {
 }
 
 type sodaBitRate struct {
-	Size int64 `json:"size"`
+	BR      int    `json:"br"`
+	Quality string `json:"quality"`
+	Size    int64  `json:"size"`
+}
+
+type sodaAlbum struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	URLCover sodaImage `json:"url_cover"`
+}
+
+type sodaPreview struct {
+	VID      string        `json:"vid"`
+	Start    int           `json:"start"`
+	Duration int           `json:"duration"`
+	BitRates []sodaBitRate `json:"bit_rates"`
+}
+
+type sodaQualityBenefit struct {
+	Condition    string `json:"condition"`
+	NeedVIP      bool   `json:"need_vip"`
+	NeedPurchase bool   `json:"need_purchase"`
+}
+
+type sodaQualityPolicy struct {
+	PlayDetail     *sodaQualityBenefit `json:"play_detail"`
+	DownloadDetail *sodaQualityBenefit `json:"download_detail"`
+}
+
+type sodaLabelInfo struct {
+	OnlyVIPDownload           bool                         `json:"only_vip_download"`
+	OnlyVIPPlayable           bool                         `json:"only_vip_playable"`
+	QualityOnlyVIPCanDownload []string                     `json:"quality_only_vip_can_download"`
+	QualityOnlyVIPCanPlay     []string                     `json:"quality_only_vip_can_play"`
+	QualityMap                map[string]sodaQualityPolicy `json:"quality_map"`
+}
+
+type sodaTrack struct {
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Duration  int           `json:"duration"`
+	VID       string        `json:"vid"`
+	Artists   []sodaArtist  `json:"artists"`
+	Album     sodaAlbum     `json:"album"`
+	BitRates  []sodaBitRate `json:"bit_rates"`
+	Preview   sodaPreview   `json:"preview"`
+	LabelInfo sodaLabelInfo `json:"label_info"`
+}
+
+type sodaTrackV2Response struct {
+	StatusCode int `json:"status_code"`
+	StatusInfo struct {
+		StatusMsg string `json:"status_msg"`
+	} `json:"status_info"`
+	Track       sodaTrack `json:"track"`
+	TrackInfo   sodaTrack `json:"track_info"`
+	TrackPlayer struct {
+		MediaID       string `json:"media_id"`
+		URLPlayerInfo string `json:"url_player_info"`
+	} `json:"track_player"`
+	Lyric struct {
+		Content string `json:"content"`
+	} `json:"lyric"`
 }
 
 type sodaShareAlbumPage struct {
@@ -48,21 +118,7 @@ type sodaShareAlbumPage struct {
 				ReleaseDate int64        `json:"release_date"`
 				PCLines     []string     `json:"pclines"`
 			} `json:"albumInfo"`
-			TrackList []struct {
-				ID       string       `json:"id"`
-				Name     string       `json:"name"`
-				Duration int          `json:"duration"`
-				Artists  []sodaArtist `json:"artists"`
-				Album    struct {
-					ID       string    `json:"id"`
-					Name     string    `json:"name"`
-					URLCover sodaImage `json:"url_cover"`
-				} `json:"album"`
-				BitRates []sodaBitRate `json:"bit_rates"`
-				Preview  struct {
-					BitRates []sodaBitRate `json:"bit_rates"`
-				} `json:"preview"`
-			} `json:"trackList"`
+			TrackList []sodaTrack `json:"trackList"`
 		} `json:"album_page"`
 	} `json:"loaderData"`
 }
@@ -70,6 +126,74 @@ type sodaShareAlbumPage struct {
 func New(cookie string) *Soda { return &Soda{cookie: cookie} }
 
 var defaultSoda = New("")
+
+func (l sodaLabelInfo) IsVIP() bool {
+	if l.OnlyVIPDownload || l.OnlyVIPPlayable {
+		return true
+	}
+	if len(l.QualityOnlyVIPCanDownload) > 0 || len(l.QualityOnlyVIPCanPlay) > 0 {
+		return true
+	}
+	for _, policy := range l.QualityMap {
+		if policy.PlayDetail != nil && policy.PlayDetail.NeedVIP {
+			return true
+		}
+		if policy.DownloadDetail != nil && policy.DownloadDetail.NeedVIP {
+			return true
+		}
+	}
+	return false
+}
+
+func sodaTrackExtra(trackID string, label sodaLabelInfo, values map[string]string) map[string]string {
+	extra := map[string]string{
+		"track_id": trackID,
+		"is_vip":   strconv.FormatBool(label.IsVIP()),
+	}
+	if label.OnlyVIPDownload {
+		extra["only_vip_download"] = "true"
+	}
+	if label.OnlyVIPPlayable {
+		extra["only_vip_playable"] = "true"
+	}
+	if len(label.QualityOnlyVIPCanDownload) > 0 {
+		extra["vip_download_qualities"] = strings.Join(label.QualityOnlyVIPCanDownload, ",")
+	}
+	if len(label.QualityOnlyVIPCanPlay) > 0 {
+		extra["vip_play_qualities"] = strings.Join(label.QualityOnlyVIPCanPlay, ",")
+	}
+	for key, value := range values {
+		if strings.TrimSpace(value) != "" {
+			extra[key] = value
+		}
+	}
+	return extra
+}
+
+func (r *sodaTrackV2Response) primaryTrack() sodaTrack {
+	if r == nil {
+		return sodaTrack{}
+	}
+	if r.Track.ID != "" {
+		return r.Track
+	}
+	return r.TrackInfo
+}
+
+func parseSodaTrackV2Response(body []byte) (*sodaTrackV2Response, error) {
+	var resp sodaTrackV2Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("soda track_v2 json parse error: %w", err)
+	}
+	if resp.StatusCode != 0 {
+		msg := strings.TrimSpace(resp.StatusInfo.StatusMsg)
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("soda track_v2 api error: status_code=%d status_msg=%s", resp.StatusCode, msg)
+	}
+	return &resp, nil
+}
 
 // fetchPlaylistDetail [内部通用] 获取歌单详情
 func (s *Soda) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
@@ -164,10 +288,8 @@ func (s *Soda) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error
 			Bitrate:  bitrate,
 			Cover:    cover,
 			Link:     fmt.Sprintf("https://www.qishui.com/track/%s", track.ID),
-			Extra: map[string]string{
-				"track_id": track.ID,
-				"album_id": albumID,
-			},
+			Extra:    sodaTrackExtra(track.ID, track.LabelInfo, map[string]string{"album_id": albumID}),
+			IsVIP:    track.LabelInfo.IsVIP(),
 		})
 	}
 
@@ -346,7 +468,7 @@ func (s *Soda) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, er
 					song.Size = best.Size
 				}
 				song.Ext = best.Format
-				song.Bitrate = best.Bitrate
+				song.Bitrate = normalizeSodaBitrate(best.Bitrate)
 			}
 		}
 
@@ -457,6 +579,89 @@ func sodaMaxBitRateSize(bitRates []sodaBitRate) int64 {
 	return size
 }
 
+func normalizeSodaBitrate(bitrate int) int {
+	if bitrate > 1000 {
+		return bitrate / 1000
+	}
+	return bitrate
+}
+
+func sodaTrackDurationSeconds(track sodaTrack) int {
+	if track.Duration > 1000 {
+		return track.Duration / 1000
+	}
+	return track.Duration
+}
+
+func sodaBuildSongFromTrack(track sodaTrack) model.Song {
+	displaySize := sodaMaxBitRateSize(track.BitRates)
+	if previewSize := sodaMaxBitRateSize(track.Preview.BitRates); previewSize > displaySize {
+		displaySize = previewSize
+	}
+
+	duration := sodaTrackDurationSeconds(track)
+	bitrate := 0
+	if duration > 0 && displaySize > 0 {
+		bitrate = int(displaySize * 8 / 1000 / int64(duration))
+	}
+
+	albumID := strings.TrimSpace(track.Album.ID)
+	artist := sodaJoinArtists(track.Artists)
+
+	return model.Song{
+		Source:   "soda",
+		ID:       track.ID,
+		Name:     track.Name,
+		Artist:   artist,
+		Album:    track.Album.Name,
+		AlbumID:  albumID,
+		Duration: duration,
+		Size:     displaySize,
+		Bitrate:  bitrate,
+		Cover:    sodaBuildImageURL(track.Album.URLCover, "~c5_375x375.jpg"),
+		Link:     fmt.Sprintf("https://www.qishui.com/track/%s", track.ID),
+		Extra:    sodaTrackExtra(track.ID, track.LabelInfo, map[string]string{"album_id": albumID}),
+		IsVIP:    track.LabelInfo.IsVIP(),
+	}
+}
+
+func sodaDownloadInfoURL(info *DownloadInfo) string {
+	if info == nil {
+		return ""
+	}
+	if strings.TrimSpace(info.PlayAuth) == "" {
+		return info.URL
+	}
+	return info.URL + "#auth=" + url.QueryEscape(info.PlayAuth)
+}
+
+func applySodaDownloadInfo(song *model.Song, info *DownloadInfo) {
+	if song == nil || info == nil {
+		return
+	}
+	if downloadURL := sodaDownloadInfoURL(info); downloadURL != "" {
+		song.URL = downloadURL
+	}
+	if info.Size > 0 {
+		song.Size = info.Size
+	}
+	if info.Format != "" {
+		song.Ext = info.Format
+	}
+	if info.Bitrate > 0 {
+		song.Bitrate = normalizeSodaBitrate(info.Bitrate)
+	} else if song.Duration > 0 && info.Size > 0 {
+		song.Bitrate = int(info.Size * 8 / 1000 / int64(song.Duration))
+	}
+}
+
+func sodaDownloadInfoIsPreview(info *DownloadInfo, fullDurationSeconds int) bool {
+	if info == nil || info.Duration <= 0 || fullDurationSeconds <= 0 {
+		return false
+	}
+	return info.Duration+5 < float64(fullDurationSeconds)
+}
+
 func sodaAlbumLink(id string) string {
 	return fmt.Sprintf("https://www.qishui.com/share/album?album_id=%s", strings.TrimSpace(id))
 }
@@ -482,11 +687,180 @@ func sodaExtractAlbumID(link string) string {
 	return ""
 }
 
+func (s *Soda) extractTrackID(link string) (string, error) {
+	if trackID := sodaExtractTrackIDFromText(link); trackID != "" {
+		return trackID, nil
+	}
+
+	finalURL, body, err := s.fetchSharePage(link)
+	if err != nil {
+		return "", err
+	}
+	if trackID := sodaExtractTrackIDFromText(finalURL); trackID != "" {
+		return trackID, nil
+	}
+	if trackID := sodaExtractTrackIDFromText(string(body)); trackID != "" {
+		return trackID, nil
+	}
+	return "", errors.New("soda track id not found")
+}
+
+func (s *Soda) fetchSharePage(link string) (string, []byte, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("GET", link, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	if strings.TrimSpace(s.cookie) != "" {
+		req.Header.Set("Cookie", s.cookie)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("http request failed: status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, err
+	}
+	finalURL := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
+	return finalURL, body, nil
+}
+
+func sodaExtractTrackIDFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) > 10 && isSodaDigits(text) && !strings.Contains(text, "/") {
+		return text
+	}
+
+	candidates := []string{text}
+	if decoded, err := url.QueryUnescape(text); err == nil && decoded != text {
+		candidates = append(candidates, decoded)
+	}
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?:^|[?&])track_id=(\d{10,})`),
+		regexp.MustCompile(`"track_id"\s*:\s*"(\d{10,})"`),
+		regexp.MustCompile(`(?:/|%2F)(?:track|song)(?:/|%2F)(\d{10,})`),
+		regexp.MustCompile(`(?:track|song)/(\d{10,})`),
+	}
+	for _, candidate := range candidates {
+		for _, pattern := range patterns {
+			matches := pattern.FindStringSubmatch(candidate)
+			if len(matches) >= 2 {
+				return matches[1]
+			}
+		}
+	}
+	return ""
+}
+
+func isSodaDigits(value string) bool {
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
 type DownloadInfo struct {
 	URL      string
 	PlayAuth string
 	Format   string
 	Size     int64
+	Duration float64
+	Bitrate  int
+	Quality  string
+}
+
+func sodaWebTrackV2URL(trackID string) string {
+	params := url.Values{}
+	params.Set("track_id", trackID)
+	params.Set("media_type", "track")
+	params.Set("aid", "386088")
+	params.Set("device_platform", "web")
+	params.Set("channel", "pc_web")
+	return "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
+}
+
+func sodaPCTrackV2URL() string {
+	now := time.Now().UnixMilli()
+	deviceID := strconv.FormatInt(now, 10)
+	iid := strconv.FormatInt(now+1, 10)
+
+	params := url.Values{}
+	params.Set("aid", "386088")
+	params.Set("app_name", "luna_pc")
+	params.Set("region", "cn")
+	params.Set("geo_region", "cn")
+	params.Set("os_region", "cn")
+	params.Set("sim_region", "")
+	params.Set("device_id", deviceID)
+	params.Set("cdid", "")
+	params.Set("iid", iid)
+	params.Set("version_name", "3.3.0")
+	params.Set("version_code", "30030000")
+	params.Set("channel", "official")
+	params.Set("build_mode", "master")
+	params.Set("network_carrier", "")
+	params.Set("ac", "wifi")
+	params.Set("tz_name", "Asia/Shanghai")
+	params.Set("resolution", "")
+	params.Set("device_platform", "windows")
+	params.Set("device_type", "Windows")
+	params.Set("os_version", "Windows 11")
+	params.Set("fp", deviceID)
+	return "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
+}
+
+func (s *Soda) fetchWebTrackV2(trackID string) (*sodaTrackV2Response, error) {
+	body, err := utils.Get(sodaWebTrackV2URL(trackID),
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", s.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return parseSodaTrackV2Response(body)
+}
+
+func (s *Soda) fetchPCTrackV2(trackID string) (*sodaTrackV2Response, error) {
+	if strings.TrimSpace(s.cookie) == "" {
+		return nil, errors.New("soda pc track_v2 requires cookie")
+	}
+
+	reqData := map[string]string{
+		"track_id":   trackID,
+		"media_type": "track",
+		"queue_type": "favorite_track_playlist",
+		"scene_name": "library",
+	}
+	jsonData, err := json.Marshal(reqData)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := utils.Post(sodaPCTrackV2URL(), bytes.NewReader(jsonData),
+		utils.WithHeader("User-Agent", pcAppUserAgent),
+		utils.WithHeader("Content-Type", "application/json; charset=utf-8"),
+		utils.WithHeader("Cookie", s.cookie),
+		utils.WithHeader("x-luna-background-type", "foreground"),
+		utils.WithHeader("x-luna-is-background-req", "0"),
+		utils.WithHeader("x-luna-is-local-user", "1"),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return parseSodaTrackV2Response(body)
 }
 
 func (s *Soda) fetchPlayerInfo(playerInfoURL string) (*DownloadInfo, error) {
@@ -499,15 +873,23 @@ func (s *Soda) fetchPlayerInfo(playerInfoURL string) (*DownloadInfo, error) {
 	}
 
 	var infoResp struct {
+		ResponseMetadata struct {
+			Error struct {
+				Message string `json:"Message"`
+				Code    string `json:"Code"`
+			} `json:"Error"`
+		} `json:"ResponseMetadata"`
 		Result struct {
 			Data struct {
 				PlayInfoList []struct {
-					MainPlayUrl   string `json:"MainPlayUrl"`
-					BackupPlayUrl string `json:"BackupPlayUrl"`
-					PlayAuth      string `json:"PlayAuth"`
-					Size          int64  `json:"Size"`
-					Bitrate       int    `json:"Bitrate"`
-					Format        string `json:"Format"`
+					MainPlayUrl   string  `json:"MainPlayUrl"`
+					BackupPlayUrl string  `json:"BackupPlayUrl"`
+					PlayAuth      string  `json:"PlayAuth"`
+					Size          int64   `json:"Size"`
+					Bitrate       int     `json:"Bitrate"`
+					Format        string  `json:"Format"`
+					Duration      float64 `json:"Duration"`
+					Quality       string  `json:"Quality"`
 				} `json:"PlayInfoList"`
 			} `json:"Data"`
 		} `json:"Result"`
@@ -518,10 +900,16 @@ func (s *Soda) fetchPlayerInfo(playerInfoURL string) (*DownloadInfo, error) {
 
 	list := infoResp.Result.Data.PlayInfoList
 	if len(list) == 0 {
+		if infoResp.ResponseMetadata.Error.Message != "" {
+			return nil, errors.New(infoResp.ResponseMetadata.Error.Message)
+		}
 		return nil, errors.New("no audio stream found")
 	}
 
 	sort.Slice(list, func(i, j int) bool {
+		if list[i].Duration != list[j].Duration {
+			return list[i].Duration > list[j].Duration
+		}
 		if list[i].Size != list[j].Size {
 			return list[i].Size > list[j].Size
 		}
@@ -537,96 +925,34 @@ func (s *Soda) fetchPlayerInfo(playerInfoURL string) (*DownloadInfo, error) {
 		return nil, errors.New("invalid download url")
 	}
 
-	return &DownloadInfo{URL: downloadURL, PlayAuth: best.PlayAuth, Format: best.Format, Size: best.Size}, nil
+	return &DownloadInfo{
+		URL:      downloadURL,
+		PlayAuth: best.PlayAuth,
+		Format:   best.Format,
+		Size:     best.Size,
+		Duration: best.Duration,
+		Bitrate:  best.Bitrate,
+		Quality:  best.Quality,
+	}, nil
 }
 
 func (s *Soda) fetchSongDetail(trackID string) (*model.Song, error) {
-	params := url.Values{}
-	params.Set("track_id", trackID)
-	params.Set("media_type", "track")
-	params.Set("aid", "386088")
-	params.Set("device_platform", "web")
-	params.Set("channel", "pc_web")
-
-	v2URL := "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
-	v2Body, err := utils.Get(v2URL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Cookie", s.cookie),
-	)
+	v2Resp, err := s.fetchWebTrackV2(trackID)
 	if err != nil {
 		return nil, err
 	}
 
-	var v2Resp struct {
-		TrackInfo struct {
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			Duration int    `json:"duration"`
-			Artists  []struct {
-				Name string `json:"name"`
-			} `json:"artists"`
-			Album struct {
-				Name     string `json:"name"`
-				UrlCover struct {
-					Urls []string `json:"urls"`
-					Uri  string   `json:"uri"`
-				} `json:"url_cover"`
-			} `json:"album"`
-		} `json:"track_info"`
-		TrackPlayer struct {
-			URLPlayerInfo string `json:"url_player_info"`
-		} `json:"track_player"`
-	}
-	if err := json.Unmarshal(v2Body, &v2Resp); err != nil {
-		return nil, fmt.Errorf("parse track_v2 response error: %w", err)
-	}
-
-	if v2Resp.TrackInfo.ID == "" {
+	track := v2Resp.primaryTrack()
+	if track.ID == "" {
 		return nil, errors.New("track info not found")
 	}
 
-	info := v2Resp.TrackInfo
-	var artistNames []string
-	for _, ar := range info.Artists {
-		artistNames = append(artistNames, ar.Name)
+	song := sodaBuildSongFromTrack(track)
+	if info, err := s.resolveDownloadInfo(track.ID, v2Resp); err == nil {
+		applySodaDownloadInfo(&song, info)
 	}
 
-	var cover string
-	if len(info.Album.UrlCover.Urls) > 0 {
-		domain := info.Album.UrlCover.Urls[0]
-		uri := info.Album.UrlCover.Uri
-		if domain != "" && uri != "" {
-			cover = domain + uri + "~c5_375x375.jpg"
-		}
-	}
-
-	song := &model.Song{
-		Source:   "soda",
-		ID:       info.ID,
-		Name:     info.Name,
-		Artist:   strings.Join(artistNames, "、"),
-		Album:    info.Album.Name,
-		Duration: info.Duration / 1000,
-		Cover:    cover,
-		Link:     fmt.Sprintf("https://www.qishui.com/track/%s", info.ID),
-		Extra: map[string]string{
-			"track_id": info.ID,
-		},
-	}
-
-	if v2Resp.TrackPlayer.URLPlayerInfo != "" {
-		dInfo, err := s.fetchPlayerInfo(v2Resp.TrackPlayer.URLPlayerInfo)
-		if err == nil {
-			song.URL = dInfo.URL + "#auth=" + url.QueryEscape(dInfo.PlayAuth)
-			song.Size = dInfo.Size
-			song.Ext = dInfo.Format
-			if song.Duration > 0 && dInfo.Size > 0 {
-				song.Bitrate = int(dInfo.Size * 8 / 1000 / int64(song.Duration))
-			}
-		}
-	}
-
-	return song, nil
+	return &song, nil
 }
 
 func parseSodaLyric(raw string) string {
