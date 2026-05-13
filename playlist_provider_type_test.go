@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/guohuiyuan/music-lib/apple"
 	"github.com/guohuiyuan/music-lib/bilibili"
 	"github.com/guohuiyuan/music-lib/fivesing"
 	"github.com/guohuiyuan/music-lib/jamendo"
@@ -28,6 +29,7 @@ var _ provider.PlaylistProvider = (*fivesing.Fivesing)(nil)
 var _ provider.PlaylistProvider = (*jamendo.Jamendo)(nil)
 var _ provider.PlaylistProvider = (*joox.Joox)(nil)
 var _ provider.PlaylistProvider = (*bilibili.Bilibili)(nil)
+var _ provider.PlaylistProvider = (*apple.Apple)(nil)
 
 var _ provider.PlaylistCategoryProvider = (*netease.Netease)(nil)
 var _ provider.PlaylistCategoryProvider = (*qq.QQ)(nil)
