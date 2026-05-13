@@ -527,3 +527,67 @@ func (q *QQ) fetchSongDetail(songMID string) (*model.Song, error) {
 		},
 	}, nil
 }
+
+func (q *QQ) fetchSongDetailByID(songID string) (*model.Song, error) {
+	params := url.Values{}
+	params.Set("songid", songID)
+	params.Set("format", "json")
+
+	apiURL := "https://c.y.qq.com/v8/fcg-bin/fcg_play_single_song.fcg?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", SearchReferer),
+		utils.WithHeader("Cookie", q.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data []struct {
+			ID    int64  `json:"id"`
+			Name  string `json:"name"`
+			Mid   string `json:"mid"`
+			Album struct {
+				Name string `json:"name"`
+				Mid  string `json:"mid"`
+			} `json:"album"`
+			Singer []struct {
+				Name string `json:"name"`
+			} `json:"singer"`
+			Interval int `json:"interval"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("qq detail json parse error: %w", err)
+	}
+	if len(resp.Data) == 0 {
+		return nil, errors.New("song detail not found")
+	}
+
+	item := resp.Data[0]
+	var artistNames []string
+	for _, s := range item.Singer {
+		artistNames = append(artistNames, s.Name)
+	}
+	var coverURL string
+	if item.Album.Mid != "" {
+		coverURL = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", item.Album.Mid)
+	}
+
+	return &model.Song{
+		Source:   "qq",
+		ID:       item.Mid,
+		Name:     item.Name,
+		Artist:   strings.Join(artistNames, "、"),
+		Album:    item.Album.Name,
+		Duration: item.Interval,
+		Cover:    coverURL,
+		Link:     fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", item.Mid),
+		Extra: map[string]string{
+			"songmid": item.Mid,
+			"song_id": strconv.FormatInt(item.ID, 10),
+		},
+	}, nil
+}

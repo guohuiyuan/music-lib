@@ -120,12 +120,37 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 
 // Parse parses a song link and enriches it with download info when possible.
 func (q *QQ) Parse(link string) (*model.Song, error) {
+	var songMID string
+
+	// Try songDetail/xxx format
 	re := regexp.MustCompile(`songDetail/(\w+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
+	if matches := re.FindStringSubmatch(link); len(matches) >= 2 {
+		songMID = matches[1]
+	}
+
+	// Try playsong.html?songid=xxx or songid query param
+	if songMID == "" {
+		if u, err := url.Parse(link); err == nil {
+			if id := u.Query().Get("songid"); id != "" {
+				// Numeric songid — fetch detail by ID
+				song, err := q.fetchSongDetailByID(id)
+				if err != nil {
+					return nil, err
+				}
+				if downloadURL, dlErr := q.GetDownloadURL(song); dlErr == nil {
+					song.URL = downloadURL
+				}
+				return song, nil
+			}
+			if mid := u.Query().Get("songmid"); mid != "" {
+				songMID = mid
+			}
+		}
+	}
+
+	if songMID == "" {
 		return nil, errors.New("invalid qq music link")
 	}
-	songMID := matches[1]
 
 	song, err := q.fetchSongDetail(songMID)
 	if err != nil {

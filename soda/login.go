@@ -179,36 +179,34 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 
 	switch strings.ToLower(strings.TrimSpace(resp.Data.Status)) {
 	case "confirmed":
-		// QR scanned and confirmed, but MFA required - need to send SMS code
+		// QR scanned and confirmed — either direct success (session cookies present)
+		// or MFA required (need SMS verification).
 		mfaToken := extractSodaCookieValue(cookies, "passport_mfa_token")
 		encryptUID := extractSodaMFAField(body, "encrypt_uid")
 		verifyParams := extractSodaMFAVerifyParams(body, cookies)
-
-		if mfaToken != "" || encryptUID != "" || verifyParams != "" {
-			rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
-				Cookies:      cookies,
-				EncryptUID:   encryptUID,
-				VerifyParams: verifyParams,
-				ExpiresAt:    time.Now().Add(10 * time.Minute),
-			})
-			result.Status = model.QRLoginStatusScanned
-			result.Message = "扫码成功，需要短信验证"
-			mobile := extractSodaMFAField(body, "mobile")
-			if mobile == "" {
-				mobile = strings.TrimSpace(resp.Data.UserData.Mobile)
-			}
-			result.Extra = map[string]string{
-				"need_sms":       "true",
-				"encrypt_uid":    encryptUID,
-				"verify_params":  verifyParams,
-				"mfa_token":      mfaToken,
-				"mobile":         mobile,
-				"cookie_pending": strconvBool(sodaCookiesHaveSession(cookies)),
-			}
-			return result
+		mobile := extractSodaMFAField(body, "mobile")
+		if mobile == "" {
+			mobile = strings.TrimSpace(resp.Data.UserData.Mobile)
 		}
+
+		// "confirmed" without session cookies always means MFA is required
+		rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
+			Cookies:      cookies,
+			EncryptUID:   encryptUID,
+			VerifyParams: verifyParams,
+			ExpiresAt:    time.Now().Add(10 * time.Minute),
+		})
 		result.Status = model.QRLoginStatusScanned
-		result.Message = "已扫码确认，等待登录结果"
+		result.Message = "扫码成功，需要短信验证"
+		result.Extra = map[string]string{
+			"need_sms":       "true",
+			"encrypt_uid":    encryptUID,
+			"verify_params":  verifyParams,
+			"mfa_token":      mfaToken,
+			"mobile":         mobile,
+			"cookie_pending": strconvBool(sodaCookiesHaveSession(cookies)),
+		}
+		return result
 	case "new", "":
 		result.Status = model.QRLoginStatusWaiting
 	case "scanned":
