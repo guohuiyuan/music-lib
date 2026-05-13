@@ -134,6 +134,125 @@ func TestSodaQRConnectResultErrorWithMFAShowsSMSFlow(t *testing.T) {
 	clearSodaQRLoginPending(token)
 }
 
+func TestSodaQRConnectResultVerifyAccountFlowTriggersMFA(t *testing.T) {
+	token := "unit-token-mfa-2046"
+	clearSodaQRLoginPending(token)
+	var resp sodaQRConnectResponse
+	resp.Data.Status = ""
+	resp.Data.AccountFlow = "verify"
+	resp.Data.ErrorCode = 2046
+	resp.Message = "error"
+
+	body := []byte(`{
+		"data": {
+			"account_flow": "verify",
+			"encrypt_uid": "fXk7m7ghB+QOAxph2pEnkmXFNwvisB2Jelr0Ky0gCTXpAorULtJc",
+			"error_code": 2046,
+			"biz_params": {
+				"passport_mfa_retry_tag": "1",
+				"std_verify_flow_id": "d3b23102-3ed3-4934-97df-a5f347970630.login",
+				"std_verify_scene": "account_login",
+				"std_verify_template": "ato",
+				"std_verify_token": "f64e4da4-4ef3-11f1-9b86-00620b590b2a_lq",
+				"std_verify_type": "MFA",
+				"std_verify_way": ""
+			},
+			"verify_ways": [
+				{"act_type":"22","mobile":"159******49","verify_way":"mobile_sms_verify"}
+			]
+		},
+		"message": "error"
+	}`)
+
+	result := (&Soda{}).sodaQRConnectResult(token, body, map[string]string{
+		"passport_mfa_token": "mfa-token",
+	}, resp)
+
+	if result.Status != model.QRLoginStatusScanned {
+		t.Fatalf("status = %s, want scanned", result.Status)
+	}
+	if result.Extra["need_sms"] != "true" {
+		t.Fatalf("need_sms not set: %#v", result.Extra)
+	}
+	if !strings.HasPrefix(result.Extra["encrypt_uid"], "fXk7m7gh") {
+		t.Fatalf("encrypt_uid mismatch: %#v", result.Extra["encrypt_uid"])
+	}
+	if !containsQueryParam(result.Extra["verify_params"], "std_verify_token") {
+		t.Fatalf("verify_params missing std_verify_token: %q", result.Extra["verify_params"])
+	}
+	if !containsQueryParam(result.Extra["verify_params"], "passport_mfa_retry_tag") {
+		t.Fatalf("verify_params missing passport_mfa_retry_tag: %q", result.Extra["verify_params"])
+	}
+	state, ok := getSodaQRLoginPending(token)
+	if !ok {
+		t.Fatal("MFA pending state was not recorded")
+	}
+	if state.EncryptUID == "" {
+		t.Fatal("pending state missing encrypt_uid")
+	}
+	clearSodaQRLoginPending(token)
+}
+
+func TestSodaQRPollAllowedThrottlesRepeatedCalls(t *testing.T) {
+	token := "unit-token-throttle"
+	sodaQRPollForget(token)
+	if !sodaQRPollAllowed(token) {
+		t.Fatal("first call should be allowed")
+	}
+	if sodaQRPollAllowed(token) {
+		t.Fatal("immediate second call must be throttled")
+	}
+	sodaQRPollForget(token)
+	if !sodaQRPollAllowed(token) {
+		t.Fatal("after forget, next call should be allowed again")
+	}
+	sodaQRPollForget(token)
+}
+
+func TestSodaQRConnectResultRateLimitedBacksOff(t *testing.T) {
+	token := "unit-token-rate-limited"
+	sodaQRPollForget(token)
+	clearSodaQRLoginPending(token)
+
+	var resp sodaQRConnectResponse
+	resp.Data.ErrorCode = 7
+	resp.Data.Description = "访问太频繁，请稍后再试"
+	resp.Message = "error"
+
+	result := (&Soda{}).sodaQRConnectResult(token, []byte(`{"data":{"error_code":7,"description":"访问太频繁"},"message":"error"}`), nil, resp)
+
+	if result.Status != model.QRLoginStatusWaiting {
+		t.Fatalf("status = %s, want waiting (back off, not failure)", result.Status)
+	}
+	if result.Extra["rate_limited"] != "true" {
+		t.Fatalf("rate_limited flag missing: %#v", result.Extra)
+	}
+	// Subsequent allow check must be denied during the backoff window.
+	if sodaQRPollAllowed(token) {
+		t.Fatal("rate-limited token should remain throttled after backoff")
+	}
+	sodaQRPollForget(token)
+}
+
+func TestSodaThrottledResultUsesPendingEncryptUID(t *testing.T) {
+	r := sodaThrottledResult("tok", sodaQRLoginPendingState{
+		EncryptUID:   "uid",
+		VerifyParams: "std_verify_token=t",
+	})
+	if r.Status != model.QRLoginStatusScanned {
+		t.Fatalf("status = %s, want scanned", r.Status)
+	}
+	if r.Extra["need_sms"] != "true" || r.Extra["encrypt_uid"] != "uid" {
+		t.Fatalf("extra mismatch: %#v", r.Extra)
+	}
+}
+
+func TestSodaEncodeSMSCodeMatchesOfficialPCShape(t *testing.T) {
+	if got := sodaEncodeSMSCode("661701"); got != "363631373031" {
+		t.Fatalf("encoded sms code = %q, want 363631373031", got)
+	}
+}
+
 func TestSodaQRConnectFormMatchesOfficialPCShape(t *testing.T) {
 	createQuery := buildSodaQRCreateQuery()
 	for _, key := range []string{

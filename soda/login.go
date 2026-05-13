@@ -1,6 +1,7 @@
 package soda
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,6 +42,7 @@ type sodaQRConnectResponse struct {
 		ErrorCode   int    `json:"error_code"`
 		Redirect    string `json:"redirect_url"`
 		Description string `json:"description"`
+		AccountFlow string `json:"account_flow"`
 		UserData    struct {
 			Mobile string `json:"mobile"`
 		} `json:"user_data"`
@@ -52,6 +54,62 @@ var (
 	sodaQRLoginMu      sync.Mutex
 	sodaQRLoginPending = map[string]sodaQRLoginPendingState{}
 )
+
+const (
+	sodaQRPollMinInterval  = 5 * time.Second
+	sodaQRRateLimitBackoff = 60 * time.Second
+)
+
+var (
+	sodaQRPollMu   sync.Mutex
+	sodaQRLastPoll = map[string]time.Time{}
+)
+
+// sodaQRPollAllowed reports whether enough time has elapsed since the last
+// check_qrconnect call for the given token. It also records the call time.
+func sodaQRPollAllowed(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return true
+	}
+	sodaQRPollMu.Lock()
+	defer sodaQRPollMu.Unlock()
+	now := time.Now()
+	for tok, last := range sodaQRLastPoll {
+		if now.Sub(last) > 10*time.Minute {
+			delete(sodaQRLastPoll, tok)
+		}
+	}
+	if last, ok := sodaQRLastPoll[token]; ok && now.Sub(last) < sodaQRPollMinInterval {
+		return false
+	}
+	sodaQRLastPoll[token] = now
+	return true
+}
+
+func sodaQRPollForget(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	sodaQRPollMu.Lock()
+	defer sodaQRPollMu.Unlock()
+	delete(sodaQRLastPoll, token)
+}
+
+// sodaQRPollBackoff suppresses further upstream polling for the given token
+// until `duration` has elapsed. Used when Soda returns error_code=7.
+func sodaQRPollBackoff(token string, duration time.Duration) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	sodaQRPollMu.Lock()
+	defer sodaQRPollMu.Unlock()
+	// Record a future "last poll" so the next sodaQRPollAllowed call sees
+	// a negative elapsed window and stays throttled for `duration`.
+	sodaQRLastPoll[token] = time.Now().Add(duration - sodaQRPollMinInterval)
+}
 
 func CreateQRLogin() (*model.QRLoginSession, error) { return defaultSoda.CreateQRLogin() }
 func CheckQRLogin(key string) (*model.QRLoginResult, error) {
@@ -107,12 +165,20 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	}
 
 	scanURL := sodaScanLoginURL(resp.Data.Token)
-	qrURL := scanURL
+
+	// Debug: print all QR URLs from server
+	fmt.Printf("[DEBUG get_qrcode] token=%s\n", resp.Data.Token)
+	fmt.Printf("[DEBUG get_qrcode] web_url=%s\n", resp.Data.WebURL)
+	fmt.Printf("[DEBUG get_qrcode] qrcode_index_url=%s\n", resp.Data.QRCodeB)
+	fmt.Printf("[DEBUG get_qrcode] custom_scan_url=%s\n", scanURL)
+
+	// Prefer short scan_login_url for local QR rendering
+	qrURL := strings.TrimSpace(scanURL)
 	if qrURL == "" {
-		qrURL = resp.Data.WebURL
+		qrURL = strings.TrimSpace(resp.Data.WebURL)
 	}
 	if qrURL == "" {
-		qrURL = resp.Data.QRCodeB
+		qrURL = strings.TrimSpace(resp.Data.QRCodeB)
 	}
 
 	// Store cookies from get_qrcode so check_qrconnect can use them
@@ -157,7 +223,37 @@ func (s *Soda) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 
 func (s *Soda) sodaCheckQRConnect(token string) (*model.QRLoginResult, error) {
 	pending, _ := getSodaQRLoginPending(token)
+	if !sodaQRPollAllowed(token) {
+		return sodaThrottledResult(token, pending), nil
+	}
 	return s.sodaCheckQRConnectWithState(token, pending, false)
+}
+
+// sodaThrottledResult returns the most useful cached state when the caller
+// polls too often. It mirrors the previous /check_qrconnect outcome instead of
+// hitting Soda again and tripping error_code=7.
+func sodaThrottledResult(token string, pending sodaQRLoginPendingState) *model.QRLoginResult {
+	if pending.EncryptUID != "" {
+		return &model.QRLoginResult{
+			Source:  "soda",
+			Key:     strings.TrimSpace(token),
+			Status:  model.QRLoginStatusScanned,
+			Message: "扫码成功，需要短信验证",
+			Extra: map[string]string{
+				"need_sms":      "true",
+				"encrypt_uid":   pending.EncryptUID,
+				"verify_params": pending.VerifyParams,
+				"throttled":     "true",
+			},
+		}
+	}
+	return &model.QRLoginResult{
+		Source:  "soda",
+		Key:     strings.TrimSpace(token),
+		Status:  model.QRLoginStatusWaiting,
+		Message: "正在等待扫码...",
+		Extra:   map[string]string{"throttled": "true"},
+	}
 }
 
 func (s *Soda) sodaCheckQRConnectWithState(token string, state sodaQRLoginPendingState, includeVerifyParams bool) (*model.QRLoginResult, error) {
@@ -199,6 +295,21 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 		Message: resp.Message,
 	}
 
+	// Handle rate limiting: instead of failing the whole session, back off
+	// upstream calls so the frontend can keep polling without hitting Soda.
+	if resp.Data.ErrorCode == 7 {
+		sodaQRPollBackoff(token, sodaQRRateLimitBackoff)
+		pending, _ := getSodaQRLoginPending(token)
+		throttled := sodaThrottledResult(token, pending)
+		if throttled.Extra == nil {
+			throttled.Extra = map[string]string{}
+		}
+		throttled.Extra["rate_limited"] = "true"
+		throttled.Message = "正在等待汽水接口冷却..."
+		return throttled
+	}
+
+	// Final success: cookies carry a real session
 	if sodaCookiesHaveSession(cookies) {
 		cookie := sodaJoinCookies(cookies)
 		result.Status = model.QRLoginStatusSuccess
@@ -208,47 +319,53 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 		s.cookie = cookie
 		s.isVipCache = nil
 		clearSodaQRLoginPending(token)
+		sodaQRPollForget(token)
 		return result
 	}
 
-	switch strings.ToLower(strings.TrimSpace(resp.Data.Status)) {
-	case "confirmed":
-		// QR scanned and confirmed, but MFA required - need to send SMS code
-		mfaToken := extractSodaCookieValue(cookies, "passport_mfa_token")
-		encryptUID := extractSodaMFAField(body, "encrypt_uid")
-		verifyParams := extractSodaMFAVerifyParams(body, cookies)
-
-		if mfaToken != "" || encryptUID != "" || verifyParams != "" {
-			rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
-				Cookies:      cookies,
-				EncryptUID:   encryptUID,
-				VerifyParams: verifyParams,
-				ExpiresAt:    time.Now().Add(10 * time.Minute),
-			})
-			result.Status = model.QRLoginStatusScanned
-			result.Message = "扫码成功，需要短信验证"
-			mobile := extractSodaMFAField(body, "mobile")
-			if mobile == "" {
-				mobile = strings.TrimSpace(resp.Data.UserData.Mobile)
-			}
-			result.Extra = map[string]string{
-				"need_sms":       "true",
-				"encrypt_uid":    encryptUID,
-				"verify_params":  verifyParams,
-				"mfa_token":      mfaToken,
-				"mobile":         mobile,
-				"cookie_pending": strconvBool(sodaCookiesHaveSession(cookies)),
-			}
-			return result
+	// MFA branch: official check_qrconnect returns no `status` but
+	// account_flow=verify and error_code=2046 with encrypt_uid + biz_params.
+	status := strings.ToLower(strings.TrimSpace(resp.Data.Status))
+	accountFlow := strings.ToLower(strings.TrimSpace(resp.Data.AccountFlow))
+	if accountFlow == "verify" || resp.Data.ErrorCode == 2046 {
+		if mfaResult, ok := s.sodaMFARequiredResult(token, body, cookies, resp); ok {
+			return mfaResult
 		}
+		result.Status = model.QRLoginStatusFailed
+		result.Message = sodaQRConnectErrorMessage(resp)
+		result.Extra = sodaQRConnectExtra(resp)
+		return result
+	}
+
+	switch status {
+	case "confirmed":
+		// QR confirmed on phone but session cookies not yet issued.
+		// Caller should keep polling; the next check_qrconnect typically
+		// returns Set-Cookie with sessionid.
 		result.Status = model.QRLoginStatusScanned
 		result.Message = "已扫码确认，等待登录结果"
+		rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
+			Cookies:   mergeSodaCookies(cookies),
+			ExpiresAt: time.Now().Add(10 * time.Minute),
+		})
 	case "new", "":
-		result.Status = model.QRLoginStatusWaiting
+		if resp.Data.ErrorCode != 0 {
+			result.Status = model.QRLoginStatusFailed
+			result.Message = sodaQRConnectErrorMessage(resp)
+			result.Extra = sodaQRConnectExtra(resp)
+		} else {
+			result.Status = model.QRLoginStatusWaiting
+		}
 	case "scanned":
 		result.Status = model.QRLoginStatusScanned
+		rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
+			Cookies:   mergeSodaCookies(cookies),
+			ExpiresAt: time.Now().Add(10 * time.Minute),
+		})
 	case "expired":
 		result.Status = model.QRLoginStatusExpired
+		clearSodaQRLoginPending(token)
+		sodaQRPollForget(token)
 	case "error", "failed":
 		if mfaResult, ok := s.sodaMFARequiredResult(token, body, cookies, resp); ok {
 			return mfaResult
@@ -346,6 +463,8 @@ func (s *Soda) sodaSendCode(token, encryptUID, verifyParams string) (*model.QRLo
 		return nil, err
 	}
 
+	fmt.Printf("  [DEBUG send_code] raw=%s\n", string(body))
+
 	var resp struct {
 		Data struct {
 			Mobile    string `json:"mobile"`
@@ -414,7 +533,7 @@ func (s *Soda) sodaValidateCode(token, encryptUID, verifyParams, code string) (*
 	params.Set("ies_safety_diversion_tag", "mfa")
 	params.Set("new_verify_flow", "")
 	params.Set("std_verify_way", "mobile_sms_verify")
-	params.Set("code", code)
+	params.Set("code", sodaEncodeSMSCode(code))
 	params.Set("aid", sodaPassportAid)
 	params.Set("new_authn_sdk_version", "1.0.0.404-web")
 
@@ -483,6 +602,11 @@ func (s *Soda) postSodaPassportWithCookie(apiURL string, form url.Values, cookie
 	} else {
 		req.Header.Set("Accept", "application/json, text/javascript")
 	}
+	// bd-ticket-guard headers required by Bytedance Passport
+	req.Header.Set("bd-ticket-guard-version", "2")
+	req.Header.Set("bd-ticket-guard-iteration-version", "2")
+	req.Header.Set("bd-ticket-guard-ree-public-key", "BAnIxKL96Jby5x+Um9i7HZ2c8O6lfZJRxm6yk73Mqcr06l2qIw2iqu2Mtm3U/6OI98usukA9dqxUlsctVWK9rKA=")
+	req.Header.Set("bd-ticket-guard-server-cert-sn", "0")
 	if traceID := sodaPassportTraceID(apiURL); traceID != "" {
 		req.Header.Set("X-Tt-Passport-Trace-Id", traceID)
 	}
@@ -655,8 +779,16 @@ func buildSodaPassportLiteQuery() string {
 	return params.Encode()
 }
 
+var (
+	sodaBizTraceOnce sync.Once
+	sodaBizTraceVal  string
+)
+
 func sodaPassportBizTraceID() string {
-	return fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
+	sodaBizTraceOnce.Do(func() {
+		sodaBizTraceVal = fmt.Sprintf("%08x", uint32(time.Now().UnixNano()))
+	})
+	return sodaBizTraceVal
 }
 
 func sodaPassportTraceID(rawURL string) string {
@@ -855,6 +987,10 @@ func sodaCookieHeader(base string, cookies map[string]string) string {
 	default:
 		return base + "; " + cookie
 	}
+}
+
+func sodaEncodeSMSCode(code string) string {
+	return hex.EncodeToString([]byte(strings.TrimSpace(code)))
 }
 
 func sodaCookiesHaveSession(cookies map[string]string) bool {
