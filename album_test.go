@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/guohuiyuan/music-lib/apple"
 	"github.com/guohuiyuan/music-lib/jamendo"
 	"github.com/guohuiyuan/music-lib/joox"
 	"github.com/guohuiyuan/music-lib/kugou"
@@ -87,6 +88,13 @@ func TestAlbumPlatforms(t *testing.T) {
 			SearchAlbum:   soda.SearchAlbum,
 			GetAlbumSongs: soda.GetAlbumSongs,
 			ParseAlbum:    soda.ParseAlbum,
+		},
+		{
+			Name:          "apple",
+			Keyword:       "Taylor Swift",
+			SearchAlbum:   apple.SearchAlbum,
+			GetAlbumSongs: apple.GetAlbumSongs,
+			ParseAlbum:    apple.ParseAlbum,
 		},
 	}
 

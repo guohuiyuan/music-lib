@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/guohuiyuan/music-lib/apple"
 	"github.com/guohuiyuan/music-lib/bilibili"
 	"github.com/guohuiyuan/music-lib/fivesing"
 	"github.com/guohuiyuan/music-lib/jamendo"
@@ -120,6 +121,14 @@ func TestPlatforms(t *testing.T) {
 			GetDownloadURL: bilibili.GetDownloadURL,
 			GetLyrics:      nil, // Bilibili 歌词接口不稳定，暂时跳过
 			Parse:          nil,
+		},
+		{
+			Name:           "apple",
+			Keyword:        "Taylor Swift",
+			Search:         apple.Search,
+			GetDownloadURL: apple.GetDownloadURL,
+			GetLyrics:      apple.GetLyrics,
+			Parse:          apple.Parse,
 		},
 	}
 
