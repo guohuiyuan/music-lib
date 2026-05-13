@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,6 +59,18 @@ func TestSodaVIPStatusAndDownload(t *testing.T) {
 		t.Fatalf("download size = %d, looks like a preview stream", song.Size)
 	}
 
+	info, err := s.GetDownloadInfo(song)
+	if err != nil {
+		t.Fatalf("GetDownloadInfo error: %v", err)
+	}
+	t.Logf("selected Soda quality=%q format=%q bitrate=%d size=%d duration=%.1fs", info.Quality, info.Format, info.Bitrate, info.Size, info.Duration)
+	if info.URL == "" || info.Size < 5*1024*1024 || info.Duration < 175 {
+		t.Fatalf("selected stream looks incomplete: quality=%q size=%d duration=%.1f", info.Quality, info.Size, info.Duration)
+	}
+	if info.Quality == "" && info.Bitrate == 0 {
+		t.Fatal("selected stream should expose quality or bitrate metadata")
+	}
+
 	isVip, err := s.IsVipAccount()
 	if err != nil {
 		t.Fatalf("IsVipAccount error: %v", err)
@@ -80,4 +93,73 @@ func TestSodaVIPStatusAndDownload(t *testing.T) {
 	if !isMP4Audio(data) {
 		t.Fatalf("downloaded file does not look like an MP4/M4A audio file")
 	}
+}
+
+func TestSodaLosslessTrackDownloadIsDecrypted(t *testing.T) {
+	cookie := getSodaCookie()
+	if cookie == "" {
+		t.Skip("SODA_COOKIE or ../qishui.md cookie not set")
+	}
+
+	s := soda.New(cookie)
+	song, err := s.Parse("https://www.qishui.com/track/6696823291962722305")
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if song.ID != "6696823291962722305" {
+		t.Fatalf("song ID = %s, want 6696823291962722305", song.ID)
+	}
+
+	info, err := s.GetDownloadInfo(song)
+	if err != nil {
+		t.Fatalf("GetDownloadInfo error: %v", err)
+	}
+	t.Logf("selected Soda lossless candidate quality=%q format=%q bitrate=%d size=%d duration=%.1fs", info.Quality, info.Format, info.Bitrate, info.Size, info.Duration)
+	if strings.ToLower(info.Quality) != "lossless" {
+		t.Fatalf("quality = %q, want lossless", info.Quality)
+	}
+	if info.Size < 20*1024*1024 || info.Duration < 190 {
+		t.Fatalf("selected lossless stream looks incomplete: size=%d duration=%.1f", info.Size, info.Duration)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "soda-lossless.m4a")
+	if err := s.Download(song, outputPath); err != nil {
+		t.Fatalf("Download error: %v", err)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("Read downloaded file error: %v", err)
+	}
+	if int64(len(data)) != info.Size {
+		t.Fatalf("downloaded file size = %d, want %d", len(data), info.Size)
+	}
+	if !isMP4Audio(data) {
+		t.Fatal("downloaded lossless file is not decrypted into a playable MP4/M4A audio file")
+	}
+	assertFFmpegCanDecode(t, outputPath)
+}
+
+func assertFFmpegCanDecode(t *testing.T, path string) {
+	t.Helper()
+
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not found; skipping decode-level playback check")
+	}
+	cmd := exec.Command(ffmpeg, "-v", "error", "-t", "10", "-i", path, "-f", "null", "-")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffmpeg could not decode downloaded audio: %v\n%s", err, trimTestOutput(output))
+	}
+	if decodedErrors := trimTestOutput(output); decodedErrors != "" {
+		t.Fatalf("ffmpeg reported decode errors:\n%s", decodedErrors)
+	}
+}
+
+func trimTestOutput(output []byte) string {
+	text := strings.TrimSpace(string(output))
+	if len(text) <= 4000 {
+		return text
+	}
+	return text[:4000] + "\n... output truncated ..."
 }

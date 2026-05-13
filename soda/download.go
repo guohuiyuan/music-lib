@@ -30,7 +30,9 @@ func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 				PlayAuth: auth,
 				Format:   song.Ext,
 				Size:     song.Size,
+				Duration: float64(song.Duration),
 				Bitrate:  song.Bitrate,
+				Quality:  strings.TrimSpace(song.Extra["quality"]),
 			}, nil
 		}
 	}

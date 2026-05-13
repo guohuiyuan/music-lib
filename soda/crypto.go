@@ -56,7 +56,7 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("senc box not found")
 	}
-	ivs := parseSenc(senc.data)
+	sencSamples := parseSenc(senc.data, defaultPerSampleIVSize(fileData, stbl.offset, stbl.offset+stbl.size))
 
 	mdat, err := findBox(fileData, "mdat", 0, len(fileData))
 	if err != nil {
@@ -81,16 +81,8 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 		}
 		chunk := decryptedData[readPtr : readPtr+size]
 
-		if i < len(ivs) {
-			iv := ivs[i]
-			if len(iv) < 16 {
-				padded := make([]byte, 16)
-				copy(padded, iv)
-				iv = padded
-			}
-			stream := cipher.NewCTR(block, iv)
-			dst := make([]byte, size)
-			stream.XORKeyStream(dst, chunk)
+		if i < len(sencSamples) {
+			dst := decryptSencSample(block, chunk, sencSamples[i])
 			decryptedMdat = append(decryptedMdat, dst...)
 		} else {
 			decryptedMdat = append(decryptedMdat, chunk...)
@@ -109,12 +101,90 @@ func DecryptAudio(fileData []byte, playAuth string) ([]byte, error) {
 		stsdOffset := stsd.offset
 		stsdData := decryptedData[stsdOffset : stsdOffset+stsd.size]
 		if idx := bytes.Index(stsdData, []byte("enca")); idx != -1 {
-			copy(stsdData[idx:], []byte("mp4a"))
+			copy(stsdData[idx:], encryptedSampleOriginalFormat(stsdData))
 			copy(decryptedData[stsdOffset:], stsdData)
 		}
 	}
 
 	return decryptedData, nil
+}
+
+func encryptedSampleOriginalFormat(stsdData []byte) []byte {
+	idx := bytes.Index(stsdData, []byte("frma"))
+	if idx < 4 || idx+8 > len(stsdData) {
+		return []byte("mp4a")
+	}
+	size := int(binary.BigEndian.Uint32(stsdData[idx-4 : idx]))
+	if size < 12 || idx-4+size > len(stsdData) {
+		return []byte("mp4a")
+	}
+	return stsdData[idx+4 : idx+8]
+}
+
+func defaultPerSampleIVSize(data []byte, start, end int) int {
+	tenc, err := findBoxDeep(data, "tenc", start, end)
+	if err != nil || len(tenc.data) < 8 {
+		return 8
+	}
+	ivSize := int(tenc.data[7])
+	if ivSize == 8 || ivSize == 16 {
+		return ivSize
+	}
+	return 8
+}
+
+type sodaSencSubsample struct {
+	clear     uint16
+	encrypted uint32
+}
+
+type sodaSencSample struct {
+	iv         []byte
+	subsamples []sodaSencSubsample
+}
+
+func decryptSencSample(block cipher.Block, chunk []byte, sample sodaSencSample) []byte {
+	iv := sample.iv
+	if len(iv) < aes.BlockSize {
+		padded := make([]byte, aes.BlockSize)
+		copy(padded, iv)
+		iv = padded
+	}
+	stream := cipher.NewCTR(block, iv)
+
+	if len(sample.subsamples) == 0 {
+		dst := make([]byte, len(chunk))
+		stream.XORKeyStream(dst, chunk)
+		return dst
+	}
+
+	dst := make([]byte, len(chunk))
+	pos := 0
+	for _, sub := range sample.subsamples {
+		clearBytes := int(sub.clear)
+		if clearBytes > len(chunk)-pos {
+			clearBytes = len(chunk) - pos
+		}
+		copy(dst[pos:pos+clearBytes], chunk[pos:pos+clearBytes])
+		pos += clearBytes
+		if pos >= len(chunk) {
+			break
+		}
+
+		encryptedBytes := int(sub.encrypted)
+		if encryptedBytes > len(chunk)-pos {
+			encryptedBytes = len(chunk) - pos
+		}
+		stream.XORKeyStream(dst[pos:pos+encryptedBytes], chunk[pos:pos+encryptedBytes])
+		pos += encryptedBytes
+		if pos >= len(chunk) {
+			break
+		}
+	}
+	if pos < len(chunk) {
+		copy(dst[pos:], chunk[pos:])
+	}
+	return dst
 }
 
 type mp4Box struct {
@@ -142,6 +212,57 @@ func findBox(data []byte, boxType string, start, end int) (*mp4Box, error) {
 	return nil, errors.New("box not found")
 }
 
+func findBoxDeep(data []byte, boxType string, start, end int) (*mp4Box, error) {
+	if end > len(data) {
+		end = len(data)
+	}
+	pos := start
+	target := []byte(boxType)
+	for pos+8 <= end {
+		size := int(binary.BigEndian.Uint32(data[pos : pos+4]))
+		headerSize := 8
+		if size == 1 {
+			if pos+16 > end {
+				break
+			}
+			size64 := binary.BigEndian.Uint64(data[pos+8 : pos+16])
+			if size64 > uint64(end-pos) {
+				break
+			}
+			size = int(size64)
+			headerSize = 16
+		}
+		if size < headerSize || pos+size > end {
+			break
+		}
+		currentType := string(data[pos+4 : pos+8])
+		if bytes.Equal(data[pos+4:pos+8], target) {
+			return &mp4Box{offset: pos, size: size, data: data[pos+headerSize : pos+size]}, nil
+		}
+
+		if childStart, ok := boxChildStart(currentType, pos, headerSize); ok && childStart < pos+size {
+			if found, err := findBoxDeep(data, boxType, childStart, pos+size); err == nil {
+				return found, nil
+			}
+		}
+		pos += size
+	}
+	return nil, errors.New("box not found")
+}
+
+func boxChildStart(boxType string, offset, headerSize int) (int, bool) {
+	switch boxType {
+	case "moov", "trak", "mdia", "minf", "stbl", "sinf", "schi":
+		return offset + headerSize, true
+	case "stsd":
+		return offset + headerSize + 8, true
+	case "enca", "mp4a", "alac", "fLaC":
+		return offset + headerSize + 28, true
+	default:
+		return 0, false
+	}
+}
+
 func parseStsz(data []byte) []uint32 {
 	if len(data) < 12 {
 		return nil
@@ -163,30 +284,47 @@ func parseStsz(data []byte) []uint32 {
 	return sizes
 }
 
-func parseSenc(data []byte) [][]byte {
+func parseSenc(data []byte, ivSize int) []sodaSencSample {
 	if len(data) < 8 {
 		return nil
 	}
+	if ivSize != 8 && ivSize != 16 {
+		ivSize = 8
+	}
 	flags := binary.BigEndian.Uint32(data[0:4]) & 0x00FFFFFF
 	sampleCount := int(binary.BigEndian.Uint32(data[4:8]))
-	ivs := make([][]byte, 0, sampleCount)
+	samples := make([]sodaSencSample, 0, sampleCount)
 	ptr := 8
 	hasSubsamples := (flags & 0x02) != 0
 	for i := 0; i < sampleCount; i++ {
-		if ptr+8 > len(data) {
+		if ptr+ivSize > len(data) {
 			break
 		}
-		ivs = append(ivs, data[ptr:ptr+8])
-		ptr += 8
+		sample := sodaSencSample{
+			iv: append([]byte(nil), data[ptr:ptr+ivSize]...),
+		}
+		ptr += ivSize
 		if hasSubsamples {
 			if ptr+2 > len(data) {
 				break
 			}
 			subCount := int(binary.BigEndian.Uint16(data[ptr : ptr+2]))
-			ptr += 2 + (subCount * 6)
+			ptr += 2
+			if ptr+subCount*6 > len(data) {
+				break
+			}
+			sample.subsamples = make([]sodaSencSubsample, 0, subCount)
+			for j := 0; j < subCount; j++ {
+				sample.subsamples = append(sample.subsamples, sodaSencSubsample{
+					clear:     binary.BigEndian.Uint16(data[ptr : ptr+2]),
+					encrypted: binary.BigEndian.Uint32(data[ptr+2 : ptr+6]),
+				})
+				ptr += 6
+			}
 		}
+		samples = append(samples, sample)
 	}
-	return ivs
+	return samples
 }
 
 func bitcount(n int) int {

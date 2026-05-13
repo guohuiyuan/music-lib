@@ -127,3 +127,68 @@ func TestSodaDownloadInfoIsPreview(t *testing.T) {
 		t.Fatal("near full-duration stream should not be treated as preview")
 	}
 }
+
+func TestSodaBestPlayerInfoPrefersFullDurationThenHighestQuality(t *testing.T) {
+	list := []sodaPlayerInfo{
+		{MainPlayURL: "preview-lossless", Duration: 60, Quality: "lossless", Format: "flac", Bitrate: 1000000, Size: 12},
+		{MainPlayURL: "full-higher", Duration: 180, Quality: "higher", Format: "m4a", Bitrate: 320000, Size: 20},
+		{MainPlayURL: "full-lossless", Duration: 180, Quality: "lossless", Format: "flac", Bitrate: 960000, Size: 30},
+	}
+
+	best, ok := sodaBestPlayerInfo(list)
+	if !ok {
+		t.Fatal("expected best player info")
+	}
+	if best.MainPlayURL != "full-lossless" {
+		t.Fatalf("best stream = %q, want full-lossless", best.MainPlayURL)
+	}
+}
+
+func TestSodaBestPlayerInfoPrefersLosslessOverSpatial(t *testing.T) {
+	list := []sodaPlayerInfo{
+		{MainPlayURL: "spatial", Duration: 180, Quality: "spatial", Format: "m4a", Bitrate: 324000, Size: 8_000_000},
+		{MainPlayURL: "lossless", Duration: 180, Quality: "lossless", Format: "flac", Bitrate: 1650000, Size: 40_000_000},
+	}
+
+	best, ok := sodaBestPlayerInfo(list)
+	if !ok {
+		t.Fatal("expected best player info")
+	}
+	if best.MainPlayURL != "lossless" {
+		t.Fatalf("best stream = %q, want lossless", best.MainPlayURL)
+	}
+}
+
+func TestSodaBestPlayerInfoPrefersRealHiResOverLossless(t *testing.T) {
+	list := []sodaPlayerInfo{
+		{MainPlayURL: "lossless", Duration: 180, Quality: "lossless", Format: "flac", Bitrate: 960000, Size: 21_000_000},
+		{MainPlayURL: "hires", Duration: 180, Quality: "hi_res", Format: "flac", Bitrate: 2400000, Size: 58_000_000},
+	}
+
+	best, ok := sodaBestPlayerInfo(list)
+	if !ok {
+		t.Fatal("expected best player info")
+	}
+	if best.MainPlayURL != "hires" {
+		t.Fatalf("best stream = %q, want hires", best.MainPlayURL)
+	}
+}
+
+func TestSodaBuildSongFromTrackUsesHighestAudioInfoQuality(t *testing.T) {
+	song := sodaBuildSongFromTrack(sodaTrack{
+		ID:       "1",
+		Name:     "test",
+		Duration: 180000,
+		AudioInfo: sodaTrackAudioInfo{PlayInfoList: []sodaTrackPlayInfo{
+			{MainPlayURL: "higher", Quality: "higher", Format: "m4a", Bitrate: 320000, Size: 9},
+			{MainPlayURL: "lossless", Quality: "lossless", Format: "flac", Bitrate: 960000, Size: 8},
+		}},
+	})
+
+	if song.URL != "lossless" {
+		t.Fatalf("song URL = %q, want lossless", song.URL)
+	}
+	if song.Extra["quality"] != "lossless" {
+		t.Fatalf("song quality extra = %q, want lossless", song.Extra["quality"])
+	}
+}

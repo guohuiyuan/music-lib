@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +51,8 @@ type sodaTrackPlayInfo struct {
 	Size          int64  `json:"size"`
 	Format        string `json:"format"`
 	Bitrate       int    `json:"bitrate"`
+	Quality       string `json:"quality"`
+	Duration      int    `json:"duration"`
 }
 
 type sodaTrackAudioInfo struct {
@@ -736,6 +737,104 @@ func normalizeSodaBitrate(bitrate int) int {
 	return bitrate
 }
 
+func sodaQualityRank(quality, format string, bitrate int) int {
+	q := strings.ToLower(strings.TrimSpace(quality))
+	q = strings.NewReplacer("-", "", "_", "", " ", "").Replace(q)
+	f := strings.ToLower(strings.TrimSpace(format))
+	br := normalizeSodaBitrate(bitrate)
+	isLosslessFormat := strings.Contains(f, "flac") || strings.Contains(f, "alac") || strings.Contains(f, "wav")
+	isLosslessLabel := strings.Contains(q, "lossless") || strings.Contains(q, "flac") ||
+		strings.Contains(q, "sq") || strings.Contains(q, "svip")
+	isHiResLabel := strings.Contains(q, "hires") || strings.Contains(q, "master")
+
+	switch {
+	case isHiResLabel && (isLosslessFormat || br >= 900):
+		return 110
+	case isLosslessLabel || isLosslessFormat || br >= 900:
+		return 100
+	case isHiResLabel:
+		return 90
+	case strings.Contains(q, "atmos") || strings.Contains(q, "dolby") ||
+		strings.Contains(q, "spatial"):
+		return 88
+	case strings.Contains(q, "highest") || strings.Contains(q, "excellent") ||
+		strings.Contains(q, "superhigh") || strings.Contains(q, "hq"):
+		return 80
+	case strings.Contains(q, "higher") || q == "high" || strings.Contains(q, "320"):
+		return 70
+	case strings.Contains(q, "standard") || strings.Contains(q, "medium") ||
+		strings.Contains(q, "normal") || strings.Contains(q, "128"):
+		return 50
+	case strings.Contains(q, "low") || strings.Contains(q, "preview"):
+		return 10
+	}
+
+	switch {
+	case br >= 900:
+		return 100
+	case br >= 320:
+		return 70
+	case br >= 256:
+		return 65
+	case br >= 192:
+		return 55
+	case br >= 128:
+		return 50
+	case br > 0:
+		return 20
+	default:
+		return 0
+	}
+}
+
+func sodaBetterStreamCandidate(
+	aDuration float64, aQuality, aFormat string, aBitrate int, aSize int64,
+	bDuration float64, bQuality, bFormat string, bBitrate int, bSize int64,
+) bool {
+	if aDuration > 0 || bDuration > 0 {
+		if aDuration > bDuration+1 {
+			return true
+		}
+		if bDuration > aDuration+1 {
+			return false
+		}
+	}
+
+	aRank := sodaQualityRank(aQuality, aFormat, aBitrate)
+	bRank := sodaQualityRank(bQuality, bFormat, bBitrate)
+	if aRank != bRank {
+		return aRank > bRank
+	}
+
+	aBR := normalizeSodaBitrate(aBitrate)
+	bBR := normalizeSodaBitrate(bBitrate)
+	if aBR != bBR {
+		return aBR > bBR
+	}
+	if aSize != bSize {
+		return aSize > bSize
+	}
+	return strings.TrimSpace(aQuality) > strings.TrimSpace(bQuality)
+}
+
+func sodaBestTrackPlayInfo(list []sodaTrackPlayInfo) (sodaTrackPlayInfo, bool) {
+	var best sodaTrackPlayInfo
+	ok := false
+	for _, info := range list {
+		if strings.TrimSpace(info.MainPlayURL) == "" && strings.TrimSpace(info.BackupPlayURL) == "" {
+			continue
+		}
+		if !ok || sodaBetterStreamCandidate(
+			float64(info.Duration), info.Quality, info.Format, info.Bitrate, info.Size,
+			float64(best.Duration), best.Quality, best.Format, best.Bitrate, best.Size,
+		) {
+			best = info
+			ok = true
+		}
+	}
+	return best, ok
+}
+
 func sodaTrackDurationSeconds(track sodaTrack) int {
 	if track.Duration > 1000 {
 		return track.Duration / 1000
@@ -774,13 +873,7 @@ func sodaBuildSongFromTrack(track sodaTrack) model.Song {
 		IsVIP:    track.LabelInfo.IsVIP(),
 	}
 
-	if len(track.AudioInfo.PlayInfoList) > 0 {
-		best := track.AudioInfo.PlayInfoList[0]
-		for _, info := range track.AudioInfo.PlayInfoList {
-			if info.Size > best.Size {
-				best = info
-			}
-		}
+	if best, ok := sodaBestTrackPlayInfo(track.AudioInfo.PlayInfoList); ok {
 		downloadURL := strings.TrimSpace(best.MainPlayURL)
 		if downloadURL == "" {
 			downloadURL = strings.TrimSpace(best.BackupPlayURL)
@@ -798,6 +891,9 @@ func sodaBuildSongFromTrack(track sodaTrack) model.Song {
 			}
 			if best.Bitrate > 0 {
 				song.Bitrate = normalizeSodaBitrate(best.Bitrate)
+			}
+			if strings.TrimSpace(best.Quality) != "" {
+				song.Extra["quality"] = strings.TrimSpace(best.Quality)
 			}
 		}
 	}
@@ -832,6 +928,16 @@ func applySodaDownloadInfo(song *model.Song, info *DownloadInfo) {
 		song.Bitrate = normalizeSodaBitrate(info.Bitrate)
 	} else if song.Duration > 0 && info.Size > 0 {
 		song.Bitrate = int(info.Size * 8 / 1000 / int64(song.Duration))
+	}
+	if info.Duration > 0 && song.Duration == 0 {
+		song.Duration = int(info.Duration + 0.5)
+	}
+	if strings.TrimSpace(info.Quality) != "" {
+		if song.Extra == nil {
+			song.Extra = map[string]string{}
+		}
+		song.Extra["quality"] = strings.TrimSpace(info.Quality)
+		song.Extra["download_quality"] = strings.TrimSpace(info.Quality)
 	}
 }
 
@@ -1010,6 +1116,35 @@ type DownloadInfo struct {
 	Quality  string
 }
 
+type sodaPlayerInfo struct {
+	MainPlayURL   string  `json:"MainPlayUrl"`
+	BackupPlayURL string  `json:"BackupPlayUrl"`
+	PlayAuth      string  `json:"PlayAuth"`
+	Size          int64   `json:"Size"`
+	Bitrate       int     `json:"Bitrate"`
+	Format        string  `json:"Format"`
+	Duration      float64 `json:"Duration"`
+	Quality       string  `json:"Quality"`
+}
+
+func sodaBestPlayerInfo(list []sodaPlayerInfo) (sodaPlayerInfo, bool) {
+	var best sodaPlayerInfo
+	ok := false
+	for _, info := range list {
+		if strings.TrimSpace(info.MainPlayURL) == "" && strings.TrimSpace(info.BackupPlayURL) == "" {
+			continue
+		}
+		if !ok || sodaBetterStreamCandidate(
+			info.Duration, info.Quality, info.Format, info.Bitrate, info.Size,
+			best.Duration, best.Quality, best.Format, best.Bitrate, best.Size,
+		) {
+			best = info
+			ok = true
+		}
+	}
+	return best, ok
+}
+
 func sodaWebTrackV2URL(trackID string) string {
 	params := url.Values{}
 	params.Set("track_id", trackID)
@@ -1150,16 +1285,7 @@ func (s *Soda) fetchPlayerInfo(playerInfoURL string) (*DownloadInfo, error) {
 		} `json:"ResponseMetadata"`
 		Result struct {
 			Data struct {
-				PlayInfoList []struct {
-					MainPlayUrl   string  `json:"MainPlayUrl"`
-					BackupPlayUrl string  `json:"BackupPlayUrl"`
-					PlayAuth      string  `json:"PlayAuth"`
-					Size          int64   `json:"Size"`
-					Bitrate       int     `json:"Bitrate"`
-					Format        string  `json:"Format"`
-					Duration      float64 `json:"Duration"`
-					Quality       string  `json:"Quality"`
-				} `json:"PlayInfoList"`
+				PlayInfoList []sodaPlayerInfo `json:"PlayInfoList"`
 			} `json:"Data"`
 		} `json:"Result"`
 	}
@@ -1175,20 +1301,13 @@ func (s *Soda) fetchPlayerInfo(playerInfoURL string) (*DownloadInfo, error) {
 		return nil, errors.New("no audio stream found")
 	}
 
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].Duration != list[j].Duration {
-			return list[i].Duration > list[j].Duration
-		}
-		if list[i].Size != list[j].Size {
-			return list[i].Size > list[j].Size
-		}
-		return list[i].Bitrate > list[j].Bitrate
-	})
-
-	best := list[0]
-	downloadURL := best.MainPlayUrl
+	best, ok := sodaBestPlayerInfo(list)
+	if !ok {
+		return nil, errors.New("invalid download url")
+	}
+	downloadURL := best.MainPlayURL
 	if downloadURL == "" {
-		downloadURL = best.BackupPlayUrl
+		downloadURL = best.BackupPlayURL
 	}
 	if downloadURL == "" {
 		return nil, errors.New("invalid download url")
