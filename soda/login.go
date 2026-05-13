@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -63,12 +62,31 @@ func CheckQRLogin(key string) (*model.QRLoginResult, error) {
 func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	cleanupSodaQRLoginPending()
 
-	body, err := utils.Get(sodaQRCreateAPI+"?"+buildSodaQRCreateQuery(),
-		utils.WithHeader("User-Agent", sodaPassportUA),
-		utils.WithHeader("Accept", "application/json, text/javascript"),
-	)
+	createURL := sodaQRCreateAPI + "?" + buildSodaQRCreateQuery()
+	req, err := http.NewRequest("GET", createURL, nil)
 	if err != nil {
 		return nil, err
+	}
+	req.Header.Set("User-Agent", sodaPassportUA)
+	req.Header.Set("Accept", "application/json, text/javascript")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	httpResp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer httpResp.Body.Close()
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Capture cookies from get_qrcode response (passport_csrf_token etc.)
+	createCookies := make(map[string]string)
+	for _, c := range httpResp.Cookies() {
+		if c.Name != "" && c.Value != "" {
+			createCookies[c.Name] = c.Value
+		}
 	}
 
 	var resp struct {
@@ -95,6 +113,14 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	}
 	if qrURL == "" {
 		qrURL = resp.Data.QRCodeB
+	}
+
+	// Store cookies from get_qrcode so check_qrconnect can use them
+	if len(createCookies) > 0 {
+		rememberSodaQRLoginPending(resp.Data.Token, sodaQRLoginPendingState{
+			Cookies:   createCookies,
+			ExpiresAt: time.Now().Add(10 * time.Minute),
+		})
 	}
 
 	return &model.QRLoginSession{
@@ -130,7 +156,8 @@ func (s *Soda) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 }
 
 func (s *Soda) sodaCheckQRConnect(token string) (*model.QRLoginResult, error) {
-	return s.sodaCheckQRConnectWithState(token, sodaQRLoginPendingState{}, false)
+	pending, _ := getSodaQRLoginPending(token)
+	return s.sodaCheckQRConnectWithState(token, pending, false)
 }
 
 func (s *Soda) sodaCheckQRConnectWithState(token string, state sodaQRLoginPendingState, includeVerifyParams bool) (*model.QRLoginResult, error) {
@@ -148,6 +175,13 @@ func (s *Soda) sodaCheckQRConnectWithState(token string, state sodaQRLoginPendin
 	body, cookies, err := s.postSodaPassportWithCookie(apiURL, params, sodaCookieHeader(s.cookie, state.Cookies))
 	if err != nil {
 		return nil, err
+	}
+
+	// Debug: log raw response
+	if len(body) < 2000 {
+		fmt.Printf("  [DEBUG check_qrconnect] raw=%s\n", string(body))
+	} else {
+		fmt.Printf("  [DEBUG check_qrconnect] raw(first 500)=%s\n", string(body[:500]))
 	}
 
 	var resp sodaQRConnectResponse
