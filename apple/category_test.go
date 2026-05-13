@@ -2,6 +2,7 @@ package apple
 
 import (
 	"fmt"
+	"net/url"
 	"testing"
 )
 
@@ -49,4 +50,33 @@ func TestApplePlaylistCategoriesIntegration(t *testing.T) {
 		t.Fatalf("GetCategoryPlaylists(K-Pop) failed: %v", err)
 	}
 	t.Logf("K-Pop with limit=120: got %d playlists", len(kpop))
+}
+
+
+func TestAppleCuratorPlaylistFields(t *testing.T) {
+	client := New("storefront=cn")
+
+	// Fetch raw response to check if trackCount is in the data
+	params := url.Values{}
+	params.Set("limit", "2")
+	params.Set("offset", "0")
+	params.Set("l", "zh-Hans-CN")
+	body, err := client.ampGet("/v1/catalog/cn/apple-curators/1019399551/playlists", params)
+	if err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+	// Print first 800 chars to see what fields are available
+	if len(body) > 800 {
+		t.Logf("Raw: %s", string(body[:800]))
+	} else {
+		t.Logf("Raw: %s", string(body))
+	}
+
+	playlists, err := client.GetCategoryPlaylists("1019399551", 1, 3)
+	if err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+	for i, p := range playlists {
+		t.Logf("[%d] Name=%q TrackCount=%d Creator=%q", i, p.Name, p.TrackCount, p.Creator)
+	}
 }
