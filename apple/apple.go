@@ -56,6 +56,98 @@ func GetAlbumSongs(id string) ([]model.Song, error)                    { return 
 func GetPlaylistSongs(id string) ([]model.Song, error)                 { return defaultApple.GetPlaylistSongs(id) }
 func ParseAlbum(link string) (*model.Playlist, []model.Song, error)    { return defaultApple.ParseAlbum(link) }
 func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) { return defaultApple.ParsePlaylist(link) }
+func GetPlaylistCategories() ([]model.PlaylistCategory, error)         { return defaultApple.GetPlaylistCategories() }
+func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
+	return defaultApple.GetCategoryPlaylists(categoryID, page, limit)
+}
+
+// Apple Music genre curators (extracted from public search-landing recommendations).
+var appleCuratorCategories = []model.PlaylistCategory{
+	{ID: "1526756058", Name: "热门", Source: "apple"},
+	{ID: "1479949880", Name: "C-Pop", Source: "apple"},
+	{ID: "1019400042", Name: "国语流行", Source: "apple"},
+	{ID: "1019398918", Name: "粤语流行", Source: "apple"},
+	{ID: "1019399540", Name: "国际流行", Source: "apple"},
+	{ID: "1019399551", Name: "K-Pop", Source: "apple"},
+	{ID: "1019399547", Name: "J-Pop", Source: "apple"},
+	{ID: "989061415", Name: "嘻哈/说唱", Source: "apple"},
+	{ID: "1019400044", Name: "R&B", Source: "apple"},
+	{ID: "1019400046", Name: "摇滚", Source: "apple"},
+	{ID: "1019397973", Name: "另类音乐", Source: "apple"},
+	{ID: "976439535", Name: "舞曲", Source: "apple"},
+	{ID: "976439536", Name: "电子", Source: "apple"},
+	{ID: "976439541", Name: "独立音乐", Source: "apple"},
+	{ID: "1019399549", Name: "爵士乐", Source: "apple"},
+	{ID: "1019398924", Name: "古典音乐", Source: "apple"},
+	{ID: "976439528", Name: "蓝调", Source: "apple"},
+	{ID: "976439534", Name: "乡村音乐", Source: "apple"},
+	{ID: "1531542847", Name: "拉丁音乐", Source: "apple"},
+	{ID: "988656348", Name: "非洲音乐", Source: "apple"},
+	{ID: "976439543", Name: "金属乐", Source: "apple"},
+	{ID: "976439550", Name: "朋克乐", Source: "apple"},
+	{ID: "1019400049", Name: "不插电", Source: "apple"},
+	{ID: "1231181168", Name: "影视原声", Source: "apple"},
+	{ID: "1441811365", Name: "DJ 混音精选", Source: "apple"},
+	{ID: "1532467784", Name: "瞩目之星", Source: "apple"},
+	{ID: "1554938339", Name: "年代之声", Source: "apple"},
+	{ID: "1564180390", Name: "空间音频", Source: "apple"},
+	{ID: "989010186", Name: "亲子", Source: "apple"},
+}
+
+// GetPlaylistCategories returns Apple Music genre categories.
+func (a *Apple) GetPlaylistCategories() ([]model.PlaylistCategory, error) {
+	return appleCuratorCategories, nil
+}
+
+// GetCategoryPlaylists returns playlists for a given Apple Music curator category.
+func (a *Apple) GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	const apiMax = 25
+	offset := (page - 1) * limit
+
+	// Curator IDs are from cn storefront; use cn for category playlists.
+	storefront := "cn"
+
+	var all []model.Playlist
+	for len(all) < limit {
+		batchSize := apiMax
+		if limit-len(all) < batchSize {
+			batchSize = limit - len(all)
+		}
+
+		params := url.Values{}
+		params.Set("limit", strconv.Itoa(batchSize))
+		params.Set("offset", strconv.Itoa(offset))
+		params.Set("l", "zh-Hans-CN")
+
+		uri := fmt.Sprintf("/v1/catalog/%s/apple-curators/%s/playlists", storefront, categoryID)
+		body, err := a.ampGet(uri, params)
+		if err != nil {
+			if len(all) > 0 {
+				break // return what we have
+			}
+			return nil, err
+		}
+
+		var resp appleResourceListResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("apple category playlists json error: %w", err)
+		}
+
+		for _, item := range resp.Data {
+			all = append(all, applePlaylistToPlaylist(item))
+		}
+
+		// No more data or no next page
+		if len(resp.Data) < batchSize || resp.Next == "" {
+			break
+		}
+		offset += len(resp.Data)
+	}
+	return all, nil
+}
 
 func (a *Apple) ensureToken() error {
 	if a.token != "" {

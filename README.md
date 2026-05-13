@@ -41,7 +41,7 @@
 | Jamendo    | ❌       | ❌       | ❌       |
 | JOOX       | ❌       | ❌       | ✅       |
 | Bilibili   | ❌       | ✅       | ❌       |
-| Apple Music | ❌      | ❌       | ❌       |
+| Apple Music | ❌      | ❌       | ✅       |
 
 ## Soda 扫码登录
 
