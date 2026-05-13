@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	neteaseQRKeyAPI   = "https://music.163.com/weapi/login/qrcode/unikey?csrf_token="
-	neteaseQRCheckAPI = "https://music.163.com/weapi/login/qrcode/client/login?csrf_token="
+	neteaseQRKeyAPI   = "https://interface.music.163.com/api/login/qrcode/unikey"
+	neteaseQRCheckAPI = "https://interface.music.163.com/api/login/qrcode/client/login"
 )
 
 func CreateQRLogin() (*model.QRLoginSession, error) { return defaultNetease.CreateQRLogin() }
@@ -24,12 +24,13 @@ func CreateQRLogin() (*model.QRLoginSession, error) { return defaultNetease.Crea
 func CheckQRLogin(key string) (*model.QRLoginResult, error) { return defaultNetease.CheckQRLogin(key) }
 
 func (n *Netease) CreateQRLogin() (*model.QRLoginSession, error) {
-	reqData := map[string]interface{}{"type": 1}
+	reqData := map[string]interface{}{"type": 3}
 	reqJSON, _ := json.Marshal(reqData)
-	params, encSecKey := EncryptWeApi(string(reqJSON))
+
 	form := url.Values{}
-	form.Set("params", params)
-	form.Set("encSecKey", encSecKey)
+	for k, v := range flattenJSON(reqJSON) {
+		form.Set(k, v)
+	}
 
 	body, _, err := n.postQRLogin(neteaseQRKeyAPI, form)
 	if err != nil {
@@ -62,12 +63,13 @@ func (n *Netease) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 		return nil, fmt.Errorf("netease qr login key is empty")
 	}
 
-	reqData := map[string]interface{}{"key": key, "type": 1}
+	reqData := map[string]interface{}{"key": key, "type": 3}
 	reqJSON, _ := json.Marshal(reqData)
-	params, encSecKey := EncryptWeApi(string(reqJSON))
+
 	form := url.Values{}
-	form.Set("params", params)
-	form.Set("encSecKey", encSecKey)
+	for k, v := range flattenJSON(reqJSON) {
+		form.Set(k, v)
+	}
 
 	body, cookies, err := n.postQRLogin(neteaseQRCheckAPI, form)
 	if err != nil {
@@ -110,7 +112,7 @@ func (n *Netease) postQRLogin(apiURL string, form url.Values) ([]byte, map[strin
 	if err != nil {
 		return nil, nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/3.0.18.203152")
 	req.Header.Set("Referer", Referer)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	utils.WithRandomIPHeader()(req)
@@ -128,6 +130,16 @@ func (n *Netease) postQRLogin(apiURL string, form url.Values) ([]byte, map[strin
 		return nil, nil, err
 	}
 	return body, responseCookies(resp), nil
+}
+
+func flattenJSON(data []byte) map[string]string {
+	var m map[string]interface{}
+	_ = json.Unmarshal(data, &m)
+	result := make(map[string]string, len(m))
+	for k, v := range m {
+		result[k] = fmt.Sprintf("%v", v)
+	}
+	return result
 }
 
 func mapNeteaseQRStatus(code int) model.QRLoginStatus {
