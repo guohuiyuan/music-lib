@@ -35,11 +35,17 @@
 | 酷我音乐   | ❌       | ❌       | ✅       |
 | 咪咕音乐   | ❌       | ❌       | ✅       |
 | 千千音乐   | ❌       | ❌       | ✅       |
-| 汽水音乐   | ✅       | ❌       | ❌       |
+| 汽水音乐   | ✅       | ✅ 短信验证 | ❌       |
 | 5sing      | ❌       | ❌       | ❌       |
 | Jamendo    | ❌       | ❌       | ❌       |
 | JOOX       | ❌       | ❌       | ✅       |
 | Bilibili   | ❌       | ✅       | ❌       |
+
+## Soda 扫码登录
+
+`soda.CreateQRLogin` 使用汽水音乐 PC 官方 passport 流程创建二维码会话，并把 `scan_login_url` 返回给上层绘制二维码。不要直接展示接口返回的 `qrcode` / `qrcode_index_url`，这些地址在普通 Web 环境打开可能是 404。
+
+`soda.CheckQRLogin` 会轮询 `check_qrconnect`。如果官方要求 MFA，结果里会带 `extra.need_sms=true`、`encrypt_uid` 和 `verify_params`；上层先用 `token|send_code|encrypt_uid|verify_params` 发送短信验证码，再用 `token|validate|encrypt_uid|verify_params|code` 校验。验证码通过后库会再次调用 `check_qrconnect` 换取最终 `sessionid` Cookie。
 
 ## 安装
 
@@ -181,7 +187,7 @@ QQ 音乐个人歌单里可能出现一些内部 ID：
 
 ### 5. 扫码登录
 
-已支持网易云、QQ、QQ 微信、酷狗、Bilibili 的扫码登录。登录成功后会返回 Cookie，建议由上层应用保存到配置或环境变量，不要硬编码在代码里。
+已支持网易云、QQ、QQ 微信、酷狗、Bilibili、汽水音乐的扫码登录。登录成功后会返回 Cookie，建议由上层应用保存到配置或环境变量，不要硬编码在代码里。汽水音乐扫码后如果触发官方短信验证，需要先发送验证码，再提交验证码完成登录。
 
 下面是 QQ 音乐微信扫码登录示例：
 
