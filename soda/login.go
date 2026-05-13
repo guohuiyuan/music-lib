@@ -556,10 +556,6 @@ func buildSodaPassportQuery() string {
 }
 
 func buildSodaPassportBaseValues(jsVersion, jsType string) url.Values {
-	now := time.Now().UnixMilli()
-	deviceID := fmt.Sprintf("%d", now)
-	installID := fmt.Sprintf("%d", now+1)
-
 	params := url.Values{}
 	params.Set("passport_jssdk_version", jsVersion)
 	params.Set("passport_jssdk_type", jsType)
@@ -568,14 +564,34 @@ func buildSodaPassportBaseValues(jsVersion, jsType string) url.Values {
 	params.Set("language", "zh")
 	params.Set("is_new_login", "1")
 	params.Set("is_from_iesaccountsaas", "1")
-	params.Set("device_id", deviceID)
-	params.Set("install_id", installID)
-	params.Set("did", deviceID)
-	params.Set("iid", installID)
+	params.Set("device_id", sodaStableDeviceID())
+	params.Set("install_id", sodaStableInstallID())
+	params.Set("did", sodaStableDeviceID())
+	params.Set("iid", sodaStableInstallID())
 	params.Set("device_platform", "PC")
 	params.Set("version_code", sodaVersionCode)
 	params.Set("biz_trace_id", sodaPassportBizTraceID())
 	return params
+}
+
+var (
+	sodaDeviceIDOnce sync.Once
+	sodaDeviceIDVal  string
+	sodaInstallIDVal string
+)
+
+func sodaStableDeviceID() string {
+	sodaDeviceIDOnce.Do(func() {
+		now := time.Now().UnixMilli()
+		sodaDeviceIDVal = fmt.Sprintf("%d", now)
+		sodaInstallIDVal = fmt.Sprintf("%d", now+1)
+	})
+	return sodaDeviceIDVal
+}
+
+func sodaStableInstallID() string {
+	sodaStableDeviceID() // ensure init
+	return sodaInstallIDVal
 }
 
 func buildSodaPassportNormalValues() url.Values {
