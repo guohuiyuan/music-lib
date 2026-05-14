@@ -51,6 +51,16 @@ func InitMusic(source string, cookie string, registry func(string) MusicProvider
 	mp[source] = registry(cookie)
 }
 
+func DeleteMusic(source string, mp MusicProviderList) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return
+	}
+
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(mp, source)
+}
 func NewMusicProviderList() MusicProviderList {
 	return make(MusicProviderList)
 }
@@ -63,7 +73,7 @@ func (mp MusicProviderList) GetMP(source string) MusicProvider {
 	return mp[source]
 }
 
-func (mp MusicProviderList) IsImplementFullMusicProvider(source string) (FullMusicProvider, bool) {
+func (mp MusicProviderList) IsImpFullMusicProvider(source string) (FullMusicProvider, bool) {
 	m := mp.GetMP(source)
 	if m == nil {
 		return nil, false
@@ -71,7 +81,7 @@ func (mp MusicProviderList) IsImplementFullMusicProvider(source string) (FullMus
 	p, ok := m.(FullMusicProvider)
 	return p, ok
 }
-func (mp MusicProviderList) IsImplementQRLoginProvider(source string) (QRLoginProvider, bool) {
+func (mp MusicProviderList) IsImpQRLoginProvider(source string) (QRLoginProvider, bool) {
 	m := mp.GetMP(source)
 	if m == nil {
 		return nil, false
@@ -80,11 +90,47 @@ func (mp MusicProviderList) IsImplementQRLoginProvider(source string) (QRLoginPr
 	return p, ok
 }
 
-func (mp MusicProviderList) IsImplementUserPlaylistProvider(source string) (UserPlaylistProvider, bool) {
+func (mp MusicProviderList) IsImpUserPlaylistProvider(source string) (UserPlaylistProvider, bool) {
 	m := mp.GetMP(source)
 	if m == nil {
 		return nil, false
 	}
 	p, ok := m.(UserPlaylistProvider)
+	return p, ok
+}
+
+func (mp MusicProviderList) IsImpAlbumProvider(source string) (AlbumProvider, bool) {
+	m := mp.GetMP(source)
+	if m == nil {
+		return nil, false
+	}
+	p, ok := m.(AlbumProvider)
+	return p, ok
+}
+
+func (mp MusicProviderList) IsImpPlaylistProvider(source string) (PlaylistProvider, bool) {
+	m := mp.GetMP(source)
+	if m == nil {
+		return nil, false
+	}
+	p, ok := m.(PlaylistProvider)
+	return p, ok
+}
+
+func (mp MusicProviderList) IsImpRecommendedPlaylistProvider(source string) (RecommendedPlaylistProvider, bool) {
+	m := mp.GetMP(source)
+	if m == nil {
+		return nil, false
+	}
+	p, ok := m.(RecommendedPlaylistProvider)
+	return p, ok
+}
+
+func (mp MusicProviderList) IsImpPlaylistCategoryProvider(source string) (PlaylistCategoryProvider, bool) {
+	m := mp.GetMP(source)
+	if m == nil {
+		return nil, false
+	}
+	p, ok := m.(PlaylistCategoryProvider)
 	return p, ok
 }
