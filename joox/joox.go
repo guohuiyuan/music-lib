@@ -31,6 +31,11 @@ func New(cookie string) *Joox {
 
 var defaultJoox = New(Cookie)
 
+func (b *Joox) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
+
 // [新增]
 // [新增]
 

@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"html"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -26,6 +27,11 @@ func New(cookie string) *Fivesing {
 }
 
 var defaultFivesing = New("")
+
+func (b *Fivesing) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 
 // fetchCreatorName 辅助函数：仅获取创建者名称
 func (f *Fivesing) fetchCreatorName(id string) (string, error) {

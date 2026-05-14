@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -29,6 +30,11 @@ type Qianqian struct {
 func New(cookie string) *Qianqian { return &Qianqian{cookie: cookie} }
 
 var defaultQianqian = New("")
+
+func (b *Qianqian) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 
 type qianqianArtist struct {
 	Name       string `json:"name"`

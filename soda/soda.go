@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -186,6 +187,11 @@ type sodaShareAlbumPage struct {
 func New(cookie string) *Soda { return &Soda{cookie: cookie} }
 
 var defaultSoda = New("")
+
+func (b *Soda) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 
 func (l sodaLabelInfo) IsVIP() bool {
 	if l.OnlyVIPDownload || l.OnlyVIPPlayable {

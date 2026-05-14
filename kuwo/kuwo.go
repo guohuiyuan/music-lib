@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
-	"golang.org/x/text/encoding/simplifiedchinese"
 	"html"
 	"io"
 	"math/rand"
@@ -18,6 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const (
@@ -38,6 +39,11 @@ type Kuwo struct {
 func New(cookie string) *Kuwo { return &Kuwo{cookie: cookie} }
 
 var defaultKuwo = New("")
+
+func (b *Kuwo) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 
 // 酷我的歌单和专辑搜索共用同一个 legacy 路由，仅通过 ft 参数区分类型。
 func (k *Kuwo) searchCollection(keyword, ft string, out interface{}) error {

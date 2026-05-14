@@ -80,6 +80,10 @@ func New(cookie string) *Netease { return &Netease{cookie: cookie} }
 
 var defaultNetease = New("")
 
+func (b *Netease) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 func (n *Netease) vipStatusCacheKey() string {
 	return utils.MD5(n.cookie)
 }

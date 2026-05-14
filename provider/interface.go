@@ -18,11 +18,16 @@ type LyricProvider interface {
 	GetLyrics(s *model.Song) (string, error)
 }
 
+type Cookier interface {
+	WithCookie(string)
+}
+
 type MusicProvider interface {
 	SongSearcher
 	SongParser
 	SongDownloader
 	LyricProvider
+	Cookier
 }
 
 type AlbumProvider interface {

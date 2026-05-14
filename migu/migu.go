@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -26,6 +27,10 @@ func New(cookie string) *Migu { return &Migu{cookie: cookie} }
 
 var defaultMigu = New("")
 
+func (b *Migu) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 func (m *Migu) fetchPlaylistInfo(id string) (*model.Playlist, error) {
 	playlistID := strings.TrimSpace(id)
 	if playlistID == "" {

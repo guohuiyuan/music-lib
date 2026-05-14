@@ -29,6 +29,11 @@ func New(cookie string) *QQ { return &QQ{cookie: cookie} }
 
 var defaultQQ = New("")
 
+func (b *QQ) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
+
 // joinQQNames joins artist names for display.
 func joinQQNames(names []string) string {
 	return strings.Join(names, ", ")

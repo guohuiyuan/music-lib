@@ -36,6 +36,11 @@ func New(cookie string) *Kugou { return &Kugou{cookie: cookie} }
 
 var defaultKugou = New("")
 
+func (b *Kugou) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
+
 // fetchPlaylistDetail [内部复用] 获取歌单详情 (Metadata + Songs)
 // fetchAlbumDetail returns album metadata and songs.
 func (k *Kugou) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {

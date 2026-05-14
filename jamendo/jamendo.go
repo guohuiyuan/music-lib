@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -120,6 +121,11 @@ func New(cookie string) *Jamendo {
 }
 
 var defaultJamendo = New("")
+
+func (b *Jamendo) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 
 func (j *Jamendo) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
 	albumItem, err := j.getAlbumByID(id)

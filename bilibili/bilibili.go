@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -32,6 +33,11 @@ func New(cookie string) *Bilibili {
 }
 
 var defaultBilibili = New("buvid3=2E109C72-251F-3827-FA8E-921FA0D7EC5291319infoc; SESSDATA=your_sessdata;")
+
+func (b *Bilibili) WithCookie(cookie string) {
+	nb := New(cookie)
+	*b = *nb
+}
 
 type bilibiliViewResponse struct {
 	Data struct {

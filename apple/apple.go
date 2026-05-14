@@ -44,19 +44,32 @@ func New(cookie string) *Apple {
 
 var defaultApple = New("")
 
+func (a *Apple) WithCookie(cookie string) {
+	na := New(cookie)
+	*a = *na
+}
+
 // Package-level convenience functions delegating to defaultApple.
 
-func Search(keyword string) ([]model.Song, error)                      { return defaultApple.Search(keyword) }
-func GetDownloadURL(s *model.Song) (string, error)                     { return defaultApple.GetDownloadURL(s) }
-func GetLyrics(s *model.Song) (string, error)                          { return defaultApple.GetLyrics(s) }
-func Parse(link string) (*model.Song, error)                           { return defaultApple.Parse(link) }
-func SearchAlbum(keyword string) ([]model.Playlist, error)             { return defaultApple.SearchAlbum(keyword) }
-func SearchPlaylist(keyword string) ([]model.Playlist, error)          { return defaultApple.SearchPlaylist(keyword) }
-func GetAlbumSongs(id string) ([]model.Song, error)                    { return defaultApple.GetAlbumSongs(id) }
-func GetPlaylistSongs(id string) ([]model.Song, error)                 { return defaultApple.GetPlaylistSongs(id) }
-func ParseAlbum(link string) (*model.Playlist, []model.Song, error)    { return defaultApple.ParseAlbum(link) }
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) { return defaultApple.ParsePlaylist(link) }
-func GetPlaylistCategories() ([]model.PlaylistCategory, error)         { return defaultApple.GetPlaylistCategories() }
+func Search(keyword string) ([]model.Song, error)          { return defaultApple.Search(keyword) }
+func GetDownloadURL(s *model.Song) (string, error)         { return defaultApple.GetDownloadURL(s) }
+func GetLyrics(s *model.Song) (string, error)              { return defaultApple.GetLyrics(s) }
+func Parse(link string) (*model.Song, error)               { return defaultApple.Parse(link) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) { return defaultApple.SearchAlbum(keyword) }
+func SearchPlaylist(keyword string) ([]model.Playlist, error) {
+	return defaultApple.SearchPlaylist(keyword)
+}
+func GetAlbumSongs(id string) ([]model.Song, error)    { return defaultApple.GetAlbumSongs(id) }
+func GetPlaylistSongs(id string) ([]model.Song, error) { return defaultApple.GetPlaylistSongs(id) }
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultApple.ParseAlbum(link)
+}
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
+	return defaultApple.ParsePlaylist(link)
+}
+func GetPlaylistCategories() ([]model.PlaylistCategory, error) {
+	return defaultApple.GetPlaylistCategories()
+}
 func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
 	return defaultApple.GetCategoryPlaylists(categoryID, page, limit)
 }
