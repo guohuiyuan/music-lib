@@ -30,10 +30,13 @@ func TestExtractSodaMFAFields(t *testing.T) {
 	}
 
 	params := extractSodaMFAVerifyParams(body, map[string]string{"passport_mfa_token": "mfa"})
-	for _, key := range []string{"std_verify_flow_id", "std_verify_token", "std_verify_scene", "passport_mfa_token"} {
+	for _, key := range []string{"std_verify_flow_id", "std_verify_token", "std_verify_scene"} {
 		if params == "" || !containsQueryParam(params, key) {
 			t.Fatalf("verify params %q missing %s", params, key)
 		}
+	}
+	if containsQueryParam(params, "passport_mfa_token") {
+		t.Fatalf("verify params should not include passport_mfa_token: %q", params)
 	}
 }
 
@@ -158,7 +161,8 @@ func TestSodaQRConnectResultVerifyAccountFlowTriggersMFA(t *testing.T) {
 				"std_verify_way": ""
 			},
 			"verify_ways": [
-				{"act_type":"22","mobile":"159******49","verify_way":"mobile_sms_verify"}
+				{"act_type":"22","mobile":"159******49","verify_way":"mobile_sms_verify"},
+				{"channel_mobile":"9515211003","mobile":"159******49","sms_content":"YZ","verify_way":"mobile_up_sms_verify"}
 			]
 		},
 		"message": "error"
@@ -183,12 +187,21 @@ func TestSodaQRConnectResultVerifyAccountFlowTriggersMFA(t *testing.T) {
 	if !containsQueryParam(result.Extra["verify_params"], "passport_mfa_retry_tag") {
 		t.Fatalf("verify_params missing passport_mfa_retry_tag: %q", result.Extra["verify_params"])
 	}
+	if result.Extra["need_user_sms"] != "true" || result.Extra["sms_mode"] != "up" {
+		t.Fatalf("up sms flags missing: %#v", result.Extra)
+	}
+	if result.Extra["up_sms_mobile"] != "9515211003" || result.Extra["up_sms_content"] != "YZ" {
+		t.Fatalf("up sms instruction mismatch: %#v", result.Extra)
+	}
 	state, ok := getSodaQRLoginPending(token)
 	if !ok {
 		t.Fatal("MFA pending state was not recorded")
 	}
 	if state.EncryptUID == "" {
 		t.Fatal("pending state missing encrypt_uid")
+	}
+	if state.UpSMSMobile != "9515211003" || state.UpSMSContent != "YZ" {
+		t.Fatalf("pending up sms mismatch: %#v", state)
 	}
 	clearSodaQRLoginPending(token)
 }

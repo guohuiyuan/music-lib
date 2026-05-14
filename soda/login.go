@@ -16,23 +16,27 @@ import (
 )
 
 const (
-	sodaQRCreateAPI   = "https://api.qishui.com/passport/web/get_qrcode/"
-	sodaQRCheckAPI    = "https://api.qishui.com/passport/web/check_qrconnect/"
-	sodaSendCodeAPI   = "https://api.qishui.com/passport/web/send_code/"
-	sodaValidateAPI   = "https://api.qishui.com/passport/web/validate_code/"
-	sodaPassportUA    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) SodaMusic/3.1.0 Chrome/136.0.7103.59 Electron/36.4.0-rs.22.release.main.1 TTElectron/36.4.0-rs.22.release.main.1 Safari/537.36"
-	sodaPassportJSVer = "2.4.13"
-	sodaPassportAid   = "386088"
-	sodaVersionCode   = "3.3.0"
-	sodaPZT           = "3.3.5"
-	sodaPVer          = "1.0.29"
-	sodaPBD           = "1.0.0.41"
+	sodaQRCreateAPI    = "https://api.qishui.com/passport/web/get_qrcode/"
+	sodaQRCheckAPI     = "https://api.qishui.com/passport/web/check_qrconnect/"
+	sodaSendCodeAPI    = "https://api.qishui.com/passport/web/send_code/"
+	sodaValidateAPI    = "https://api.qishui.com/passport/web/validate_code/"
+	sodaUpSMSVerifyAPI = "https://api.qishui.com/passport/upsms/verify/"
+	sodaPassportUA     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) SodaMusic/3.1.0 Chrome/136.0.7103.59 Electron/36.4.0-rs.22.release.main.1 TTElectron/36.4.0-rs.22.release.main.1 Safari/537.36"
+	sodaPassportJSVer  = "2.4.13"
+	sodaPassportAid    = "386088"
+	sodaVersionCode    = "3.3.0"
+	sodaPZT            = "3.3.5"
+	sodaPVer           = "1.0.29"
+	sodaPBD            = "1.0.0.41"
 )
 
 type sodaQRLoginPendingState struct {
 	Cookies      map[string]string
 	EncryptUID   string
 	VerifyParams string
+	Mobile       string
+	UpSMSMobile  string
+	UpSMSContent string
 	ExpiresAt    time.Time
 }
 
@@ -165,6 +169,7 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	}
 
 	scanURL := sodaScanLoginURL(resp.Data.Token)
+	imageURL := sodaQRCodeImageURL(resp.Data.QRCode)
 
 	// Debug: print all QR URLs from server
 	fmt.Printf("[DEBUG get_qrcode] token=%s\n", resp.Data.Token)
@@ -172,13 +177,13 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	fmt.Printf("[DEBUG get_qrcode] qrcode_index_url=%s\n", resp.Data.QRCodeB)
 	fmt.Printf("[DEBUG get_qrcode] custom_scan_url=%s\n", scanURL)
 
-	// Prefer short scan_login_url for local QR rendering
-	qrURL := strings.TrimSpace(scanURL)
+	// Prefer official qrcode_index_url for Soda PC QR login.
+	qrURL := strings.TrimSpace(resp.Data.QRCodeB)
 	if qrURL == "" {
 		qrURL = strings.TrimSpace(resp.Data.WebURL)
 	}
 	if qrURL == "" {
-		qrURL = strings.TrimSpace(resp.Data.QRCodeB)
+		qrURL = strings.TrimSpace(scanURL)
 	}
 
 	// Store cookies from get_qrcode so check_qrconnect can use them
@@ -193,6 +198,7 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 		Source:    "soda",
 		Key:       resp.Data.Token,
 		URL:       qrURL,
+		ImageURL:  imageURL,
 		ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
 		Extra: map[string]string{
 			"token":             resp.Data.Token,
@@ -200,7 +206,7 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 			"scan_login_url":    scanURL,
 			"is_frontier":       strconvBool(resp.Data.Frontier),
 			"raw_qrcode_image":  strconvBool(resp.Data.QRCode != ""),
-			"display_qr_source": "scan_login_url",
+			"display_qr_source": "qrcode_index_url",
 		},
 	}, nil
 }
@@ -214,6 +220,8 @@ func (s *Soda) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 	switch {
 	case len(parts) >= 5 && parts[1] == "validate":
 		return s.sodaValidateCode(parts[0], parts[2], parts[3], parts[4])
+	case len(parts) >= 4 && parts[1] == "up_sms":
+		return s.sodaVerifyUpSMS(parts[0], parts[2], parts[3])
 	case len(parts) >= 4 && parts[1] == "send_code":
 		return s.sodaSendCode(parts[0], parts[2], parts[3])
 	default:
@@ -234,7 +242,7 @@ func (s *Soda) sodaCheckQRConnect(token string) (*model.QRLoginResult, error) {
 // hitting Soda again and tripping error_code=7.
 func sodaThrottledResult(token string, pending sodaQRLoginPendingState) *model.QRLoginResult {
 	if pending.EncryptUID != "" {
-		return &model.QRLoginResult{
+		result := &model.QRLoginResult{
 			Source:  "soda",
 			Key:     strings.TrimSpace(token),
 			Status:  model.QRLoginStatusScanned,
@@ -246,13 +254,25 @@ func sodaThrottledResult(token string, pending sodaQRLoginPendingState) *model.Q
 				"throttled":     "true",
 			},
 		}
+		if pending.Mobile != "" {
+			result.Extra["mobile"] = pending.Mobile
+		}
+		if pending.UpSMSMobile != "" || pending.UpSMSContent != "" {
+			result.Extra["sms_mode"] = "up"
+			result.Extra["need_user_sms"] = "true"
+			result.Extra["up_sms_mobile"] = pending.UpSMSMobile
+			result.Extra["up_sms_content"] = pending.UpSMSContent
+		}
+		return result
 	}
 	return &model.QRLoginResult{
 		Source:  "soda",
 		Key:     strings.TrimSpace(token),
 		Status:  model.QRLoginStatusWaiting,
-		Message: "正在等待扫码...",
-		Extra:   map[string]string{"throttled": "true"},
+		Message: "等待扫码确认",
+		Extra: map[string]string{
+			"throttled": "true",
+		},
 	}
 }
 
@@ -397,23 +417,34 @@ func (s *Soda) sodaMFARequiredResult(token string, body []byte, cookies map[stri
 		return nil, false
 	}
 
-	rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
-		Cookies:      cookies,
-		EncryptUID:   encryptUID,
-		VerifyParams: verifyParams,
-		ExpiresAt:    time.Now().Add(10 * time.Minute),
-	})
-
 	mobile := extractSodaMFAField(body, "mobile")
 	if mobile == "" {
 		mobile = strings.TrimSpace(resp.Data.UserData.Mobile)
 	}
+	upSMSMobile := extractSodaMFAField(body, "channel_mobile")
+	upSMSContent := extractSodaMFAField(body, "sms_content")
+
+	rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
+		Cookies:      cookies,
+		EncryptUID:   encryptUID,
+		VerifyParams: verifyParams,
+		Mobile:       mobile,
+		UpSMSMobile:  upSMSMobile,
+		UpSMSContent: upSMSContent,
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	})
+
 	extra := sodaQRConnectExtra(resp)
 	extra["need_sms"] = "true"
 	extra["encrypt_uid"] = encryptUID
 	extra["verify_params"] = verifyParams
-	extra["mfa_token"] = mfaToken
 	extra["mobile"] = mobile
+	if upSMSMobile != "" || upSMSContent != "" {
+		extra["sms_mode"] = "up"
+		extra["need_user_sms"] = "true"
+		extra["up_sms_mobile"] = upSMSMobile
+		extra["up_sms_content"] = upSMSContent
+	}
 
 	return &model.QRLoginResult{
 		Source:  "soda",
@@ -507,6 +538,80 @@ func (s *Soda) sodaSendCode(token, encryptUID, verifyParams string) (*model.QRLo
 	return result, nil
 }
 
+func (s *Soda) sodaVerifyUpSMS(token, encryptUID, verifyParams string) (*model.QRLoginResult, error) {
+	pending, _ := getSodaQRLoginPending(token)
+	if strings.TrimSpace(encryptUID) == "" {
+		encryptUID = pending.EncryptUID
+	}
+	if strings.TrimSpace(verifyParams) == "" {
+		verifyParams = pending.VerifyParams
+	}
+	if strings.TrimSpace(encryptUID) == "" {
+		return &model.QRLoginResult{
+			Source:  "soda",
+			Key:     token,
+			Status:  model.QRLoginStatusFailed,
+			Message: "缺少短信验证参数，请刷新二维码重试",
+		}, nil
+	}
+
+	params := url.Values{}
+	params.Set("encrypt_uid", encryptUID)
+	params.Set("verify_ticket", "")
+	params.Set("copywriting_key", "qr_connect")
+	params.Set("ies_safety_diversion_tag", "mfa")
+	params.Set("new_verify_flow", "")
+	params.Set("aid", sodaPassportAid)
+	params.Set("new_authn_sdk_version", "1.0.0.404-web")
+	applySodaVerifyParams(params, verifyParams)
+	params.Set("std_verify_way", "mobile_up_sms_verify")
+
+	apiURL := sodaUpSMSVerifyAPI + "?" + buildSodaPassportLiteQuery()
+	body, cookies, err := s.postSodaPassportWithCookie(apiURL, params, sodaCookieHeader(s.cookie, pending.Cookies))
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			Registered bool   `json:"registered"`
+			Ticket     string `json:"ticket"`
+			ErrorCode  int    `json:"error_code"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("soda upsms verify json error: %w", err)
+	}
+	if (!resp.Data.Registered && resp.Data.Ticket == "") || !sodaMessageOK(resp.Message) {
+		return &model.QRLoginResult{
+			Source:  "soda",
+			Key:     token,
+			Status:  model.QRLoginStatusFailed,
+			Message: "上行短信确认失败: " + resp.Message,
+		}, nil
+	}
+
+	mergedCookies := mergeSodaCookies(pending.Cookies, cookies)
+	pending.Cookies = mergedCookies
+	pending.EncryptUID = encryptUID
+	pending.VerifyParams = verifyParams
+	rememberSodaQRLoginPending(token, pending)
+
+	finalResult, err := s.sodaCheckQRConnectWithState(token, pending, true)
+	if err != nil {
+		return nil, err
+	}
+	if finalResult.Status == model.QRLoginStatusSuccess {
+		return finalResult, nil
+	}
+	finalResult.Status = model.QRLoginStatusFailed
+	if strings.TrimSpace(finalResult.Message) == "" || finalResult.Message == "success" {
+		finalResult.Message = "上行短信已确认，但汽水未下发登录 Cookie"
+	}
+	return finalResult, nil
+}
+
 func (s *Soda) sodaValidateCode(token, encryptUID, verifyParams, code string) (*model.QRLoginResult, error) {
 	pending, _ := getSodaQRLoginPending(token)
 	if strings.TrimSpace(encryptUID) == "" {
@@ -597,7 +702,7 @@ func (s *Soda) postSodaPassportWithCookie(apiURL string, form url.Values, cookie
 	}
 	req.Header.Set("User-Agent", sodaPassportUA)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if strings.Contains(apiURL, "/send_code/") || strings.Contains(apiURL, "/validate_code/") {
+	if strings.Contains(apiURL, "/send_code/") || strings.Contains(apiURL, "/validate_code/") || strings.Contains(apiURL, "/upsms/verify/") {
 		req.Header.Set("Accept", "application/json, text/plain, */*")
 	} else {
 		req.Header.Set("Accept", "application/json, text/javascript")
@@ -822,9 +927,6 @@ func extractSodaMFAVerifyParams(body []byte, cookies map[string]string) string {
 
 	params := url.Values{}
 	collectSodaVerifyParams(raw, params)
-	if mfa := cookies["passport_mfa_token"]; mfa != "" {
-		params.Set("passport_mfa_token", mfa)
-	}
 	return params.Encode()
 }
 
@@ -1007,6 +1109,17 @@ func strconvBool(value bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func sodaQRCodeImageURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "data:") || strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return raw
+	}
+	return "data:image/png;base64," + raw
 }
 
 func sodaJoinCookies(cookies map[string]string) string {

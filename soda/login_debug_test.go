@@ -41,10 +41,14 @@ func TestSodaQRLoginDebug(t *testing.T) {
 	fmt.Printf("URL已写入 %s\n", qrURLPath)
 
 	qrPagePath := filepath.Join(outputDir, "soda_qr.html")
-	if err := writeLocalQRCodeFiles(outputDir, session.URL); err != nil {
+	if err := writeLocalQRCodeFiles(outputDir, session.URL, session.ImageURL); err != nil {
 		fmt.Printf("二维码文件生成失败: %v\n", err)
 	} else {
-		fmt.Printf("二维码已写入 %s 和 %s\n", filepath.Join(outputDir, "soda_qr.svg"), qrPagePath)
+		if strings.TrimSpace(session.ImageURL) != "" {
+			fmt.Printf("官方二维码页面已写入 %s\n", qrPagePath)
+		} else {
+			fmt.Printf("二维码已写入 %s 和 %s\n", filepath.Join(outputDir, "soda_qr.svg"), qrPagePath)
+		}
 		if os.Getenv("SODA_QR_OPEN") == "1" {
 			openLocalQRCodePage(qrPagePath)
 		}
@@ -122,6 +126,34 @@ func handleMFADebug(t *testing.T, token string, result *model.QRLoginResult) {
 	if result.Extra != nil {
 		fmt.Printf("手机号: %s\n", result.Extra["mobile"])
 	}
+	if result.Extra != nil && (result.Extra["need_user_sms"] == "true" || result.Extra["sms_mode"] == "up") {
+		target := strings.TrimSpace(result.Extra["up_sms_mobile"])
+		content := strings.TrimSpace(result.Extra["up_sms_content"])
+		if target == "" {
+			target = "指定号码"
+		}
+		if content == "" {
+			content = "指定内容"
+		}
+		fmt.Printf("请使用绑定手机号发送短信 %s 到 %s\n", content, target)
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("发送完成后按 Enter 确认...")
+		if _, err := reader.ReadString('\n'); err != nil {
+			t.Fatalf("等待确认失败: %v", err)
+		}
+
+		confirmRes, err := CheckQRLogin(token + "|up_sms||")
+		if err != nil {
+			t.Fatalf("up_sms 失败: %v", err)
+		}
+		j, _ := json.Marshal(confirmRes)
+		fmt.Printf("up_sms: %s\n", string(j))
+		if confirmRes.Status == model.QRLoginStatusSuccess {
+			fmt.Printf("\n✅ 登录成功! Cookie长度=%d\n", len(confirmRes.Cookie))
+			return
+		}
+		t.Fatalf("未成功: %s", confirmRes.Message)
+	}
 
 	fmt.Println("调用 send_code 发送验证码...")
 	sendRes, err := CheckQRLogin(token + "|send_code||")
@@ -193,7 +225,11 @@ var qrVersionSpecs = []qrSpec{
 	{data: 136, ecc: 18, blocks: 2, align: []int{6, 34}},
 }
 
-func writeLocalQRCodeFiles(dir, text string) error {
+func writeLocalQRCodeFiles(dir, text, imageURL string) error {
+	if strings.TrimSpace(imageURL) != "" {
+		page := localQRCodeHTML(imageURL, text)
+		return os.WriteFile(filepath.Join(dir, "soda_qr.html"), []byte(page), 0644)
+	}
 	qr, err := buildQRMatrix(text)
 	if err != nil {
 		return err
@@ -202,7 +238,12 @@ func writeLocalQRCodeFiles(dir, text string) error {
 	if err := os.WriteFile(filepath.Join(dir, "soda_qr.svg"), []byte(svg), 0644); err != nil {
 		return err
 	}
-	page := `<!doctype html>
+	page := localQRCodeHTML("soda_qr.svg", text)
+	return os.WriteFile(filepath.Join(dir, "soda_qr.html"), []byte(page), 0644)
+}
+
+func localQRCodeHTML(imageSrc, text string) string {
+	return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -218,13 +259,12 @@ code{display:block;margin-top:14px;padding:10px;border-radius:10px;background:#f
 <body>
 <div class="card">
 <h2>汽水音乐扫码登录</h2>
-<img src="soda_qr.svg" alt="汽水音乐扫码登录二维码">
+<img src="` + html.EscapeString(imageSrc) + `" alt="汽水音乐扫码登录二维码">
 <p>请使用汽水音乐 App 扫码并在手机上确认登录。</p>
 <code>` + html.EscapeString(text) + `</code>
 </div>
 </body>
 </html>`
-	return os.WriteFile(filepath.Join(dir, "soda_qr.html"), []byte(page), 0644)
 }
 
 func openLocalQRCodePage(name string) {
