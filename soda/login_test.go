@@ -60,6 +60,18 @@ func TestSodaQRLoginPendingStateMergesCookies(t *testing.T) {
 	clearSodaQRLoginPending(token)
 }
 
+func TestSodaQRCodeImageURL(t *testing.T) {
+	dataURI := "data:image/png;base64,iVBORw0KGgo="
+	if got := sodaQRCodeImageURL(dataURI); got != dataURI {
+		t.Fatalf("data URI should pass through: %q", got)
+	}
+
+	rawBase64 := "iVBORw0KGgo="
+	if got := sodaQRCodeImageURL(rawBase64); got != "data:image/png;base64,"+rawBase64 {
+		t.Fatalf("raw base64 should be wrapped: %q", got)
+	}
+}
+
 func TestSodaQRConnectResultConfirmedWithSessionCookieSucceeds(t *testing.T) {
 	token := "unit-token"
 	var resp sodaQRConnectResponse
@@ -77,6 +89,41 @@ func TestSodaQRConnectResultConfirmedWithSessionCookieSucceeds(t *testing.T) {
 	if !strings.Contains(result.Cookie, "sessionid=sid") {
 		t.Fatalf("cookie missing sessionid: %q", result.Cookie)
 	}
+}
+
+func TestSodaQRConnectResultScannedStateDoesNotRegressToWaiting(t *testing.T) {
+	token := "unit-token-scanned-cache"
+	clearSodaQRLoginPending(token)
+
+	var scannedResp sodaQRConnectResponse
+	scannedResp.Data.Status = "scanned"
+	scannedResp.Message = "success"
+	result := (&Soda{}).sodaQRConnectResult(token, []byte(`{"data":{"status":"scanned"},"message":"success"}`), nil, scannedResp)
+	if result.Status != model.QRLoginStatusScanned {
+		t.Fatalf("status = %s, want scanned", result.Status)
+	}
+
+	state, ok := getSodaQRLoginPending(token)
+	if !ok {
+		t.Fatal("scanned state was not cached")
+	}
+	throttled := sodaThrottledResult(token, state)
+	if throttled.Status != model.QRLoginStatusScanned {
+		t.Fatalf("throttled status = %s, want scanned", throttled.Status)
+	}
+	if throttled.Message == "等待扫码确认" {
+		t.Fatalf("throttled message regressed to waiting: %q", throttled.Message)
+	}
+
+	var waitingResp sodaQRConnectResponse
+	waitingResp.Data.Status = "new"
+	waitingResp.Message = "success"
+	result = (&Soda{}).sodaQRConnectResult(token, []byte(`{"data":{"status":"new"},"message":"success"}`), nil, waitingResp)
+	if result.Status != model.QRLoginStatusScanned {
+		t.Fatalf("cached scanned status regressed to %s", result.Status)
+	}
+
+	clearSodaQRLoginPending(token)
 }
 
 func TestSodaQRConnectResultErrorIncludesAPIStatus(t *testing.T) {
@@ -187,8 +234,8 @@ func TestSodaQRConnectResultVerifyAccountFlowTriggersMFA(t *testing.T) {
 	if !containsQueryParam(result.Extra["verify_params"], "passport_mfa_retry_tag") {
 		t.Fatalf("verify_params missing passport_mfa_retry_tag: %q", result.Extra["verify_params"])
 	}
-	if result.Extra["need_user_sms"] != "true" || result.Extra["sms_mode"] != "up" {
-		t.Fatalf("up sms flags missing: %#v", result.Extra)
+	if result.Extra["sms_mode"] != "sms" || result.Extra["can_up_sms"] != "true" {
+		t.Fatalf("sms mode should prefer normal sms with up-sms fallback: %#v", result.Extra)
 	}
 	if result.Extra["up_sms_mobile"] != "9515211003" || result.Extra["up_sms_content"] != "YZ" {
 		t.Fatalf("up sms instruction mismatch: %#v", result.Extra)
@@ -325,6 +372,22 @@ func TestSodaQRConnectFormMatchesOfficialPCShape(t *testing.T) {
 	}
 	if form.Get("aid") != "" || form.Get("passport_jssdk_version") != "" {
 		t.Fatalf("check form should not duplicate query params: %s", form.Encode())
+	}
+
+	mfaForm := sodaQRConnectForm("token")
+	applySodaVerifyParams(mfaForm, "passport_mfa_retry_tag=1&std_verify_flow_id=5eb1ab29-7c00-48a3-8b57-84f1ae7c8a8e.login&std_verify_scene=account_login&std_verify_template=ato&std_verify_token=e3e9d17b-50dc-11f1-8bb9-043f72b9dba6_hl&std_verify_type=MFA&std_verify_way=")
+	for _, key := range []string{
+		"passport_mfa_retry_tag=1",
+		"std_verify_flow_id=5eb1ab29-7c00-48a3-8b57-84f1ae7c8a8e.login",
+		"std_verify_scene=account_login",
+		"std_verify_template=ato",
+		"std_verify_token=e3e9d17b-50dc-11f1-8bb9-043f72b9dba6_hl",
+		"std_verify_type=MFA",
+		"std_verify_way=",
+	} {
+		if !strings.Contains(mfaForm.Encode(), key) {
+			t.Fatalf("mfa check form %q missing %s", mfaForm.Encode(), key)
+		}
 	}
 
 	liteQuery := buildSodaPassportLiteQuery()

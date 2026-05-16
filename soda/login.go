@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +39,10 @@ type sodaQRLoginPendingState struct {
 	Mobile       string
 	UpSMSMobile  string
 	UpSMSContent string
+	SMSMode      string
+	CanUpSMS     bool
+	Status       model.QRLoginStatus
+	Message      string
 	ExpiresAt    time.Time
 }
 
@@ -60,7 +66,7 @@ var (
 )
 
 const (
-	sodaQRPollMinInterval  = 5 * time.Second
+	sodaQRPollMinInterval  = 2 * time.Second
 	sodaQRRateLimitBackoff = 60 * time.Second
 )
 
@@ -170,12 +176,15 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 
 	scanURL := sodaScanLoginURL(resp.Data.Token)
 	imageURL := sodaQRCodeImageURL(resp.Data.QRCode)
+	displayQRSource := "qrcode_index_url"
+	if imageURL != "" {
+		displayQRSource = "qrcode_base64"
+	}
 
-	// Debug: print all QR URLs from server
-	fmt.Printf("[DEBUG get_qrcode] token=%s\n", resp.Data.Token)
-	fmt.Printf("[DEBUG get_qrcode] web_url=%s\n", resp.Data.WebURL)
-	fmt.Printf("[DEBUG get_qrcode] qrcode_index_url=%s\n", resp.Data.QRCodeB)
-	fmt.Printf("[DEBUG get_qrcode] custom_scan_url=%s\n", scanURL)
+	sodaQRDebugLogf("[DEBUG get_qrcode] token=%s\n", sodaRedactValue(resp.Data.Token))
+	sodaQRDebugLogf("[DEBUG get_qrcode] web_url=%s\n", sodaRedactURLSecrets(resp.Data.WebURL))
+	sodaQRDebugLogf("[DEBUG get_qrcode] qrcode_index_url=%s\n", sodaRedactURLSecrets(resp.Data.QRCodeB))
+	sodaQRDebugLogf("[DEBUG get_qrcode] custom_scan_url=%s\n", sodaRedactURLSecrets(scanURL))
 
 	// Prefer official qrcode_index_url for Soda PC QR login.
 	qrURL := strings.TrimSpace(resp.Data.QRCodeB)
@@ -206,7 +215,7 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 			"scan_login_url":    scanURL,
 			"is_frontier":       strconvBool(resp.Data.Frontier),
 			"raw_qrcode_image":  strconvBool(resp.Data.QRCode != ""),
-			"display_qr_source": "qrcode_index_url",
+			"display_qr_source": displayQRSource,
 		},
 	}, nil
 }
@@ -258,12 +267,36 @@ func sodaThrottledResult(token string, pending sodaQRLoginPendingState) *model.Q
 			result.Extra["mobile"] = pending.Mobile
 		}
 		if pending.UpSMSMobile != "" || pending.UpSMSContent != "" {
-			result.Extra["sms_mode"] = "up"
-			result.Extra["need_user_sms"] = "true"
 			result.Extra["up_sms_mobile"] = pending.UpSMSMobile
 			result.Extra["up_sms_content"] = pending.UpSMSContent
+			switch pending.SMSMode {
+			case "sms":
+				result.Extra["sms_mode"] = "sms"
+				if pending.CanUpSMS {
+					result.Extra["can_up_sms"] = "true"
+				}
+			default:
+				result.Extra["sms_mode"] = "up"
+				result.Extra["need_user_sms"] = "true"
+			}
 		}
 		return result
+	}
+	if pending.Status == model.QRLoginStatusScanned {
+		message := strings.TrimSpace(pending.Message)
+		if message == "" {
+			message = "已扫码，请在手机上确认"
+		}
+		return &model.QRLoginResult{
+			Source:  "soda",
+			Key:     strings.TrimSpace(token),
+			Status:  model.QRLoginStatusScanned,
+			Message: message,
+			Extra: map[string]string{
+				"throttled":     "true",
+				"cached_status": "true",
+			},
+		}
 	}
 	return &model.QRLoginResult{
 		Source:  "soda",
@@ -293,11 +326,10 @@ func (s *Soda) sodaCheckQRConnectWithState(token string, state sodaQRLoginPendin
 		return nil, err
 	}
 
-	// Debug: log raw response
 	if len(body) < 2000 {
-		fmt.Printf("  [DEBUG check_qrconnect] raw=%s\n", string(body))
+		sodaQRDebugLogf("  [DEBUG check_qrconnect] raw=%s\n", string(body))
 	} else {
-		fmt.Printf("  [DEBUG check_qrconnect] raw(first 500)=%s\n", string(body[:500]))
+		sodaQRDebugLogf("  [DEBUG check_qrconnect] raw(first 500)=%s\n", string(body[:500]))
 	}
 
 	var resp sodaQRConnectResponse
@@ -325,7 +357,9 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 			throttled.Extra = map[string]string{}
 		}
 		throttled.Extra["rate_limited"] = "true"
-		throttled.Message = "正在等待汽水接口冷却..."
+		if throttled.Status == model.QRLoginStatusWaiting {
+			throttled.Message = "正在等待汽水接口冷却..."
+		}
 		return throttled
 	}
 
@@ -366,6 +400,8 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 		result.Message = "已扫码确认，等待登录结果"
 		rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
 			Cookies:   mergeSodaCookies(cookies),
+			Status:    model.QRLoginStatusScanned,
+			Message:   result.Message,
 			ExpiresAt: time.Now().Add(10 * time.Minute),
 		})
 	case "new", "":
@@ -373,13 +409,23 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 			result.Status = model.QRLoginStatusFailed
 			result.Message = sodaQRConnectErrorMessage(resp)
 			result.Extra = sodaQRConnectExtra(resp)
+		} else if pending, ok := getSodaQRLoginPending(token); ok && pending.Status == model.QRLoginStatusScanned {
+			result.Status = model.QRLoginStatusScanned
+			result.Message = strings.TrimSpace(pending.Message)
+			if result.Message == "" {
+				result.Message = "已扫码，请在手机上确认"
+			}
+			result.Extra = map[string]string{"cached_status": "true"}
 		} else {
 			result.Status = model.QRLoginStatusWaiting
 		}
 	case "scanned":
 		result.Status = model.QRLoginStatusScanned
+		result.Message = "已扫码，请在手机上确认"
 		rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
 			Cookies:   mergeSodaCookies(cookies),
+			Status:    model.QRLoginStatusScanned,
+			Message:   result.Message,
 			ExpiresAt: time.Now().Add(10 * time.Minute),
 		})
 	case "expired":
@@ -423,6 +469,7 @@ func (s *Soda) sodaMFARequiredResult(token string, body []byte, cookies map[stri
 	}
 	upSMSMobile := extractSodaMFAField(body, "channel_mobile")
 	upSMSContent := extractSodaMFAField(body, "sms_content")
+	hasMobileSMSVerify := sodaBodyContainsVerifyWay(body, "mobile_sms_verify")
 
 	rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
 		Cookies:      cookies,
@@ -431,6 +478,10 @@ func (s *Soda) sodaMFARequiredResult(token string, body []byte, cookies map[stri
 		Mobile:       mobile,
 		UpSMSMobile:  upSMSMobile,
 		UpSMSContent: upSMSContent,
+		SMSMode:      sodaMFASMSMode(hasMobileSMSVerify, upSMSMobile, upSMSContent),
+		CanUpSMS:     hasMobileSMSVerify && (upSMSMobile != "" || upSMSContent != ""),
+		Status:       model.QRLoginStatusScanned,
+		Message:      "QR confirmed, SMS verification required",
 		ExpiresAt:    time.Now().Add(10 * time.Minute),
 	})
 
@@ -440,10 +491,15 @@ func (s *Soda) sodaMFARequiredResult(token string, body []byte, cookies map[stri
 	extra["verify_params"] = verifyParams
 	extra["mobile"] = mobile
 	if upSMSMobile != "" || upSMSContent != "" {
-		extra["sms_mode"] = "up"
-		extra["need_user_sms"] = "true"
 		extra["up_sms_mobile"] = upSMSMobile
 		extra["up_sms_content"] = upSMSContent
+		if hasMobileSMSVerify {
+			extra["sms_mode"] = "sms"
+			extra["can_up_sms"] = "true"
+		} else {
+			extra["sms_mode"] = "up"
+			extra["need_user_sms"] = "true"
+		}
 	}
 
 	return &model.QRLoginResult{
@@ -453,6 +509,16 @@ func (s *Soda) sodaMFARequiredResult(token string, body []byte, cookies map[stri
 		Message: "QR confirmed, SMS verification required",
 		Extra:   extra,
 	}, true
+}
+
+func sodaMFASMSMode(hasMobileSMSVerify bool, upSMSMobile, upSMSContent string) string {
+	if hasMobileSMSVerify {
+		return "sms"
+	}
+	if strings.TrimSpace(upSMSMobile) != "" || strings.TrimSpace(upSMSContent) != "" {
+		return "up"
+	}
+	return ""
 }
 
 func (s *Soda) sodaSendCode(token, encryptUID, verifyParams string) (*model.QRLoginResult, error) {
@@ -487,14 +553,14 @@ func (s *Soda) sodaSendCode(token, encryptUID, verifyParams string) (*model.QRLo
 
 	applySodaVerifyParams(params, verifyParams)
 
-	apiURL := sodaSendCodeAPI + "?" + buildSodaPassportLiteQuery()
+	apiURL := sodaSendCodeAPI + "?" + buildSodaPassportLiteQueryFor("/passport/web/send_code/")
 
 	body, cookies, err := s.postSodaPassportWithCookie(apiURL, params, sodaCookieHeader(s.cookie, pending.Cookies))
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Printf("  [DEBUG send_code] raw=%s\n", string(body))
+	sodaQRDebugLogf("  [DEBUG send_code] raw=%s\n", string(body))
 
 	var resp struct {
 		Data struct {
@@ -566,7 +632,7 @@ func (s *Soda) sodaVerifyUpSMS(token, encryptUID, verifyParams string) (*model.Q
 	applySodaVerifyParams(params, verifyParams)
 	params.Set("std_verify_way", "mobile_up_sms_verify")
 
-	apiURL := sodaUpSMSVerifyAPI + "?" + buildSodaPassportLiteQuery()
+	apiURL := sodaUpSMSVerifyAPI + "?" + buildSodaPassportLiteQueryFor("/passport/upsms/verify/")
 	body, cookies, err := s.postSodaPassportWithCookie(apiURL, params, sodaCookieHeader(s.cookie, pending.Cookies))
 	if err != nil {
 		return nil, err
@@ -644,7 +710,7 @@ func (s *Soda) sodaValidateCode(token, encryptUID, verifyParams, code string) (*
 
 	applySodaVerifyParams(params, verifyParams)
 
-	apiURL := sodaValidateAPI + "?" + buildSodaPassportLiteQuery()
+	apiURL := sodaValidateAPI + "?" + buildSodaPassportLiteQueryFor("/passport/web/validate_code/")
 
 	body, cookies, err := s.postSodaPassportWithCookie(apiURL, params, sodaCookieHeader(s.cookie, pending.Cookies))
 	if err != nil {
@@ -696,12 +762,16 @@ func (s *Soda) postSodaPassport(apiURL string, form url.Values) ([]byte, map[str
 }
 
 func (s *Soda) postSodaPassportWithCookie(apiURL string, form url.Values, cookie string) ([]byte, map[string]string, error) {
-	req, err := http.NewRequest("POST", apiURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(sodaEncodePassportForm(apiURL, form)))
 	if err != nil {
 		return nil, nil, err
 	}
+	apiPath := sodaAPIPath(apiURL)
 	req.Header.Set("User-Agent", sodaPassportUA)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("sec-ch-ua", `"Not.A/Brand";v="99", "Chromium";v="136"`)
+	req.Header.Set("sec-ch-ua-mobile", "?0")
+	req.Header.Set("sec-ch-ua-platform", `"Windows"`)
 	if strings.Contains(apiURL, "/send_code/") || strings.Contains(apiURL, "/validate_code/") || strings.Contains(apiURL, "/upsms/verify/") {
 		req.Header.Set("Accept", "application/json, text/plain, */*")
 	} else {
@@ -718,6 +788,7 @@ func (s *Soda) postSodaPassportWithCookie(apiURL string, form url.Values, cookie
 	if flowID := strings.TrimSpace(form.Get("std_verify_flow_id")); flowID != "" {
 		req.Header.Set("X-Tt-Passport-Verify-Portrait", flowID)
 	}
+	applySodaCapturedHeaders(req, apiPath)
 	if strings.TrimSpace(cookie) != "" {
 		req.Header.Set("Cookie", strings.TrimSpace(cookie))
 	}
@@ -778,17 +849,73 @@ func sodaMessageOK(message string) bool {
 	return message == "" || message == "success"
 }
 
+func sodaAPIPath(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(u.Path)
+}
+
+func sodaEncodePassportForm(apiURL string, form url.Values) string {
+	switch {
+	case strings.Contains(apiURL, "/check_qrconnect/"):
+		return sodaEncodeOrderedForm(form, []string{"need_logo", "need_short_url", "is_frontier", "token", "is_new_login", "next", "passport_mfa_retry_tag", "std_verify_flow_id", "std_verify_scene", "std_verify_template", "std_verify_token", "std_verify_type", "std_verify_way"})
+	case strings.Contains(apiURL, "/send_code/"):
+		return sodaEncodeOrderedForm(form, []string{"mix_mode", "type", "encrypt_uid", "verify_ticket", "copywriting_key", "ies_safety_diversion_tag", "new_verify_flow", "std_verify_flow_id", "std_verify_scene", "std_verify_template", "std_verify_token", "std_verify_type", "std_verify_way", "is6Digits", "aid", "new_authn_sdk_version"})
+	case strings.Contains(apiURL, "/validate_code/"):
+		return sodaEncodeOrderedForm(form, []string{"mix_mode", "type", "encrypt_uid", "verify_ticket", "copywriting_key", "ies_safety_diversion_tag", "mfa", "new_verify_flow", "std_verify_flow_id", "std_verify_scene", "std_verify_template", "std_verify_token", "std_verify_type", "std_verify_way", "code", "aid", "new_authn_sdk_version"})
+	case strings.Contains(apiURL, "/upsms/verify/"):
+		return sodaEncodeOrderedForm(form, []string{"encrypt_uid", "verify_ticket", "copywriting_key", "ies_safety_diversion_tag", "new_verify_flow", "std_verify_flow_id", "std_verify_scene", "std_verify_template", "std_verify_token", "std_verify_type", "std_verify_way", "aid", "new_authn_sdk_version"})
+	default:
+		return form.Encode()
+	}
+}
+
+func sodaEncodeOrderedForm(form url.Values, order []string) string {
+	seen := map[string]bool{}
+	parts := make([]string, 0, len(form))
+	for _, key := range order {
+		if values, ok := form[key]; ok {
+			seen[key] = true
+			parts = appendSodaEncodedValues(parts, key, values)
+		}
+	}
+	keys := make([]string, 0, len(form))
+	for key := range form {
+		if !seen[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		parts = appendSodaEncodedValues(parts, key, form[key])
+	}
+	return strings.Join(parts, "&")
+}
+
+func appendSodaEncodedValues(parts []string, key string, values []string) []string {
+	encodedKey := url.QueryEscape(key)
+	if len(values) == 0 {
+		return append(parts, encodedKey+"=")
+	}
+	for _, value := range values {
+		parts = append(parts, encodedKey+"="+url.QueryEscape(value))
+	}
+	return parts
+}
+
 func buildSodaQRCreateQuery() string {
 	params := buildSodaPassportNormalValues()
 	params.Set("next", "https://api.qishui.com")
 	params.Set("need_logo", "false")
 	params.Set("need_short_url", "false")
 	params.Set("is_frontier", "true")
-	return params.Encode()
+	return sodaEncodeOrderedForm(params, append(sodaPassportNormalQueryOrder(), "next", "need_logo", "need_short_url", "is_frontier"))
 }
 
 func buildSodaQRCheckQuery() string {
-	return buildSodaPassportNormalValues().Encode()
+	return sodaEncodeOrderedForm(buildSodaPassportNormalValues(), sodaPassportNormalQueryOrder())
 }
 
 func sodaQRConnectForm(token string) url.Values {
@@ -815,7 +942,7 @@ func applySodaVerifyParams(params url.Values, verifyParams string) {
 }
 
 func buildSodaPassportQuery() string {
-	return buildSodaPassportNormalValues().Encode()
+	return sodaEncodeOrderedForm(buildSodaPassportNormalValues(), sodaPassportNormalQueryOrder())
 }
 
 func buildSodaPassportBaseValues(jsVersion, jsType string) url.Values {
@@ -866,6 +993,7 @@ func buildSodaPassportNormalValues() url.Values {
 	params.Set("p_ver", sodaPVer)
 	params.Set("request_host", "app%3A%2F%2Fresources")
 	params.Set("p_bd", sodaPBD)
+	applySodaCapturedQueryParams(params, "/passport/web/check_qrconnect/")
 	return params
 }
 
@@ -878,15 +1006,32 @@ func sodaScanLoginURL(token string) string {
 }
 
 func buildSodaPassportLiteQuery() string {
+	return buildSodaPassportLiteQueryFor("")
+}
+
+func buildSodaPassportLiteQueryFor(apiPath string) string {
 	params := buildSodaPassportBaseValues("5.1.2", "lite")
 	params.Set("new_authn_sdk_version", "1.0.0.404-web")
 	params.Set("account_app_language", "en-US")
-	return params.Encode()
+	applySodaCapturedQueryParams(params, apiPath)
+	return sodaEncodeOrderedForm(params, sodaPassportLiteQueryOrder())
+}
+
+func sodaPassportNormalQueryOrder() []string {
+	return []string{"passport_jssdk_version", "passport_jssdk_type", "is_from_ttaccountsdk", "aid", "language", "account_sdk_source", "account_sdk_source_info", "p_js_v", "p_js_t", "p_zt", "p_ver", "request_host", "p_bd", "biz_trace_id", "is_new_login", "is_from_iesaccountsaas", "device_id", "install_id", "did", "iid", "device_platform", "version_code", "msToken", "a_bogus"}
+}
+
+func sodaPassportLiteQueryOrder() []string {
+	return []string{"passport_jssdk_version", "passport_jssdk_type", "is_from_ttaccountsdk", "aid", "language", "account_app_language", "new_authn_sdk_version", "is_new_login", "is_from_iesaccountsaas", "device_id", "install_id", "did", "iid", "device_platform", "version_code", "biz_trace_id", "msToken", "a_bogus"}
 }
 
 var (
-	sodaBizTraceOnce sync.Once
-	sodaBizTraceVal  string
+	sodaBizTraceOnce      sync.Once
+	sodaBizTraceVal       string
+	sodaCaptureParamsOnce sync.Once
+	sodaCapturedQueries   map[string]url.Values
+	sodaCapturedHeaders   map[string]map[string]string
+	sodaCapturedParamsErr error
 )
 
 func sodaPassportBizTraceID() string {
@@ -902,6 +1047,134 @@ func sodaPassportTraceID(rawURL string) string {
 		return ""
 	}
 	return strings.TrimSpace(u.Query().Get("biz_trace_id"))
+}
+
+func applySodaCapturedQueryParams(params url.Values, apiPath string) {
+	captured := sodaCapturedQuery(apiPath)
+	if len(captured) == 0 {
+		return
+	}
+	for _, key := range []string{"account_sdk_source_info", "biz_trace_id", "device_id", "install_id", "did", "iid"} {
+		if value := strings.TrimSpace(captured.Get(key)); value != "" {
+			params.Set(key, value)
+		}
+	}
+	if os.Getenv("SODA_QR_USE_CAPTURE_SIGNATURE") == "1" {
+		for _, key := range []string{"msToken", "a_bogus"} {
+			if value := strings.TrimSpace(captured.Get(key)); value != "" {
+				params.Set(key, value)
+			}
+		}
+	}
+}
+
+func applySodaCapturedHeaders(req *http.Request, apiPath string) {
+	headers := sodaCapturedHeader(apiPath)
+	for _, key := range []string{"x-tt-passport-trace-id", "x-tt-passport-verify-portrait", "x-tt-trace-id"} {
+		if value := strings.TrimSpace(headers[key]); value != "" {
+			req.Header.Set(key, value)
+		}
+	}
+}
+
+func sodaCapturedQuery(apiPath string) url.Values {
+	sodaLoadCapturedParams()
+	if sodaCapturedParamsErr != nil {
+		sodaQRDebugLogf("[DEBUG capture_params] %v\n", sodaCapturedParamsErr)
+		return nil
+	}
+	return cloneSodaURLValues(sodaCapturedQueries[strings.TrimSpace(apiPath)])
+}
+
+func sodaCapturedHeader(apiPath string) map[string]string {
+	sodaLoadCapturedParams()
+	if sodaCapturedParamsErr != nil {
+		sodaQRDebugLogf("[DEBUG capture_params] %v\n", sodaCapturedParamsErr)
+		return nil
+	}
+	headers := sodaCapturedHeaders[strings.TrimSpace(apiPath)]
+	cloned := map[string]string{}
+	for key, value := range headers {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func sodaLoadCapturedParams() {
+	if os.Getenv("SODA_QR_USE_CAPTURE_PARAMS") != "1" {
+		return
+	}
+	sodaCaptureParamsOnce.Do(func() {
+		sodaCapturedQueries = map[string]url.Values{}
+		sodaCapturedHeaders = map[string]map[string]string{}
+		body, err := os.ReadFile(sodaCaptureFilePath())
+		if err != nil {
+			sodaCapturedParamsErr = err
+			return
+		}
+		var currentPath string
+		for _, rawLine := range strings.Split(string(body), "\n") {
+			line := strings.TrimSpace(rawLine)
+			if strings.HasPrefix(line, "POST https://api.qishui.com/") || strings.HasPrefix(line, "GET https://api.qishui.com/") {
+				currentPath = ""
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if parsed, err := url.Parse(fields[1]); err == nil {
+						currentPath = parsed.Path
+						if currentPath != "" {
+							if _, exists := sodaCapturedQueries[currentPath]; !exists {
+								sodaCapturedQueries[currentPath] = parsed.Query()
+							}
+							if _, exists := sodaCapturedHeaders[currentPath]; !exists {
+								sodaCapturedHeaders[currentPath] = map[string]string{}
+							}
+						}
+					}
+				}
+				continue
+			}
+			if currentPath == "" || !strings.Contains(line, ":") {
+				continue
+			}
+			parts := strings.SplitN(line, ":", 2)
+			key := strings.ToLower(strings.TrimSpace(parts[0]))
+			value := strings.TrimSpace(parts[1])
+			if key != "" && value != "" {
+				sodaCapturedHeaders[currentPath][key] = value
+			}
+		}
+	})
+}
+
+func sodaCaptureFilePath() string {
+	if path := strings.TrimSpace(os.Getenv("SODA_QR_CAPTURE_FILE")); path != "" {
+		return path
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		for i := 0; i < 5; i++ {
+			candidate := filepath.Join(cwd, "汽水扫码20260516.txt")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+			parent := filepath.Dir(cwd)
+			if parent == cwd {
+				break
+			}
+			cwd = parent
+		}
+	}
+	return "汽水扫码20260516.txt"
+}
+
+func cloneSodaURLValues(values url.Values) url.Values {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := url.Values{}
+	for key, itemValues := range values {
+		cloned[key] = append([]string(nil), itemValues...)
+	}
+	return cloned
 }
 
 func extractSodaCookieValue(cookies map[string]string, name string) string {
@@ -928,6 +1201,16 @@ func extractSodaMFAVerifyParams(body []byte, cookies map[string]string) string {
 	params := url.Values{}
 	collectSodaVerifyParams(raw, params)
 	return params.Encode()
+}
+
+func sodaBodyContainsVerifyWay(body []byte, way string) bool {
+	way = strings.TrimSpace(way)
+	if way == "" {
+		return false
+	}
+	bodyText := string(body)
+	return strings.Contains(bodyText, `"verify_way":"`+way+`"`) ||
+		strings.Contains(bodyText, `"verify_way": "`+way+`"`)
 }
 
 func normalizeSodaJSONKey(key string) string {
@@ -1109,6 +1392,42 @@ func strconvBool(value bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func sodaQRDebugLogf(format string, args ...any) {
+	if os.Getenv("SODA_QR_DEBUG") == "1" {
+		fmt.Printf(format, args...)
+	}
+}
+
+func sodaRedactValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) <= 8 {
+		return "***"
+	}
+	return value[:4] + "..." + value[len(value)-3:]
+}
+
+func sodaRedactURLSecrets(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return sodaRedactValue(raw)
+	}
+	query := parsed.Query()
+	for _, key := range []string{"token", "msToken", "a_bogus"} {
+		if query.Has(key) {
+			query.Set(key, sodaRedactValue(query.Get(key)))
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func sodaQRCodeImageURL(raw string) string {

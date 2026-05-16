@@ -36,7 +36,7 @@
 | 酷我音乐   | ❌       | ❌       | ✅       |
 | 咪咕音乐   | ❌       | ❌       | ✅       |
 | 千千音乐   | ❌       | ❌       | ✅       |
-| 汽水音乐   | ✅       | ✅ 短信验证 | ❌       |
+| 汽水音乐   | ✅       | ⚠️ 未调通 | ❌       |
 | 5sing      | ❌       | ❌       | ❌       |
 | Jamendo    | ❌       | ❌       | ❌       |
 | JOOX       | ❌       | ❌       | ✅       |
@@ -45,9 +45,9 @@
 
 ## Soda 扫码登录
 
-`soda.CreateQRLogin` 使用汽水音乐 PC 官方 passport 流程创建二维码会话，并把 `scan_login_url` 返回给上层绘制二维码。不要直接展示接口返回的 `qrcode` / `qrcode_index_url`，这些地址在普通 Web 环境打开可能是 404。
+`soda.CreateQRLogin` / `soda.CheckQRLogin` 目前仍处于调试状态。汽水音乐新版 PC 官方 passport 扫码流程依赖动态 `a_bogus` / `msToken` 风控签名，当前实现尚未调通完整登录链路，调用方不要把它作为稳定扫码登录能力暴露给用户。
 
-`soda.CheckQRLogin` 会轮询 `check_qrconnect`。如果官方要求 MFA，结果里会带 `extra.need_sms=true`、`encrypt_uid` 和 `verify_params`；上层先用 `token|send_code|encrypt_uid|verify_params` 发送短信验证码，再用 `token|validate|encrypt_uid|verify_params|code` 校验。验证码通过后库会再次调用 `check_qrconnect` 换取最终 `sessionid` Cookie。
+已尝试按抓包还原 `check_qrconnect`、`send_code`、`validate_code`、MFA 后二次 `check_qrconnect` 的请求体和字段顺序，但真实轮询仍可能在 `new` / `scanned` 阶段触发 `error_code=7`。如果后续能实时生成官方签名，再恢复稳定支持。
 
 ## 安装
 
@@ -189,7 +189,7 @@ QQ 音乐个人歌单里可能出现一些内部 ID：
 
 ### 5. 扫码登录
 
-已支持网易云、QQ、QQ 微信、酷狗、Bilibili、汽水音乐的扫码登录。登录成功后会返回 Cookie，建议由上层应用保存到配置或环境变量，不要硬编码在代码里。汽水音乐扫码后如果触发官方短信验证，需要先发送验证码，再提交验证码完成登录。
+已支持网易云、QQ、QQ 微信、酷狗、Bilibili 的扫码登录。登录成功后会返回 Cookie，建议由上层应用保存到配置或环境变量，不要硬编码在代码里。汽水音乐扫码登录暂未调通，请先手动获取 Cookie。
 
 下面是 QQ 音乐微信扫码登录示例：
 

@@ -25,7 +25,7 @@ func TestSodaQRLoginDebug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建失败: %v", err)
 	}
-	fmt.Printf("URL: %s\nToken: %s\nURL长度: %d\n", session.URL, session.Key, len(session.URL))
+	fmt.Printf("URL: %s\nToken: %s\nURL长度: %d\n", sodaRedactURLSecrets(session.URL), sodaRedactValue(session.Key), len(session.URL))
 
 	outputDir := strings.TrimSpace(os.Getenv("SODA_QR_OUTPUT_DIR"))
 	if outputDir == "" {
@@ -58,8 +58,7 @@ func TestSodaQRLoginDebug(t *testing.T) {
 	}
 	fmt.Println("请扫码并在手机上确认登录")
 	if os.Getenv("SODA_QR_AUTO_POLL") == "1" {
-		fmt.Println("30秒后自动开始轮询...")
-		time.Sleep(30 * time.Second)
+		fmt.Println("立即开始轮询...")
 	} else {
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("扫码后按 Enter 开始轮询...")
@@ -71,17 +70,19 @@ func TestSodaQRLoginDebug(t *testing.T) {
 
 	token := session.Key
 	scannedSeen := false
+	pollInterval := sodaQRDebugPollInterval()
+	fmt.Printf("轮询间隔: %s\n", pollInterval)
 
-	for i := 0; i < 30; i++ {
-		result, err := CheckQRLogin(token)
+	for i := 0; ; i++ {
+		result, err := debugCheckSodaQRLogin(token)
 		if err != nil {
-			fmt.Printf("[%d] err: %v\n", i, err)
-			time.Sleep(15 * time.Second)
+			fmt.Printf("[%d %s] err: %v\n", i, time.Now().Format("15:04:05"), err)
+			time.Sleep(pollInterval)
 			continue
 		}
 
-		j, _ := json.Marshal(result)
-		fmt.Printf("[%d] %s\n", i, string(j))
+		j, _ := json.Marshal(redactedQRLoginResult(result))
+		fmt.Printf("[%d %s] %s\n", i, time.Now().Format("15:04:05"), string(j))
 
 		if result.Status == model.QRLoginStatusSuccess {
 			fmt.Printf("\n✅ 登录成功! Cookie长度=%d\n", len(result.Cookie))
@@ -95,12 +96,12 @@ func TestSodaQRLoginDebug(t *testing.T) {
 
 		if result.Status == model.QRLoginStatusScanned {
 			if !scannedSeen {
-				fmt.Println("  -> 已扫码! 请在手机上确认登录，暂停15秒...")
+				fmt.Println("  -> 已扫码! 请在手机上确认登录，继续轮询...")
 				scannedSeen = true
 			} else {
 				fmt.Println("  -> 等待手机确认中...")
 			}
-			time.Sleep(15 * time.Second)
+			time.Sleep(pollInterval)
 			continue
 		}
 
@@ -115,9 +116,24 @@ func TestSodaQRLoginDebug(t *testing.T) {
 			t.Fatal("二维码过期")
 		}
 
-		// waiting状态，15秒后再查
-		time.Sleep(15 * time.Second)
+		time.Sleep(pollInterval)
 	}
+}
+
+func debugCheckSodaQRLogin(token string) (*model.QRLoginResult, error) {
+	return CheckQRLogin(token)
+}
+
+func sodaQRDebugPollInterval() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("SODA_QR_POLL_INTERVAL"))
+	if raw == "" {
+		return 2 * time.Second
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil || interval <= 0 {
+		return 2 * time.Second
+	}
+	return interval
 }
 
 func handleMFADebug(t *testing.T, token string, result *model.QRLoginResult) {
@@ -126,7 +142,8 @@ func handleMFADebug(t *testing.T, token string, result *model.QRLoginResult) {
 	if result.Extra != nil {
 		fmt.Printf("手机号: %s\n", result.Extra["mobile"])
 	}
-	if result.Extra != nil && (result.Extra["need_user_sms"] == "true" || result.Extra["sms_mode"] == "up") {
+	forceSendCode := os.Getenv("SODA_QR_TRY_SEND_CODE") == "1"
+	if result.Extra != nil && !forceSendCode && (result.Extra["need_user_sms"] == "true" || result.Extra["sms_mode"] == "up") {
 		target := strings.TrimSpace(result.Extra["up_sms_mobile"])
 		content := strings.TrimSpace(result.Extra["up_sms_content"])
 		if target == "" {
@@ -146,7 +163,7 @@ func handleMFADebug(t *testing.T, token string, result *model.QRLoginResult) {
 		if err != nil {
 			t.Fatalf("up_sms 失败: %v", err)
 		}
-		j, _ := json.Marshal(confirmRes)
+		j, _ := json.Marshal(redactedQRLoginResult(confirmRes))
 		fmt.Printf("up_sms: %s\n", string(j))
 		if confirmRes.Status == model.QRLoginStatusSuccess {
 			fmt.Printf("\n✅ 登录成功! Cookie长度=%d\n", len(confirmRes.Cookie))
@@ -160,7 +177,7 @@ func handleMFADebug(t *testing.T, token string, result *model.QRLoginResult) {
 	if err != nil {
 		t.Fatalf("send_code 失败: %v", err)
 	}
-	j, _ := json.Marshal(sendRes)
+	j, _ := json.Marshal(redactedQRLoginResult(sendRes))
 	fmt.Printf("send_code: %s\n", string(j))
 
 	if sendRes.Status == model.QRLoginStatusSuccess {
@@ -187,7 +204,7 @@ func handleMFADebug(t *testing.T, token string, result *model.QRLoginResult) {
 	if err != nil {
 		t.Fatalf("validate 失败: %v", err)
 	}
-	j, _ = json.Marshal(vRes)
+	j, _ = json.Marshal(redactedQRLoginResult(vRes))
 	fmt.Printf("validate: %s\n", string(j))
 
 	if vRes.Status == model.QRLoginStatusSuccess {
@@ -195,6 +212,41 @@ func handleMFADebug(t *testing.T, token string, result *model.QRLoginResult) {
 	} else {
 		t.Fatalf("未成功: %s", vRes.Message)
 	}
+}
+
+func redactedQRLoginResult(result *model.QRLoginResult) *model.QRLoginResult {
+	if result == nil {
+		return nil
+	}
+	redacted := *result
+	redacted.Key = sodaRedactValue(redacted.Key)
+	if redacted.Cookie != "" {
+		redacted.Cookie = fmt.Sprintf("<cookie len=%d>", len(redacted.Cookie))
+	}
+	if len(redacted.Cookies) > 0 {
+		cookies := make(map[string]string, len(redacted.Cookies))
+		for key, value := range redacted.Cookies {
+			if value == "" {
+				cookies[key] = ""
+			} else {
+				cookies[key] = "***"
+			}
+		}
+		redacted.Cookies = cookies
+	}
+	if len(redacted.Extra) > 0 {
+		extra := make(map[string]string, len(redacted.Extra))
+		for key, value := range redacted.Extra {
+			switch key {
+			case "encrypt_uid", "verify_params", "token", "mfa_token", "passport_mfa_token":
+				extra[key] = sodaRedactValue(value)
+			default:
+				extra[key] = value
+			}
+		}
+		redacted.Extra = extra
+	}
+	return &redacted
 }
 
 type qrSpec struct {
