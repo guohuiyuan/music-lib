@@ -192,3 +192,27 @@ func TestSodaBuildSongFromTrackUsesHighestAudioInfoQuality(t *testing.T) {
 		t.Fatalf("song quality extra = %q, want lossless", song.Extra["quality"])
 	}
 }
+
+func TestSodaBestFromVideoModelUsesLosslessAndSpadeAuth(t *testing.T) {
+	info, ok := sodaBestFromVideoModel([]byte(`{
+		"encrypt_info": {"spade_a": "auth-token"},
+		"track": {
+			"play_info_list": [
+				{"main_play_url": "standard-url", "quality": "standard", "format": "m4a", "bitrate": 128000, "size": 4000000, "duration": 210},
+				{"main_play_url": "lossless-url", "quality": "lossless", "format": "m4a", "bitrate": 1200000, "size": 32000000, "duration": 210}
+			]
+		}
+	}`))
+	if !ok {
+		t.Fatal("expected video_model stream")
+	}
+	if info.URL != "lossless-url" {
+		t.Fatalf("URL = %q, want lossless-url", info.URL)
+	}
+	if info.PlayAuth != "auth-token" {
+		t.Fatalf("PlayAuth = %q, want auth-token", info.PlayAuth)
+	}
+	if info.Quality != "lossless" {
+		t.Fatalf("Quality = %q, want lossless", info.Quality)
+	}
+}

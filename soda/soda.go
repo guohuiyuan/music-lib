@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 const (
@@ -57,6 +58,17 @@ type sodaTrackPlayInfo struct {
 
 type sodaTrackAudioInfo struct {
 	PlayInfoList []sodaTrackPlayInfo `json:"play_info_list"`
+}
+
+type sodaVideoModelEntry struct {
+	MainPlayURL   string
+	BackupPlayURL string
+	PlayAuth      string
+	Size          int64
+	Format        string
+	Bitrate       int
+	Quality       string
+	Duration      float64
 }
 
 type sodaAlbum struct {
@@ -156,13 +168,16 @@ type sodaTrackV2Response struct {
 	StatusInfo  sodaAPIStatusInfo `json:"status_info"`
 	Track       sodaTrack         `json:"track"`
 	TrackInfo   sodaTrack         `json:"track_info"`
-	TrackPlayer struct {
-		MediaID       string `json:"media_id"`
-		URLPlayerInfo string `json:"url_player_info"`
-	} `json:"track_player"`
-	Lyric struct {
+	TrackPlayer sodaTrackPlayer   `json:"track_player"`
+	Lyric       struct {
 		Content string `json:"content"`
 	} `json:"lyric"`
+}
+
+type sodaTrackPlayer struct {
+	MediaID       string          `json:"media_id"`
+	URLPlayerInfo string          `json:"url_player_info"`
+	VideoModel    json.RawMessage `json:"video_model"`
 }
 
 type sodaShareAlbumPage struct {
@@ -1143,6 +1158,241 @@ func sodaBestPlayerInfo(list []sodaPlayerInfo) (sodaPlayerInfo, bool) {
 		}
 	}
 	return best, ok
+}
+
+func sodaBestFromVideoModel(raw json.RawMessage) (*DownloadInfo, bool) {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return nil, false
+	}
+	for i := 0; i < 3 && strings.HasPrefix(text, "\""); i++ {
+		var nested string
+		if err := json.Unmarshal([]byte(text), &nested); err != nil {
+			break
+		}
+		text = strings.TrimSpace(nested)
+	}
+
+	var value any
+	if err := json.Unmarshal([]byte(text), &value); err != nil {
+		return nil, false
+	}
+
+	entries := make([]sodaVideoModelEntry, 0)
+	sodaCollectVideoModelEntries(value, "", "", 0, &entries)
+
+	var best sodaVideoModelEntry
+	ok := false
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.MainPlayURL) == "" && strings.TrimSpace(entry.BackupPlayURL) == "" {
+			continue
+		}
+		if !ok || sodaBetterStreamCandidate(
+			entry.Duration, entry.Quality, entry.Format, entry.Bitrate, entry.Size,
+			best.Duration, best.Quality, best.Format, best.Bitrate, best.Size,
+		) {
+			best = entry
+			ok = true
+		}
+	}
+	if !ok {
+		return nil, false
+	}
+
+	downloadURL := strings.TrimSpace(best.MainPlayURL)
+	if downloadURL == "" {
+		downloadURL = strings.TrimSpace(best.BackupPlayURL)
+	}
+	if downloadURL == "" {
+		return nil, false
+	}
+	return &DownloadInfo{
+		URL:      downloadURL,
+		PlayAuth: strings.TrimSpace(best.PlayAuth),
+		Format:   strings.TrimSpace(best.Format),
+		Size:     best.Size,
+		Duration: best.Duration,
+		Bitrate:  best.Bitrate,
+		Quality:  strings.TrimSpace(best.Quality),
+	}, true
+}
+
+func sodaCollectVideoModelEntries(value any, keyHint string, inheritedAuth string, inheritedDuration float64, entries *[]sodaVideoModelEntry) {
+	switch v := value.(type) {
+	case map[string]any:
+		auth := strings.TrimSpace(inheritedAuth)
+		if ownAuth := sodaVideoModelPlayAuth(v); ownAuth != "" {
+			auth = ownAuth
+		}
+		duration := inheritedDuration
+		if ownDuration := sodaJSONFloat(v, "video_duration", "duration", "Duration"); ownDuration > 0 {
+			duration = normalizeSodaDuration(ownDuration)
+		}
+		if entry, ok := sodaVideoModelEntryFromMap(v, keyHint, auth, duration); ok {
+			*entries = append(*entries, entry)
+		}
+		for key, child := range v {
+			sodaCollectVideoModelEntries(child, key, auth, duration, entries)
+		}
+	case []any:
+		for _, child := range v {
+			sodaCollectVideoModelEntries(child, keyHint, inheritedAuth, inheritedDuration, entries)
+		}
+	}
+}
+
+func sodaVideoModelEntryFromMap(values map[string]any, keyHint string, inheritedAuth string, inheritedDuration float64) (sodaVideoModelEntry, bool) {
+	entry := sodaVideoModelEntry{
+		MainPlayURL:   sodaJSONString(values, "main_play_url", "MainPlayUrl", "main_url", "MainUrl", "url", "URL", "play_url", "PlayURL"),
+		BackupPlayURL: sodaJSONString(values, "backup_play_url", "BackupPlayUrl", "backup_url", "BackupUrl", "backup_url_1", "backup_url_2", "backup_url_3"),
+		PlayAuth:      sodaJSONString(values, "play_auth", "PlayAuth"),
+		Size:          sodaJSONInt64(values, "size", "Size", "file_size", "FileSize", "data_size", "DataSize"),
+		Format:        sodaJSONString(values, "format", "Format", "vtype", "VType", "file_format", "FileFormat"),
+		Bitrate:       sodaJSONInt(values, "bitrate", "Bitrate", "br", "BR", "bit_rate", "BitRate"),
+		Quality:       sodaJSONString(values, "quality", "Quality", "definition", "Definition", "quality_type", "QualityType"),
+		Duration:      sodaJSONFloat(values, "duration", "Duration"),
+	}
+	if meta, ok := values["video_meta"].(map[string]any); ok {
+		if entry.Size == 0 {
+			entry.Size = sodaJSONInt64(meta, "size", "Size", "file_size", "FileSize")
+		}
+		if entry.Format == "" {
+			entry.Format = sodaJSONString(meta, "format", "Format", "vtype", "VType", "codec_type", "CodecType")
+		}
+		if entry.Bitrate == 0 {
+			entry.Bitrate = sodaJSONInt(meta, "bitrate", "Bitrate", "real_bitrate", "RealBitrate", "bit_rate", "BitRate")
+		}
+		if entry.Quality == "" {
+			entry.Quality = sodaJSONString(meta, "quality", "Quality", "definition", "Definition", "quality_type", "QualityType")
+		}
+		if entry.Duration == 0 {
+			entry.Duration = sodaJSONFloat(meta, "duration", "Duration")
+		}
+	}
+	if entry.BackupPlayURL == "" {
+		entry.BackupPlayURL = sodaJSONFirstString(values, "backup_urls", "backupUrls", "url_list", "UrlList")
+	}
+	if entry.PlayAuth == "" {
+		entry.PlayAuth = sodaVideoModelPlayAuth(values)
+	}
+	if entry.PlayAuth == "" {
+		entry.PlayAuth = strings.TrimSpace(inheritedAuth)
+	}
+	if entry.Quality == "" {
+		entry.Quality = sodaVideoModelQualityHint(sodaJSONString(values, "gear_des_key", "GearDesKey"))
+	}
+	if entry.Quality == "" {
+		entry.Quality = sodaVideoModelQualityHint(keyHint)
+	}
+	if entry.Duration == 0 {
+		entry.Duration = inheritedDuration
+	}
+	return entry, strings.TrimSpace(entry.MainPlayURL) != "" || strings.TrimSpace(entry.BackupPlayURL) != ""
+}
+
+func sodaVideoModelPlayAuth(values map[string]any) string {
+	for _, key := range []string{"encrypt_info", "EncryptInfo", "encryptInfo"} {
+		child, ok := values[key].(map[string]any)
+		if !ok {
+			continue
+		}
+		if auth := sodaJSONString(child, "spade_a", "SpadeA", "spadeA", "play_auth", "PlayAuth"); auth != "" {
+			return auth
+		}
+	}
+	return ""
+}
+
+func sodaVideoModelQualityHint(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(key))
+	for _, token := range []string{"hires", "lossless", "sq", "flac", "highest", "higher", "standard", "normal"} {
+		if strings.Contains(normalized, token) {
+			return token
+		}
+	}
+	return ""
+}
+
+func sodaJSONString(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key]; ok {
+			if text := sodaAnyString(value); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func sodaJSONFirstString(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := values[key]
+		if !ok {
+			continue
+		}
+		list, ok := raw.([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range list {
+			if text := sodaAnyString(item); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func sodaAnyString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []any:
+		for _, item := range v {
+			if text := sodaAnyString(item); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func sodaJSONInt(values map[string]any, keys ...string) int {
+	return int(sodaJSONFloat(values, keys...) + 0.5)
+}
+
+func sodaJSONInt64(values map[string]any, keys ...string) int64 {
+	return int64(sodaJSONFloat(values, keys...) + 0.5)
+}
+
+func normalizeSodaDuration(duration float64) float64 {
+	if duration > 1000 {
+		return duration / 1000
+	}
+	return duration
+}
+
+func sodaJSONFloat(values map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case float64:
+			return v
+		case string:
+			n, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err == nil {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 func sodaWebTrackV2URL(trackID string) string {

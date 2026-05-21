@@ -3,12 +3,13 @@ package soda
 import (
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
 )
 
 func GetDownloadInfo(s *model.Song) (*DownloadInfo, error) { return defaultSoda.GetDownloadInfo(s) }
@@ -21,28 +22,51 @@ func (s *Soda) GetDownloadInfo(song *model.Song) (*DownloadInfo, error) {
 	if song == nil {
 		return nil, errors.New("song is nil")
 	}
-	if strings.Contains(song.URL, "#auth=") {
-		parts := strings.Split(song.URL, "#auth=")
-		if len(parts) == 2 {
-			auth, _ := url.QueryUnescape(parts[1])
-			return &DownloadInfo{
-				URL:      parts[0],
-				PlayAuth: auth,
-				Format:   song.Ext,
-				Size:     song.Size,
-				Duration: float64(song.Duration),
-				Bitrate:  song.Bitrate,
-				Quality:  strings.TrimSpace(song.Extra["quality"]),
-			}, nil
-		}
-	}
 
-	if song.Source != "soda" {
+	if song.Source != "" && song.Source != "soda" {
 		return nil, errors.New("source mismatch")
 	}
 
 	trackID := sodaSongTrackID(song)
-	return s.resolveDownloadInfo(trackID, nil)
+	cachedInfo := sodaCachedDownloadInfo(song)
+	if trackID != "" {
+		info, err := s.resolveDownloadInfo(trackID, nil)
+		if err == nil {
+			return info, nil
+		}
+		if cachedInfo != nil && cachedInfo.URL != "" {
+			return cachedInfo, nil
+		}
+		return nil, err
+	}
+	if cachedInfo != nil && cachedInfo.URL != "" {
+		return cachedInfo, nil
+	}
+	return nil, errors.New("track id is empty")
+}
+
+func sodaCachedDownloadInfo(song *model.Song) *DownloadInfo {
+	if song == nil || !strings.Contains(song.URL, "#auth=") {
+		return nil
+	}
+	parts := strings.Split(song.URL, "#auth=")
+	if len(parts) != 2 {
+		return nil
+	}
+	auth, _ := url.QueryUnescape(parts[1])
+	quality := ""
+	if song.Extra != nil {
+		quality = strings.TrimSpace(song.Extra["quality"])
+	}
+	return &DownloadInfo{
+		URL:      parts[0],
+		PlayAuth: auth,
+		Format:   song.Ext,
+		Size:     song.Size,
+		Duration: float64(song.Duration),
+		Bitrate:  song.Bitrate,
+		Quality:  quality,
+	}
 }
 
 func sodaSongTrackID(song *model.Song) string {
@@ -75,7 +99,10 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 
 	var lastErr error
 	var webInfo *DownloadInfo
-	if webResp.TrackPlayer.URLPlayerInfo != "" {
+	if videoInfo, ok := sodaBestFromVideoModel(webResp.TrackPlayer.VideoModel); ok {
+		webInfo = videoInfo
+	}
+	if (webInfo == nil || sodaDownloadInfoIsPreview(webInfo, fullDuration)) && webResp.TrackPlayer.URLPlayerInfo != "" {
 		webInfo, err = s.fetchPlayerInfo(webResp.TrackPlayer.URLPlayerInfo)
 		if err != nil {
 			lastErr = err
@@ -83,7 +110,7 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 	}
 
 	webIsPreview := sodaDownloadInfoIsPreview(webInfo, fullDuration)
-	if strings.TrimSpace(s.cookie) != "" && (isVIPTrack || webIsPreview) {
+	if strings.TrimSpace(s.cookie) != "" && (isVIPTrack || webIsPreview || !sodaDownloadInfoIsLossless(webInfo)) {
 		if pcResp, pcErr := s.fetchPCTrackV2(trackID); pcErr == nil {
 			pcTrack := pcResp.primaryTrack()
 			if fullDuration == 0 {
@@ -91,6 +118,17 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 			}
 			if pcTrack.LabelInfo.IsVIP() {
 				isVIPTrack = true
+			}
+
+			if videoInfo, ok := sodaBestFromVideoModel(pcResp.TrackPlayer.VideoModel); ok {
+				if !sodaDownloadInfoIsPreview(videoInfo, fullDuration) {
+					if isVIPTrack {
+						isVip := true
+						s.isVipCache = &isVip
+					}
+					return videoInfo, nil
+				}
+				lastErr = errors.New("soda pc track_v2 returned preview stream")
 			}
 
 			if pcResp.TrackPlayer.URLPlayerInfo != "" {
@@ -135,6 +173,13 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 		return nil, lastErr
 	}
 	return nil, errors.New("player info url not found")
+}
+
+func sodaDownloadInfoIsLossless(info *DownloadInfo) bool {
+	if info == nil {
+		return false
+	}
+	return sodaQualityRank(info.Quality, info.Format, info.Bitrate) >= 100
 }
 
 // GetDownloadURL 返回下载链接

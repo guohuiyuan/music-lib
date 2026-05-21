@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/guohuiyuan/music-lib/model"
 	"github.com/guohuiyuan/music-lib/soda"
 )
 
@@ -102,12 +103,12 @@ func TestSodaLosslessTrackDownloadIsDecrypted(t *testing.T) {
 	}
 
 	s := soda.New(cookie)
-	song, err := s.Parse("https://www.qishui.com/track/6696823291962722305")
+	song, err := s.Parse("https://www.qishui.com/track/7501674235158431760")
 	if err != nil {
 		t.Fatalf("Parse error: %v", err)
 	}
-	if song.ID != "6696823291962722305" {
-		t.Fatalf("song ID = %s, want 6696823291962722305", song.ID)
+	if song.ID != "7501674235158431760" {
+		t.Fatalf("song ID = %s, want 7501674235158431760", song.ID)
 	}
 
 	info, err := s.GetDownloadInfo(song)
@@ -118,11 +119,11 @@ func TestSodaLosslessTrackDownloadIsDecrypted(t *testing.T) {
 	if strings.ToLower(info.Quality) != "lossless" {
 		t.Fatalf("quality = %q, want lossless", info.Quality)
 	}
-	if info.Size < 20*1024*1024 || info.Duration < 190 {
+	if info.Size < 40*1024*1024 || info.Duration < 230 {
 		t.Fatalf("selected lossless stream looks incomplete: size=%d duration=%.1f", info.Size, info.Duration)
 	}
 
-	outputPath := filepath.Join(t.TempDir(), "soda-lossless.m4a")
+	outputPath := filepath.Join(t.TempDir(), "soda-lossless.mp4")
 	if err := s.Download(song, outputPath); err != nil {
 		t.Fatalf("Download error: %v", err)
 	}
@@ -137,6 +138,38 @@ func TestSodaLosslessTrackDownloadIsDecrypted(t *testing.T) {
 		t.Fatal("downloaded lossless file is not decrypted into a playable MP4/M4A audio file")
 	}
 	assertFFmpegCanDecode(t, outputPath)
+}
+
+func TestSodaReportedLosslessTrackRefreshesCachedURL(t *testing.T) {
+	cookie := getSodaCookie()
+	if cookie == "" {
+		t.Skip("SODA_COOKIE or ../qishui.md cookie not set")
+	}
+
+	s := soda.New(cookie)
+	info, err := s.GetDownloadInfo(&model.Song{
+		ID:       "7501674235158431760",
+		Source:   "soda",
+		URL:      "https://example.invalid/stale-preview.m4a#auth=stale",
+		Ext:      "m4a",
+		Size:     1024,
+		Duration: 60,
+		Bitrate:  128,
+		Extra:    map[string]string{"quality": "medium"},
+	})
+	if err != nil {
+		t.Fatalf("GetDownloadInfo error: %v", err)
+	}
+	t.Logf("refreshed Soda candidate quality=%q format=%q bitrate=%d size=%d duration=%.1fs", info.Quality, info.Format, info.Bitrate, info.Size, info.Duration)
+	if strings.Contains(info.URL, "example.invalid") {
+		t.Fatal("GetDownloadInfo returned the stale cached URL instead of refreshing track_v2")
+	}
+	if strings.ToLower(info.Quality) != "lossless" {
+		t.Fatalf("quality = %q, want lossless", info.Quality)
+	}
+	if info.Size < 40*1024*1024 || info.Duration < 230 {
+		t.Fatalf("refreshed lossless stream looks incomplete: size=%d duration=%.1f", info.Size, info.Duration)
+	}
 }
 
 func assertFFmpegCanDecode(t *testing.T, path string) {
