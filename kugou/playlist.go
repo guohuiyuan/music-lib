@@ -19,8 +19,7 @@ func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 func GetPlaylistSongs(id string) ([]model.Song, error) {
 	// 保持原接口兼容性，仅返回 Songs
-	_, songs, err := defaultKugou.fetchPlaylistDetail(id)
-	return songs, err
+	return defaultKugou.GetPlaylistSongs(id)
 }
 
 func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
@@ -308,6 +307,10 @@ func (k *Kugou) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 }
 
 func (k *Kugou) GetPlaylistSongs(id string) ([]model.Song, error) {
+	if listID, ok := parseKugouCloudlistID(id); ok {
+		_, songs, err := k.fetchCloudlistDetail(listID)
+		return songs, err
+	}
 	_, songs, err := k.fetchPlaylistDetail(id)
 	return songs, err
 }

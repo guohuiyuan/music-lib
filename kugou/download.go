@@ -28,7 +28,7 @@ func (k *Kugou) GetDownloadURL(s *model.Song) (string, error) {
 
 	privilege := getKugouPrivilege(s)
 
-	if privilege == 10 || privilege == 8 {
+	if shouldTryKugouHighQualityDownload(k.cookie, privilege) {
 		if info, err := k.fetchVIPSongInfo(s); err == nil && info != nil && info.URL != "" {
 			return info.URL, nil
 		}
@@ -65,4 +65,11 @@ func (k *Kugou) GetDownloadURLBySonginfo(s *model.Song) (string, error) {
 		return "", lastErr
 	}
 	return "", errors.New("kugou songinfo v2 download url not found")
+}
+
+func shouldTryKugouHighQualityDownload(cookie string, privilege int) bool {
+	if privilege == 10 || privilege == 8 {
+		return true
+	}
+	return kugouHasAppCookie(parseKugouCookie(cookie))
 }
