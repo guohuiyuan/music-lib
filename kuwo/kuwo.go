@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
-	"golang.org/x/text/encoding/simplifiedchinese"
 	"html"
 	"io"
 	"math/rand"
@@ -18,6 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const (
@@ -215,18 +216,7 @@ func (k *Kuwo) fetchAlbumDetailFromLegacyAPI(id string) (*model.Playlist, []mode
 	songs := make([]model.Song, 0, pageSize)
 
 	for page := 0; ; page++ {
-		params := url.Values{}
-		params.Set("pn", strconv.Itoa(page))
-		params.Set("rn", strconv.Itoa(pageSize))
-		params.Set("stype", "albuminfo")
-		params.Set("albumid", id)
-		params.Set("sortby", "0")
-		params.Set("alflac", "1")
-		params.Set("show_copyright_off", "1")
-		params.Set("pcmp4", "1")
-		params.Set("encoding", "utf8")
-
-		apiURL := "http://search.kuwo.cn/r.s?" + params.Encode()
+		apiURL := kuwoAlbumDetailURL(id, page, pageSize)
 
 		body, err := utils.Get(apiURL,
 			utils.WithHeader("User-Agent", UserAgent),
@@ -341,6 +331,28 @@ func (k *Kuwo) fetchAlbumDetailFromLegacyAPI(id string) (*model.Playlist, []mode
 	}
 
 	return album, songs, nil
+}
+
+func kuwoAlbumDetailURL(id string, page int, pageSize int) string {
+	params := []struct {
+		key   string
+		value string
+	}{
+		{"pn", strconv.Itoa(page)},
+		{"rn", strconv.Itoa(pageSize)},
+		{"stype", "albuminfo"},
+		{"albumid", id},
+		{"sortby", "0"},
+		{"alflac", "1"},
+		{"show_copyright_off", "1"},
+		{"pcmp4", "1"},
+		{"encoding", "utf8"},
+	}
+	parts := make([]string, 0, len(params))
+	for _, param := range params {
+		parts = append(parts, url.QueryEscape(param.key)+"="+url.QueryEscape(param.value))
+	}
+	return "http://search.kuwo.cn/r.s?" + strings.Join(parts, "&")
 }
 
 func (k *Kuwo) fetchAlbumDetailFromPage(id string) (*model.Playlist, []model.Song, error) {
