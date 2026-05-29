@@ -381,10 +381,9 @@ type MiguSongItem struct {
 func (m *Migu) fetchSongDetail(contentID string) (*model.Song, error) {
 	params := url.Values{}
 	params.Set("resourceType", "2")
-	params.Set("contentId", contentID)
+	params.Set("resourceId", contentID)
 
-	// 使用 queryById 接口获取详情，结构与 Search 结果类似
-	apiURL := "http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/queryById.do?" + params.Encode()
+	apiURL := "http://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?" + params.Encode()
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", UserAgent),
 		utils.WithHeader("Referer", Referer),
@@ -395,28 +394,18 @@ func (m *Migu) fetchSongDetail(contentID string) (*model.Song, error) {
 	}
 
 	var resp struct {
-		Data struct {
-			Item MiguSongItem `json:"resource"` // 注意：虽然通常是数组，但此接口有时直接返回对象或由外层包裹
-		} `json:"data"`
-		// 容错：有些接口返回结构略有不同，这里简化处理，假设返回的是标准结构
 		Resource []MiguSongItem `json:"resource"`
 	}
 
-	// 尝试解析
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
 
-	var item MiguSongItem
-	if len(resp.Resource) > 0 {
-		item = resp.Resource[0]
-	} else if resp.Data.Item.ContentID != "" {
-		item = resp.Data.Item
-	} else {
+	if len(resp.Resource) == 0 {
 		return nil, errors.New("song detail not found")
 	}
 
-	song := m.convertItemToSong(item)
+	song := m.convertItemToSong(resp.Resource[0])
 	if song == nil {
 		return nil, errors.New("no valid format found for this song")
 	}
