@@ -307,15 +307,60 @@ func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
 
 // ParsePlaylist parses a playlist link.
 func (q *QQ) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
-	// Example: https://y.qq.com/n/ryqq/playlist/8825279434
-	re := regexp.MustCompile(`playlist/(\d+)`)
-	matches := re.FindStringSubmatch(link)
-	if len(matches) < 2 {
+	dissid, ok := extractQQPlaylistID(link)
+	if !ok {
 		return nil, nil, errors.New("invalid qq playlist link")
 	}
-	dissid := matches[1]
 
 	return q.fetchPlaylistDetail(dissid)
+}
+
+func extractQQPlaylistID(link string) (string, bool) {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return "", false
+	}
+
+	if parsed, err := url.Parse(link); err == nil {
+		pathValue := strings.ToLower(parsed.Path)
+		if strings.Contains(pathValue, "playlist") {
+			for _, key := range []string{"id", "disstid", "dissid"} {
+				if id := normalizeQQPlaylistID(parsed.Query().Get(key)); id != "" {
+					return id, true
+				}
+			}
+		}
+
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		for i, part := range parts {
+			if strings.EqualFold(part, "playlist") && i+1 < len(parts) {
+				if id := normalizeQQPlaylistID(parts[i+1]); id != "" {
+					return id, true
+				}
+			}
+		}
+	}
+
+	re := regexp.MustCompile(`(?:^|/)playlist/(\d+)(?:[/?#]|$)`)
+	matches := re.FindStringSubmatch(link)
+	if len(matches) >= 2 {
+		return matches[1], true
+	}
+
+	return "", false
+}
+
+func normalizeQQPlaylistID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return value
 }
 
 // GetRecommendedPlaylists returns QQ Music recommended playlists.
