@@ -171,7 +171,7 @@ func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Son
 	var resp struct {
 		Code  int `json:"code"`
 		Album struct {
-			ID          int    `json:"id"`
+			ID          int64  `json:"id"`
 			Name        string `json:"name"`
 			PicURL      string `json:"picUrl"`
 			Size        int    `json:"size"`
@@ -187,13 +187,13 @@ func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Son
 			} `json:"artists"`
 		} `json:"album"`
 		Songs []struct {
-			ID   int    `json:"id"`
+			ID   int64  `json:"id"`
 			Name string `json:"name"`
 			Ar   []struct {
 				Name string `json:"name"`
 			} `json:"ar"`
 			Al struct {
-				ID     int    `json:"id"`
+				ID     int64  `json:"id"`
 				Name   string `json:"name"`
 				PicURL string `json:"picUrl"`
 			} `json:"al"`
@@ -238,7 +238,7 @@ func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Son
 
 	album := &model.Playlist{
 		Source:      "netease",
-		ID:          strconv.Itoa(resp.Album.ID),
+		ID:          strconv.FormatInt(resp.Album.ID, 10),
 		Name:        resp.Album.Name,
 		Cover:       resp.Album.PicURL,
 		TrackCount:  resp.Album.Size,
@@ -278,19 +278,19 @@ func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Son
 
 		songs = append(songs, model.Song{
 			Source:   "netease",
-			ID:       strconv.Itoa(item.ID),
+			ID:       strconv.FormatInt(item.ID, 10),
 			Name:     item.Name,
 			Artist:   joinArtistNames(artistNames),
 			Album:    item.Al.Name,
-			AlbumID:  strconv.Itoa(item.Al.ID),
+			AlbumID:  strconv.FormatInt(item.Al.ID, 10),
 			Duration: duration,
 			Size:     size,
 			Bitrate:  bitrate,
 			Cover:    item.Al.PicURL,
 			Link:     fmt.Sprintf("https://music.163.com/#/song?id=%d", item.ID),
 			Extra: map[string]string{
-				"song_id":  strconv.Itoa(item.ID),
-				"album_id": strconv.Itoa(item.Al.ID),
+				"song_id":  strconv.FormatInt(item.ID, 10),
+				"album_id": strconv.FormatInt(item.Al.ID, 10),
 			},
 		})
 	}
@@ -325,7 +325,7 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 	var resp struct {
 		Code     int `json:"code"`
 		Playlist struct {
-			ID          int    `json:"id"`
+			ID          int64  `json:"id"`
 			Name        string `json:"name"`
 			CoverImgURL string `json:"coverImgUrl"`
 			Description string `json:"description"`
@@ -336,7 +336,7 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 			} `json:"creator"`
 			// Use trackIds so we can fetch the full list separately.
 			TrackIds []struct {
-				ID int `json:"id"`
+				ID int64 `json:"id"`
 			} `json:"trackIds"`
 		} `json:"playlist"`
 	}
@@ -351,7 +351,7 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 	// Build playlist metadata.
 	playlist := &model.Playlist{
 		Source:      "netease",
-		ID:          strconv.Itoa(resp.Playlist.ID),
+		ID:          strconv.FormatInt(resp.Playlist.ID, 10),
 		Name:        resp.Playlist.Name,
 		Cover:       resp.Playlist.CoverImgURL,
 		TrackCount:  resp.Playlist.TrackCount,
@@ -364,7 +364,7 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 	// Collect all song IDs first.
 	var allIDs []string
 	for _, tid := range resp.Playlist.TrackIds {
-		allIDs = append(allIDs, strconv.Itoa(tid.ID))
+		allIDs = append(allIDs, strconv.FormatInt(tid.ID, 10))
 	}
 
 	// Fetch song details in batches.
@@ -425,7 +425,7 @@ func (n *Netease) fetchSongsBatch(songIDs []string) ([]model.Song, error) {
 
 	var resp struct {
 		Songs []struct {
-			ID   int    `json:"id"`
+			ID   int64  `json:"id"`
 			Name string `json:"name"`
 			Ar   []struct {
 				Name string `json:"name"`
@@ -451,7 +451,7 @@ func (n *Netease) fetchSongsBatch(songIDs []string) ([]model.Song, error) {
 
 		songs = append(songs, model.Song{
 			Source:   "netease",
-			ID:       strconv.Itoa(item.ID),
+			ID:       strconv.FormatInt(item.ID, 10),
 			Name:     item.Name,
 			Artist:   strings.Join(artistNames, "、"),
 			Album:    item.Al.Name,
@@ -459,7 +459,7 @@ func (n *Netease) fetchSongsBatch(songIDs []string) ([]model.Song, error) {
 			Cover:    item.Al.PicURL,
 			Link:     fmt.Sprintf("https://music.163.com/#/song?id=%d", item.ID),
 			Extra: map[string]string{
-				"song_id": strconv.Itoa(item.ID),
+				"song_id": strconv.FormatInt(item.ID, 10),
 			},
 		})
 	}

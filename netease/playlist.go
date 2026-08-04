@@ -50,7 +50,7 @@ func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	var resp struct {
 		Result struct {
 			Playlists []struct {
-				ID          int    `json:"id"`
+				ID          int64  `json:"id"`
 				Name        string `json:"name"`
 				CoverImgURL string `json:"coverImgUrl"`
 				Creator     struct {
@@ -71,7 +71,7 @@ func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	for _, item := range resp.Result.Playlists {
 		playlists = append(playlists, model.Playlist{
 			Source:      "netease",
-			ID:          strconv.Itoa(item.ID),
+			ID:          strconv.FormatInt(item.ID, 10),
 			Name:        item.Name,
 			Cover:       item.CoverImgURL,
 			TrackCount:  item.TrackCount,
@@ -126,7 +126,7 @@ func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 	var resp struct {
 		Code   int `json:"code"`
 		Result []struct {
-			ID         int     `json:"id"`
+			ID         int64   `json:"id"`
 			Name       string  `json:"name"`
 			PicURL     string  `json:"picUrl"`
 			PlayCount  float64 `json:"playCount"`
@@ -151,7 +151,7 @@ func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 
 		pl := model.Playlist{
 			Source:      "netease",
-			ID:          strconv.Itoa(item.ID),
+			ID:          strconv.FormatInt(item.ID, 10),
 			Name:        item.Name,
 			Cover:       item.PicURL,
 			PlayCount:   int(item.PlayCount),
