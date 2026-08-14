@@ -123,6 +123,10 @@ func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 		return nil, err
 	}
 
+	return parseRecommendedPlaylists(body)
+}
+
+func parseRecommendedPlaylists(body []byte) ([]model.Playlist, error) {
 	var resp struct {
 		Code   int `json:"code"`
 		Result []struct {

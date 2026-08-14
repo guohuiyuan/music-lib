@@ -76,3 +76,35 @@ func TestParseWithPlaylistLinkRegression(t *testing.T) {
 		t.Fatalf("Parse(%q) returned unexpected song: %#v", regressionPlaylistLink, song)
 	}
 }
+
+func TestParseRecommendedPlaylistsWithLargeIDRegression(t *testing.T) {
+	const body = `{
+		"code": 200,
+		"result": [
+			{
+				"id": 2230318386,
+				"name": "large id playlist",
+				"type": 2230318386,
+				"picUrl": "https://p1.music.126.net/example.jpg",
+				"playCount": 1000,
+				"trackCount": 20,
+				"copywriter": "",
+				"alg": "recommend"
+			}
+		]
+	}`
+
+	playlists, err := parseRecommendedPlaylists([]byte(body))
+	if err != nil {
+		t.Fatalf("parseRecommendedPlaylists returned error: %v", err)
+	}
+	if len(playlists) != 1 {
+		t.Fatalf("parseRecommendedPlaylists returned %d playlists, want 1", len(playlists))
+	}
+	if playlists[0].ID != "2230318386" {
+		t.Fatalf("parseRecommendedPlaylists returned id %q, want 2230318386", playlists[0].ID)
+	}
+	if playlists[0].Name != "large id playlist" {
+		t.Fatalf("parseRecommendedPlaylists returned name %q, want large id playlist", playlists[0].Name)
+	}
+}
