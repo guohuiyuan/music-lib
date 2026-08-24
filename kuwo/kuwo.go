@@ -22,7 +22,9 @@ import (
 )
 
 const (
-	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+	UserAgent            = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+	kuwoPlaylistPageSize = 100
+	kuwoPlaylistMaxPages = 500
 )
 
 var (
@@ -39,6 +41,28 @@ type Kuwo struct {
 func New(cookie string) *Kuwo { return &Kuwo{cookie: cookie} }
 
 var defaultKuwo = New("")
+
+type kuwoPlaylistMusic struct {
+	Id         string      `json:"id"`
+	Name       string      `json:"name"`
+	Artist     string      `json:"artist"`
+	Album      string      `json:"album"`
+	AlbumPic   string      `json:"albumpic"`
+	Duration   interface{} `json:"duration"`
+	SongName   string      `json:"song_name"`
+	ArtistName string      `json:"artist_name"`
+}
+
+type kuwoPlaylistDetailResponse struct {
+	Title      string              `json:"title"`
+	Pic        string              `json:"pic"`
+	Info       string              `json:"info"`
+	UName      string              `json:"uname"`
+	PlayNum    interface{}         `json:"playnum"`
+	Total      interface{}         `json:"total"`
+	ValidTotal interface{}         `json:"validtotal"`
+	MusicList  []kuwoPlaylistMusic `json:"musiclist"`
+}
 
 // 酷我的歌单和专辑搜索共用同一个 legacy 路由，仅通过 ft 参数区分类型。
 func (k *Kuwo) searchCollection(keyword, ft string, out interface{}) error {
@@ -75,106 +99,130 @@ func (k *Kuwo) searchCollection(keyword, ft string, out interface{}) error {
 
 // fetchPlaylistDetail [内部复用] 获取歌单详情 (Metadata + Songs)
 func (k *Kuwo) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
+	totalSongs := 0
+	seen := make(map[string]struct{})
+	var playlist *model.Playlist
+	songs := make([]model.Song, 0, kuwoPlaylistPageSize)
+
+	for page := 0; page < kuwoPlaylistMaxPages; page++ {
+		body, err := k.fetchPlaylistDetailPage(id, page)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		var resp kuwoPlaylistDetailResponse
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, nil, fmt.Errorf("kuwo playlist detail json error: %w", err)
+		}
+
+		if page == 0 {
+			if len(resp.MusicList) == 0 {
+				return nil, nil, errors.New("playlist is empty or id is invalid")
+			}
+			totalSongs = parseKuwoAnyInt(resp.Total)
+			if totalSongs == 0 {
+				totalSongs = parseKuwoAnyInt(resp.ValidTotal)
+			}
+			playlist = &model.Playlist{
+				Source:      "kuwo",
+				ID:          id,
+				Name:        normalizeKuwoText(resp.Title),
+				Cover:       normalizeKuwoImageURL(resp.Pic),
+				Description: normalizeKuwoText(resp.Info),
+				Creator:     normalizeKuwoText(resp.UName),
+				PlayCount:   parseKuwoAnyInt(resp.PlayNum),
+				TrackCount:  totalSongs,
+				Link:        fmt.Sprintf("http://www.kuwo.cn/playlist_detail/%s", id),
+			}
+		}
+
+		if len(resp.MusicList) == 0 {
+			break
+		}
+		for _, item := range resp.MusicList {
+			songID := strings.TrimSpace(item.Id)
+			if songID == "" {
+				continue
+			}
+			if _, exists := seen[songID]; exists {
+				continue
+			}
+			seen[songID] = struct{}{}
+			songs = append(songs, kuwoPlaylistSongFromMusic(item))
+		}
+
+		if len(resp.MusicList) < kuwoPlaylistPageSize {
+			break
+		}
+		if totalSongs > 0 && len(songs) >= totalSongs {
+			break
+		}
+	}
+
+	if playlist == nil || len(songs) == 0 {
+		return nil, nil, errors.New("playlist is empty or id is invalid")
+	}
+	if playlist.TrackCount == 0 {
+		playlist.TrackCount = len(songs)
+	}
+	return playlist, songs, nil
+}
+
+func (k *Kuwo) fetchPlaylistDetailPage(id string, page int) ([]byte, error) {
+	return utils.Get(kuwoPlaylistDetailURL(id, page, kuwoPlaylistPageSize),
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+}
+
+func kuwoPlaylistDetailURL(id string, page int, pageSize int) string {
 	params := url.Values{}
 	params.Set("op", "getlistinfo")
 	params.Set("pid", id)
-	params.Set("pn", "0")
-	params.Set("rn", "100")
+	params.Set("pn", strconv.Itoa(page))
+	params.Set("rn", strconv.Itoa(pageSize))
 	params.Set("encode", "utf8")
 	params.Set("keyset", "pl2012")
 	params.Set("identity", "kuwo")
 	params.Set("pcmp4", "1")
 	params.Set("vipver", "1")
 	params.Set("newver", "1")
+	return "http://nplserver.kuwo.cn/pl.svc?" + params.Encode()
+}
 
-	apiURL := "http://nplserver.kuwo.cn/pl.svc?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Cookie", k.cookie),
-		utils.WithRandomIPHeader(),
-	)
-	if err != nil {
-		return nil, nil, err
+func kuwoPlaylistSongFromMusic(item kuwoPlaylistMusic) model.Song {
+	name := normalizeKuwoText(item.Name)
+	if name == "" {
+		name = normalizeKuwoText(item.SongName)
+	}
+	artist := normalizeKuwoText(item.Artist)
+	if artist == "" {
+		artist = normalizeKuwoText(item.ArtistName)
 	}
 
-	var resp struct {
-		MusicList []struct {
-			Id         string      `json:"id"`
-			Name       string      `json:"name"`
-			Artist     string      `json:"artist"`
-			Album      string      `json:"album"`
-			AlbumPic   string      `json:"albumpic"`
-			Duration   interface{} `json:"duration"`
-			SongName   string      `json:"song_name"`
-			ArtistName string      `json:"artist_name"`
-		} `json:"musiclist"`
+	var duration int
+	switch v := item.Duration.(type) {
+	case string:
+		d, _ := strconv.Atoi(v)
+		duration = d
+	case float64:
+		duration = int(v)
 	}
 
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil, fmt.Errorf("kuwo playlist detail json error: %w", err)
+	return model.Song{
+		Source:   "kuwo",
+		ID:       strings.TrimSpace(item.Id),
+		Name:     name,
+		Artist:   artist,
+		Album:    normalizeKuwoText(item.Album),
+		Duration: duration,
+		Cover:    normalizeKuwoImageURL(item.AlbumPic),
+		Link:     fmt.Sprintf("http://www.kuwo.cn/play_detail/%s", strings.TrimSpace(item.Id)),
+		Extra: map[string]string{
+			"rid": strings.TrimSpace(item.Id),
+		},
 	}
-
-	if len(resp.MusicList) == 0 {
-		return nil, nil, errors.New("playlist is empty or id is invalid")
-	}
-
-	playlist := &model.Playlist{
-		Source:     "kuwo",
-		ID:         id,
-		Link:       fmt.Sprintf("http://www.kuwo.cn/playlist_detail/%s", id),
-		TrackCount: len(resp.MusicList),
-	}
-
-	var songs []model.Song
-	for _, item := range resp.MusicList {
-		name := item.Name
-		if name == "" {
-			name = item.SongName
-		}
-		artist := item.Artist
-		if artist == "" {
-			artist = item.ArtistName
-		}
-
-		var duration int
-		switch v := item.Duration.(type) {
-		case string:
-			d, _ := strconv.Atoi(v)
-			duration = d
-		case float64:
-			duration = int(v)
-		}
-
-		cover := item.AlbumPic
-		if cover != "" {
-			if !strings.HasPrefix(cover, "http") {
-				cover = "http://" + cover
-			}
-			if strings.Contains(cover, "_100.") {
-				cover = strings.Replace(cover, "_100.", "_500.", 1)
-			} else if strings.Contains(cover, "_150.") {
-				cover = strings.Replace(cover, "_150.", "_500.", 1)
-			} else if strings.Contains(cover, "_120.") {
-				cover = strings.Replace(cover, "_120.", "_500.", 1)
-			}
-		}
-
-		songs = append(songs, model.Song{
-			Source:   "kuwo",
-			ID:       item.Id,
-			Name:     name,
-			Artist:   artist,
-			Album:    item.Album,
-			Duration: duration,
-			Cover:    cover,
-			Link:     fmt.Sprintf("http://www.kuwo.cn/play_detail/%s", item.Id),
-			Extra: map[string]string{
-				"rid": item.Id,
-			},
-		})
-	}
-	return playlist, songs, nil
 }
 
 // Parse 解析链接并获取完整信息
