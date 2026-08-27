@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
-	"net/url"
-	"strings"
 )
 
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
@@ -46,20 +43,7 @@ func (s *Soda) GetCategoryPlaylists(categoryID string, page, limit int) ([]model
 }
 
 func (s *Soda) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	params := url.Values{}
-	params.Set("q", keyword)
-	params.Set("cursor", "0")
-	params.Set("search_method", "input")
-	params.Set("aid", "386088")
-	params.Set("device_platform", "web")
-	params.Set("channel", "pc_web")
-
-	apiURL := "https://api.qishui.com/luna/pc/search/playlist?" + params.Encode()
-
-	body, err := utils.Get(apiURL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Cookie", s.cookie),
-	)
+	body, err := s.fetchAndroidSearch("playlist", keyword, 1, sodaAndroidSearchPageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -68,20 +52,7 @@ func (s *Soda) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 		ResultGroups []struct {
 			Data []struct {
 				Entity struct {
-					Playlist struct {
-						ID    string `json:"id"`
-						Title string `json:"title"`
-						Desc  string `json:"desc"`
-						Owner struct {
-							Nickname   string `json:"nickname"`
-							PublicName string `json:"public_name"`
-						} `json:"owner"`
-						CountTracks int `json:"count_tracks"`
-						UrlCover    struct {
-							Urls []string `json:"urls"`
-							Uri  string   `json:"uri"`
-						} `json:"url_cover"`
-					} `json:"playlist"`
+					Playlist sodaUserPlaylistItem `json:"playlist"`
 				} `json:"entity"`
 			} `json:"data"`
 		} `json:"result_groups"`
@@ -92,44 +63,29 @@ func (s *Soda) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	}
 
 	var playlists []model.Playlist
-	if len(resp.ResultGroups) == 0 || len(resp.ResultGroups[0].Data) == 0 {
-		return nil, nil
-	}
-
-	for _, item := range resp.ResultGroups[0].Data {
-		pl := item.Entity.Playlist
-		if pl.ID == "" {
-			continue
-		}
-
-		cover := ""
-		if len(pl.UrlCover.Urls) > 0 {
-			domain := pl.UrlCover.Urls[0]
-			if pl.UrlCover.Uri != "" && !strings.Contains(domain, pl.UrlCover.Uri) {
-				cover = domain + pl.UrlCover.Uri
-			} else {
-				cover = domain
+	for _, group := range resp.ResultGroups {
+		for _, item := range group.Data {
+			pl := item.Entity.Playlist
+			if pl.ID == "" {
+				continue
 			}
-			if cover != "" && !strings.Contains(cover, "~") {
-				cover += "~c5_300x300.jpg"
+
+			creator := pl.Owner.PublicName
+			if creator == "" {
+				creator = pl.Owner.Nickname
 			}
-		}
 
-		creator := pl.Owner.PublicName
-		if creator == "" {
-			creator = pl.Owner.Nickname
+			playlists = append(playlists, model.Playlist{
+				Source:      "soda",
+				ID:          pl.ID,
+				Name:        pl.Title,
+				Cover:       sodaBuildImageURL(pl.URLCover, "~c5_300x300.jpg"),
+				TrackCount:  pl.CountTracks,
+				Creator:     creator,
+				Description: pl.Desc,
+				Link:        fmt.Sprintf("https://www.qishui.com/playlist/%s", pl.ID),
+			})
 		}
-
-		playlists = append(playlists, model.Playlist{
-			Source:      "soda",
-			ID:          pl.ID,
-			Name:        pl.Title,
-			Cover:       cover,
-			TrackCount:  pl.CountTracks,
-			Creator:     creator,
-			Description: pl.Desc,
-			Link:        fmt.Sprintf("https://www.qishui.com/playlist/%s", pl.ID),
-		})
 	}
 	return playlists, nil
 }

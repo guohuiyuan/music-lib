@@ -35,8 +35,9 @@ type sodaArtist struct {
 }
 
 type sodaImage struct {
-	Urls []string `json:"urls"`
-	Uri  string   `json:"uri"`
+	Urls           []string `json:"urls"`
+	Uri            string   `json:"uri"`
+	TemplatePrefix string   `json:"template_prefix"`
 }
 
 type sodaBitRate struct {
@@ -723,6 +724,10 @@ func sodaBuildImageURL(img sodaImage, suffix string) string {
 
 	cover := strings.TrimSpace(img.Urls[0])
 	uri := strings.TrimSpace(img.Uri)
+	templatePrefix := strings.TrimSpace(img.TemplatePrefix)
+	if uri != "" && templatePrefix != "" {
+		return strings.TrimRight(sodaDouyinImageBaseURL, "/") + "/" + uri + "~" + templatePrefix + "-resize:960:960.png"
+	}
 	if uri != "" && !strings.Contains(cover, uri) {
 		cover += uri
 	}
