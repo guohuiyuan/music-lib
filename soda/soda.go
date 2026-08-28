@@ -23,6 +23,7 @@ const (
 	pcAppUserAgent   = "LunaPC/3.3.0(359450208)"
 	vipProbeTrackID  = "7304719759323564095"
 	vipProbeTrackURL = "https://qishui.douyin.com/s/iQeFw9cE/"
+	sodaSeoBase      = "https://beta-luna.douyin.com/luna/h5/seo_track"
 )
 
 type Soda struct {
@@ -179,6 +180,23 @@ type sodaTrackPlayer struct {
 	MediaID       string          `json:"media_id"`
 	URLPlayerInfo string          `json:"url_player_info"`
 	VideoModel    json.RawMessage `json:"video_model"`
+}
+
+// sodaSeoTrackResponse 是 web 端 seo_track 接口的响应。PC track_v2 已下线，
+// 该接口无需签名即可返回 url_player_info，用于取播放地址与歌词。
+type sodaSeoTrackResponse struct {
+	StatusCode  int               `json:"status_code"`
+	StatusInfo  sodaAPIStatusInfo `json:"status_info"`
+	TrackPlayer sodaTrackPlayer   `json:"track_player"`
+	SeoTrack    struct {
+		Track sodaTrack `json:"track"`
+		Lyric struct {
+			Content string `json:"content"`
+		} `json:"lyric"`
+	} `json:"seo_track"`
+	Lyric struct {
+		Content string `json:"content"`
+	} `json:"lyric"`
 }
 
 type sodaShareAlbumPage struct {
@@ -1410,6 +1428,13 @@ func sodaWebTrackV2URL(trackID string) string {
 	return "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
 }
 
+func sodaSeoTrackURL(trackID string) string {
+	params := url.Values{}
+	params.Set("track_id", trackID)
+	params.Set("device_platform", "web")
+	return sodaSeoBase + "?" + params.Encode()
+}
+
 func sodaPCAppParams() url.Values {
 	now := time.Now().UnixMilli()
 	deviceID := strconv.FormatInt(now, 10)
@@ -1478,9 +1503,59 @@ func (s *Soda) fetchWebTrackV2(trackID string) (*sodaTrackV2Response, error) {
 		utils.WithHeader("Cookie", s.cookie),
 	)
 	if err != nil {
+		seoResp, seoErr := s.fetchSeoTrackData(trackID)
+		if seoErr != nil {
+			return nil, fmt.Errorf("soda track_v2 failed: %w (seo fallback: %v)", err, seoErr)
+		}
+		return seoResp, nil
+	}
+	resp, parseErr := parseSodaTrackV2Response(body)
+	if parseErr == nil {
+		return resp, nil
+	}
+	seoResp, seoErr := s.fetchSeoTrackData(trackID)
+	if seoErr != nil {
+		return nil, fmt.Errorf("soda track_v2 parse failed: %w (seo fallback: %v)", parseErr, seoErr)
+	}
+	return seoResp, nil
+}
+
+func (s *Soda) fetchSeoTrackData(trackID string) (*sodaTrackV2Response, error) {
+	body, err := utils.Get(sodaSeoTrackURL(trackID),
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", s.cookie),
+	)
+	if err != nil {
 		return nil, err
 	}
-	return parseSodaTrackV2Response(body)
+
+	var seoResp sodaSeoTrackResponse
+	if err := json.Unmarshal(body, &seoResp); err != nil {
+		return nil, fmt.Errorf("soda seo_track json parse error: %w", err)
+	}
+	if seoResp.StatusCode != 0 {
+		msg := strings.TrimSpace(seoResp.StatusInfo.StatusMsg)
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("soda seo_track api error: status_code=%d status_msg=%s", seoResp.StatusCode, msg)
+	}
+
+	resp := &sodaTrackV2Response{
+		StatusCode:  0,
+		Track:       seoResp.SeoTrack.Track,
+		TrackInfo:   seoResp.SeoTrack.Track,
+		TrackPlayer: seoResp.TrackPlayer,
+	}
+	if strings.TrimSpace(seoResp.SeoTrack.Lyric.Content) != "" {
+		resp.Lyric.Content = seoResp.SeoTrack.Lyric.Content
+	} else {
+		resp.Lyric.Content = seoResp.Lyric.Content
+	}
+	if strings.TrimSpace(resp.Track.ID) == "" {
+		return nil, errors.New("soda seo_track missing track id")
+	}
+	return resp, nil
 }
 
 func (s *Soda) pcRequestOptions(extra ...utils.RequestOption) []utils.RequestOption {

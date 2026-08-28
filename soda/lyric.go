@@ -1,12 +1,9 @@
 package soda
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
-	"net/url"
 )
 
 func GetLyrics(s *model.Song) (string, error) { return defaultSoda.GetLyrics(s) }
@@ -22,29 +19,10 @@ func (s *Soda) GetLyrics(song *model.Song) (string, error) {
 		trackID = song.Extra["track_id"]
 	}
 
-	params := url.Values{}
-	params.Set("track_id", trackID)
-	params.Set("media_type", "track")
-	params.Set("aid", "386088")
-	params.Set("device_platform", "web")
-	params.Set("channel", "pc_web")
-
-	v2URL := "https://api.qishui.com/luna/pc/track_v2?" + params.Encode()
-	body, err := utils.Get(v2URL,
-		utils.WithHeader("User-Agent", UserAgent),
-		utils.WithHeader("Cookie", s.cookie),
-	)
+	// PC track_v2 已下线，歌词同样走 SEO seo_track 接口（无需签名）。
+	resp, err := s.fetchWebTrackV2(trackID)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch lyric API: %w", err)
-	}
-
-	var resp struct {
-		Lyric struct {
-			Content string `json:"content"`
-		} `json:"lyric"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("failed to parse lyric JSON: %w", err)
 	}
 	if resp.Lyric.Content == "" {
 		return "", nil

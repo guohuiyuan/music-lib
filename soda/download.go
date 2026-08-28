@@ -110,7 +110,12 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 	}
 
 	webIsPreview := sodaDownloadInfoIsPreview(webInfo, fullDuration)
-	if strings.TrimSpace(s.cookie) != "" && (isVIPTrack || webIsPreview || !sodaDownloadInfoIsLossless(webInfo)) {
+	shouldTryPC := strings.TrimSpace(s.cookie) != "" && (isVIPTrack || webIsPreview || !sodaDownloadInfoIsLossless(webInfo))
+	// PC track_v2 已下线；若 SEO 已返回完整、非 VIP 且音质足够，无需再浪费一次请求。
+	if webInfo != nil && !isVIPTrack && !webIsPreview && sodaQualityRank(webInfo.Quality, webInfo.Format, webInfo.Bitrate) >= 60 {
+		shouldTryPC = false
+	}
+	if shouldTryPC {
 		if pcResp, pcErr := s.fetchPCTrackV2(trackID); pcErr == nil {
 			pcTrack := pcResp.primaryTrack()
 			if fullDuration == 0 {
@@ -158,13 +163,8 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 				isVip := false
 				s.isVipCache = &isVip
 			}
-			if lastErr != nil {
-				return nil, fmt.Errorf("soda vip full stream unavailable: %w", lastErr)
-			}
-			if strings.TrimSpace(s.cookie) == "" {
-				return nil, errors.New("soda vip download requires cookie")
-			}
-			return nil, errors.New("soda vip full stream unavailable")
+			// 完整流（需签名或 VIP 账号）拿不到时，回退到平台允许的预览流，保证能下载。
+			return webInfo, nil
 		}
 		return webInfo, nil
 	}
@@ -219,9 +219,14 @@ func (s *Soda) Download(song *model.Song, outputPath string) error {
 		return err
 	}
 
-	decryptedData, err := DecryptAudio(encryptedData, info.PlayAuth)
-	if err != nil {
-		return fmt.Errorf("decrypt failed: %w", err)
+	// SEO url_player_info 对免费歌曲返回明文 m4a（无 play_auth），无需解密；
+	// Android 签名/加密流才有 play_auth，此时必须解密。
+	decryptedData := encryptedData
+	if strings.TrimSpace(info.PlayAuth) != "" {
+		decryptedData, err = DecryptAudio(encryptedData, info.PlayAuth)
+		if err != nil {
+			return fmt.Errorf("decrypt failed: %w", err)
+		}
 	}
 
 	err = os.WriteFile(outputPath, decryptedData, 0644)
