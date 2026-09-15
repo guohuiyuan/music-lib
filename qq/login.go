@@ -1,11 +1,15 @@
 package qq
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"sort"
@@ -17,8 +21,14 @@ import (
 )
 
 const (
-	qqQRShowAPI      = "https://ssl.ptlogin2.qq.com/ptqrshow"
-	qqQRCheckAPI     = "https://ssl.ptlogin2.qq.com/ptqrlogin"
+	qqQRLoginPageAPI = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin"
+	qqQRShowAPI      = "https://xui.ptlogin2.qq.com/ssl/ptqrshow"
+	qqQRCheckAPI     = "https://xui.ptlogin2.qq.com/ssl/ptqrlogin"
+	qqOAuthLoginJump = "https://graph.qq.com/oauth2.0/login_jump"
+	qqOAuthAuthorize = "https://graph.qq.com/oauth2.0/authorize"
+	qqMusicLoginAPI  = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+	qqOAuthClientID  = "100497308"
+	qqOAuthScope     = "get_user_info,get_app_friends"
 	qqWXQRConnectAPI = "https://open.weixin.qq.com/connect/qrconnect"
 	qqWXQRCheckAPI   = "https://lp.open.weixin.qq.com/connect/l/qrconnect"
 	qqWXRedirectURI  = "https://y.qq.com/portal/wx_redirect.html?login_type=2&surl=https://y.qq.com/"
@@ -60,6 +70,29 @@ func (q *QQ) CheckQRLoginByType(loginType, key string) (*model.QRLoginResult, er
 }
 
 func (q *QQ) CreateQRLogin() (*model.QRLoginSession, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Jar: jar, Timeout: 20 * time.Second}
+
+	loginPageParams := url.Values{}
+	loginPageParams.Set("appid", "716027609")
+	loginPageParams.Set("daid", "383")
+	loginPageParams.Set("style", "33")
+	loginPageParams.Set("login_text", "登录")
+	loginPageParams.Set("hide_title_bar", "1")
+	loginPageParams.Set("hide_border", "1")
+	loginPageParams.Set("target", "self")
+	loginPageParams.Set("s_url", qqOAuthLoginJump)
+	loginPageParams.Set("pt_3rd_aid", qqOAuthClientID)
+	loginPageParams.Set("pt_feedback_link", "https://support.qq.com/products/77942?customInfo=.appid"+qqOAuthClientID)
+	loginPageParams.Set("theme", "2")
+	loginPageParams.Set("verify_theme", "")
+	if warmupResp, err := doQQRequest(client, http.MethodGet, qqQRLoginPageAPI+"?"+loginPageParams.Encode(), nil, "", "", nil); err == nil {
+		warmupResp.Body.Close()
+	}
+
 	params := url.Values{}
 	params.Set("appid", "716027609")
 	params.Set("e", "2")
@@ -67,17 +100,12 @@ func (q *QQ) CreateQRLogin() (*model.QRLoginSession, error) {
 	params.Set("s", "3")
 	params.Set("d", "72")
 	params.Set("v", "4")
-	params.Set("t", fmt.Sprintf("%.17f", float64(time.Now().UnixNano())/1e18))
+	params.Set("t", fmt.Sprintf("%.6f", float64(time.Now().UnixNano())/1e9))
 	params.Set("daid", "383")
-	params.Set("pt_3rd_aid", "100497308")
+	params.Set("pt_3rd_aid", qqOAuthClientID)
+	params.Set("u1", qqOAuthLoginJump)
 
-	req, err := http.NewRequest("GET", qqQRShowAPI+"?"+params.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	req.Header.Set("Referer", "https://y.qq.com/")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := doQQRequest(client, http.MethodGet, qqQRShowAPI+"?"+params.Encode(), nil, "https://xui.ptlogin2.qq.com/", "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +117,12 @@ func (q *QQ) CreateQRLogin() (*model.QRLoginSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	cookies := responseCookies(resp)
+	cookies := qqCookiesForURLs(jar, qqQRLoginPageAPI, qqQRShowAPI)
+	for k, v := range responseCookies(resp) {
+		if strings.TrimSpace(v) != "" {
+			cookies[k] = v
+		}
+	}
 	qrsig := strings.TrimSpace(cookies["qrsig"])
 	if qrsig == "" {
 		return nil, fmt.Errorf("qq qr show missing qrsig")
@@ -97,6 +130,12 @@ func (q *QQ) CreateQRLogin() (*model.QRLoginSession, error) {
 
 	key := url.Values{}
 	key.Set("qrsig", qrsig)
+	if loginSig := strings.TrimSpace(cookies["pt_login_sig"]); loginSig != "" {
+		key.Set("login_sig", loginSig)
+	}
+	if state := encodeQQCookieState(cookies); state != "" {
+		key.Set("session", state)
+	}
 	return &model.QRLoginSession{
 		Source:    "qq",
 		Key:       key.Encode(),
@@ -117,37 +156,48 @@ func (q *QQ) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 	if qrsig == "" {
 		return nil, fmt.Errorf("qq qr login key missing qrsig")
 	}
+	loginSig := strings.TrimSpace(values.Get("login_sig"))
+	initialCookies := decodeQQCookieState(values.Get("session"))
+	if initialCookies == nil {
+		initialCookies = map[string]string{}
+	}
+	initialCookies["qrsig"] = qrsig
+	if loginSig != "" {
+		initialCookies["pt_login_sig"] = loginSig
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	setQQInitialCookies(jar, initialCookies)
+	client := &http.Client{
+		Jar:     jar,
+		Timeout: 20 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	params := url.Values{}
-	params.Set("u1", "https://graph.qq.com/oauth2.0/login_jump")
+	params.Set("u1", qqOAuthLoginJump)
 	params.Set("ptqrtoken", strconv.Itoa(hash33(qrsig)))
-	params.Set("ptredirect", "100")
+	params.Set("ptredirect", "0")
 	params.Set("h", "1")
 	params.Set("t", "1")
 	params.Set("g", "1")
 	params.Set("from_ui", "1")
 	params.Set("ptlang", "2052")
 	params.Set("action", fmt.Sprintf("0-0-%d", time.Now().UnixMilli()))
-	params.Set("js_ver", "21072115")
+	params.Set("js_ver", "26071711")
 	params.Set("js_type", "1")
-	params.Set("login_sig", "")
+	params.Set("login_sig", loginSig)
 	params.Set("pt_uistyle", "40")
 	params.Set("aid", "716027609")
 	params.Set("daid", "383")
-	params.Set("pt_3rd_aid", "100497308")
-	params.Set("has_onekey", "1")
-	params.Set("pttype", "1")
-	params.Set("service", "ptqrlogin")
-	params.Set("nodirect", "0")
+	params.Set("pt_3rd_aid", qqOAuthClientID)
+	params.Set("pt_js_version", "c1987b96")
 
-	req, err := http.NewRequest("GET", qqQRCheckAPI+"?"+params.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	req.Header.Set("Referer", "https://xui.ptlogin2.qq.com/")
-	req.Header.Set("Cookie", "qrsig="+qrsig)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := doQQRequest(client, http.MethodGet, qqQRCheckAPI+"?"+params.Encode(), nil, "https://xui.ptlogin2.qq.com/", "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -171,21 +221,22 @@ func (q *QQ) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 		return result, nil
 	}
 
-	cookies := responseCookies(resp)
 	if redirectURL != "" {
-		redirectCookies, err := fetchQQRedirectCookies(redirectURL, cookies)
-		if err == nil {
-			for k, v := range redirectCookies {
-				cookies[k] = v
-			}
-		} else {
+		cookies, err := finishQQMusicLogin(client, jar, redirectURL)
+		if err != nil {
+			result.Status = model.QRLoginStatusFailed
+			result.Message = err.Error()
 			result.Extra["redirect_error"] = err.Error()
+			return result, nil
 		}
+		result.Cookies = normalizeQQMusicCookies(cookies)
+		result.Cookie = joinCookieMap(result.Cookies)
+		q.cookie = result.Cookie
+		q.isVipCache = nil
+		return result, nil
 	}
-	result.Cookies = normalizeQQMusicCookies(cookies)
-	result.Cookie = joinCookieMap(result.Cookies)
-	q.cookie = result.Cookie
-	q.isVipCache = nil
+	result.Status = model.QRLoginStatusFailed
+	result.Message = "qq login redirect url missing"
 	return result, nil
 }
 
@@ -529,68 +580,305 @@ func qqWXLoginDataCookies(data map[string]interface{}) map[string]string {
 	return result
 }
 
-func fetchQQRedirectCookies(redirectURL string, cookies map[string]string) (map[string]string, error) {
-	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
-	currentURL := strings.TrimSpace(redirectURL)
-	collected := make(map[string]string, len(cookies)+8)
-	for k, v := range cookies {
-		collected[k] = v
+func finishQQMusicLogin(client *http.Client, jar http.CookieJar, redirectURL string) (map[string]string, error) {
+	return completeQQMusicLogin(client, jar, redirectURL, qqOAuthAuthorize, qqMusicLoginAPI)
+}
+
+func completeQQMusicLogin(client *http.Client, jar http.CookieJar, redirectURL, authorizeURL, musicAPIURL string) (map[string]string, error) {
+	loginURL, err := followQQLoginRedirects(client, redirectURL, "https://xui.ptlogin2.qq.com/")
+	if err != nil {
+		return nil, err
 	}
-	referer := "https://y.qq.com/"
 
-	for i := 0; i < 8 && currentURL != ""; i++ {
-		req, err := http.NewRequest("GET", currentURL, nil)
-		if err != nil {
-			return collected, err
-		}
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-		req.Header.Set("Referer", referer)
-		req.Header.Set("Cookie", joinCookieMap(collected))
-		resp, err := client.Do(req)
-		if err != nil {
-			return collected, err
-		}
+	pSkey := firstNonEmptyQQ(qqJarCookie(jar, loginURL, "p_skey"), qqJarCookie(jar, qqOAuthLoginJump, "p_skey"))
+	if pSkey == "" {
+		return nil, fmt.Errorf("qq login missing p_skey")
+	}
 
-		for k, v := range responseCookies(resp) {
-			collected[k] = v
+	redirectURI := "https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=" + url.QueryEscape("https://y.qq.com/")
+	form := url.Values{}
+	form.Set("response_type", "code")
+	form.Set("client_id", qqOAuthClientID)
+	form.Set("redirect_uri", redirectURI)
+	form.Set("scope", qqOAuthScope)
+	form.Set("state", "state")
+	form.Set("switch", "")
+	form.Set("from_ptlogin", "1")
+	form.Set("src", "1")
+	form.Set("update_auth", "1")
+	form.Set("openapi", "1010_1030")
+	form.Set("g_tk", strconv.Itoa(gtk33(pSkey)))
+	form.Set("auth_time", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	form.Set("ui", qqUUID())
+
+	resp, err := doQQRequest(client, http.MethodPost, authorizeURL, []byte(form.Encode()), qqOAuthLoginJump, "application/x-www-form-urlencoded", map[string]string{
+		"Origin": "https://graph.qq.com",
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("qq oauth authorize http status %d", resp.StatusCode)
+	}
+
+	finalURL := resp.Request.URL.String()
+	if location := strings.TrimSpace(resp.Header.Get("Location")); location != "" {
+		finalURL, err = followQQLoginRedirects(client, resolveQQURL(authorizeURL, location), authorizeURL)
+		if err != nil {
+			return nil, err
 		}
+	}
+	code := qqQueryValue(finalURL, "code")
+	if code == "" {
+		return nil, fmt.Errorf("qq oauth authorize missing code")
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"comm": map[string]interface{}{
+			"g_tk":     5381,
+			"platform": "yqq",
+			"ct":       24,
+			"cv":       0,
+		},
+		"req": map[string]interface{}{
+			"module": "QQConnectLogin.LoginServer",
+			"method": "QQLogin",
+			"param": map[string]string{
+				"code": code,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err = doQQRequest(client, http.MethodPost, musicAPIURL, payload, "https://y.qq.com/", "application/json", nil)
+	if err != nil {
+		return nil, err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("qq music login http status %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Msg     string `json:"msg"`
+		Req     struct {
+			Code    int                    `json:"code"`
+			Message string                 `json:"message"`
+			Msg     string                 `json:"msg"`
+			Data    map[string]interface{} `json:"data"`
+		} `json:"req"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("qq music login json parse error: %w", err)
+	}
+	if parsed.Code != 0 || parsed.Req.Code != 0 {
+		message := firstNonEmptyQQ(parsed.Req.Message, parsed.Req.Msg, parsed.Message, parsed.Msg)
+		return nil, fmt.Errorf("qq music login api error: %s (code %d, req code %d)", message, parsed.Code, parsed.Req.Code)
+	}
+
+	cookies := qqCookiesForURLs(jar, "https://xui.ptlogin2.qq.com/", "https://ssl.ptlogin2.qq.com/", "https://graph.qq.com/", "https://u.y.qq.com/", "https://y.qq.com/")
+	mergeNonEmptyCookies(cookies, responseCookies(resp))
+	for k, v := range qqWXLoginDataCookies(parsed.Req.Data) {
+		if strings.TrimSpace(cookies[k]) == "" {
+			cookies[k] = v
+		}
+	}
+	normalized := normalizeQQMusicCookies(cookies)
+	if firstNonEmptyQQ(normalized["qm_keyst"], normalized["qqmusic_key"], normalized["musickey"]) == "" {
+		return nil, fmt.Errorf("qq music login missing qm_keyst")
+	}
+	return normalized, nil
+}
+
+func followQQLoginRedirects(client *http.Client, currentURL, referer string) (string, error) {
+	currentURL = strings.TrimSpace(currentURL)
+	for i := 0; i < 10 && currentURL != ""; i++ {
+		resp, err := doQQRequest(client, http.MethodGet, currentURL, nil, referer, "", nil)
+		if err != nil {
+			return currentURL, err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
 
 		location := strings.TrimSpace(resp.Header.Get("Location"))
-		resp.Body.Close()
 		if location == "" || resp.StatusCode < 300 || resp.StatusCode >= 400 {
-			break
-		}
-		nextURL, err := url.Parse(location)
-		if err != nil {
-			return collected, err
-		}
-		if !nextURL.IsAbs() {
-			baseURL, err := url.Parse(currentURL)
-			if err != nil {
-				return collected, err
-			}
-			nextURL = baseURL.ResolveReference(nextURL)
+			return currentURL, nil
 		}
 		referer = currentURL
-		currentURL = nextURL.String()
+		currentURL = resolveQQURL(currentURL, location)
 	}
+	if currentURL == "" {
+		return "", fmt.Errorf("qq login redirect url is empty")
+	}
+	return currentURL, fmt.Errorf("qq login too many redirects")
+}
 
-	return collected, nil
+func doQQRequest(client *http.Client, method, rawURL string, body []byte, referer, contentType string, headers map[string]string) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, rawURL, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	return client.Do(req)
+}
+
+func qqCookiesForURLs(jar http.CookieJar, urls ...string) map[string]string {
+	cookies := map[string]string{}
+	for _, rawURL := range urls {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			continue
+		}
+		for _, cookie := range jar.Cookies(u) {
+			if strings.TrimSpace(cookie.Name) != "" && strings.TrimSpace(cookie.Value) != "" {
+				cookies[cookie.Name] = cookie.Value
+			}
+		}
+	}
+	return cookies
+}
+
+func qqJarCookie(jar http.CookieJar, rawURL, key string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	for _, cookie := range jar.Cookies(u) {
+		if cookie.Name == key {
+			return strings.TrimSpace(cookie.Value)
+		}
+	}
+	return ""
+}
+
+func setQQInitialCookies(jar http.CookieJar, cookies map[string]string) {
+	values := make([]*http.Cookie, 0, len(cookies))
+	for key, value := range cookies {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		values = append(values, &http.Cookie{Name: key, Value: value})
+	}
+	for _, rawURL := range []string{qqQRLoginPageAPI, qqQRShowAPI, qqOAuthLoginJump, "https://y.qq.com/"} {
+		u, err := url.Parse(rawURL)
+		if err == nil {
+			jar.SetCookies(u, values)
+		}
+	}
+}
+
+func encodeQQCookieState(cookies map[string]string) string {
+	raw := joinCookieMap(cookies)
+	if raw == "" {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeQQCookieState(encoded string) map[string]string {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil
+	}
+	result := map[string]string{}
+	for _, part := range strings.Split(string(raw), ";") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) == 2 && strings.TrimSpace(kv[0]) != "" && strings.TrimSpace(kv[1]) != "" {
+			result[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+		}
+	}
+	return result
+}
+
+func mergeNonEmptyCookies(target, source map[string]string) {
+	for key, value := range source {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		target[key] = value
+	}
+}
+
+func resolveQQURL(baseURL, reference string) string {
+	ref, err := url.Parse(strings.TrimSpace(reference))
+	if err != nil {
+		return reference
+	}
+	if ref.IsAbs() {
+		return ref.String()
+	}
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return reference
+	}
+	return base.ResolveReference(ref).String()
+}
+
+func qqQueryValue(rawURL, key string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get(key)
+}
+
+func gtk33(value string) int {
+	h := 5381
+	for _, c := range value {
+		h += (h << 5) + int(c)
+	}
+	return h & 0x7fffffff
+}
+
+func qqUUID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(buf)
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32]
 }
 
 func normalizeQQMusicCookies(cookies map[string]string) map[string]string {
 	result := make(map[string]string, len(cookies)+4)
-	for k, v := range cookies {
-		result[k] = v
-	}
+	mergeNonEmptyCookies(result, cookies)
 	if result["uin"] == "" {
 		result["uin"] = firstNonEmptyQQ(result["ptui_loginuin"], result["luin"], result["pt2gguin"], result["superuin"], result["p_uin"], result["musicid"], result["userid"], result["wxuin"])
 	}
 	if result["qqmusic_key"] == "" {
-		result["qqmusic_key"] = firstNonEmptyQQ(result["p_skey"], result["skey"], result["musickey"])
+		result["qqmusic_key"] = firstNonEmptyQQ(result["qm_keyst"], result["musickey"], result["music_key"], result["p_skey"], result["skey"])
 	}
 	if result["qm_keyst"] == "" {
-		result["qm_keyst"] = result["qqmusic_key"]
+		result["qm_keyst"] = firstNonEmptyQQ(result["qqmusic_key"], result["musickey"], result["music_key"], result["p_skey"], result["skey"])
 	}
 	return result
 }
