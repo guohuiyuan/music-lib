@@ -352,6 +352,30 @@ type miguRateFormat struct {
 	ShowTags        []string `json:"showTags"`
 }
 
+type miguZ3DCode struct {
+	FormatType      string `json:"formatType"`
+	ResourceType    string `json:"resourceType"`
+	Size            string `json:"size"`
+	AndroidSize     string `json:"androidSize"`
+	ISize           string `json:"isize"`
+	ASize           string `json:"asize"`
+	FileType        string `json:"fileType"`
+	AndroidFileType string `json:"androidFileType"`
+	IFormat         string `json:"iformat"`
+	AFormat         string `json:"aformat"`
+	Price           string `json:"price"`
+	Z3DKey          string `json:"z3dKey"`
+	Z3DIV           string `json:"z3dIv"`
+	AndroidFileKey  string `json:"androidFileKey"`
+	IOSFileKey      string `json:"iosFileKey"`
+	IOSSize         string `json:"iosSize"`
+	IOSFileType     string `json:"iosFileType"`
+	URL             string `json:"url"`
+	IOSURL          string `json:"iosUrl"`
+	AndroidURL      string `json:"androidUrl"`
+	H5URL           string `json:"h5Url"`
+}
+
 type MiguSongItem struct {
 	ID              string           `json:"id"`
 	Name            string           `json:"name"`
@@ -367,10 +391,13 @@ type MiguSongItem struct {
 	ContentID       string           `json:"contentId"`
 	CopyrightID     string           `json:"copyrightId"`
 	ChargeAuditions string           `json:"chargeAuditions"`
+	DownloadTags    []string         `json:"downloadTags"`
 	ImgItems        []miguImageItem  `json:"imgItems"`
 	AlbumImgs       []miguImageItem  `json:"albumImgs"`
+	NewRateFormats  []miguRateFormat `json:"newRateFormats"`
 	RateFormats     []miguRateFormat `json:"rateFormats"`
 	AudioFormats    []miguRateFormat `json:"audioFormats"`
+	Z3DCode         miguZ3DCode      `json:"z3dCode"`
 	Img1            string           `json:"img1"`
 	Img2            string           `json:"img2"`
 	Img3            string           `json:"img3"`
@@ -414,7 +441,7 @@ func (m *Migu) fetchSongDetail(contentID string) (*model.Song, error) {
 
 // convertItemToSong 将 API 返回的 Item 转换为 Song 模型 (复用 Search 中的逻辑)
 func (m *Migu) convertItemToSong(item MiguSongItem) *model.Song {
-	return m.convertItemToSongWithOption(item, false)
+	return m.convertItemToSongWithOption(item, true)
 }
 
 func (m *Migu) convertItemToSongAllowPaid(item MiguSongItem) *model.Song {
@@ -429,10 +456,7 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 		albumName = strings.TrimSpace(item.Albums[0].Name)
 	}
 
-	rateFormats := item.RateFormats
-	if len(rateFormats) == 0 {
-		rateFormats = item.AudioFormats
-	}
+	rateFormats := collectMiguFormats(item)
 	if len(rateFormats) == 0 {
 		return nil
 	}
@@ -441,10 +465,11 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 		index int
 		size  int64
 		ext   string
+		rank  int
+		vip   bool
 	}
 	var candidates []validFormat
 	var duration int64 = int64(item.Duration)
-	var pqSize int64 = 0
 
 	for i, fmtItem := range rateFormats {
 		sizeStr := firstNonZeroString(fmtItem.AndroidSize, fmtItem.ASize, fmtItem.Size, fmtItem.ISize)
@@ -453,10 +478,6 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 		ext := firstNonEmpty(fmtItem.AndroidFileType, fmtItem.FileType)
 		if ext == "" {
 			ext = miguFormatExt(fmtItem.FormatType, firstNonEmpty(fmtItem.AFormat, fmtItem.IFormat))
-		}
-
-		if fmtItem.FormatType == "PQ" {
-			pqSize = sizeVal
 		}
 
 		if duration == 0 && sizeVal > 0 {
@@ -481,15 +502,29 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 		}
 		isVipTag := false
 		for _, tag := range tags {
-			if tag == "vip" {
+			if strings.EqualFold(strings.TrimSpace(tag), "vip") {
+				isVipTag = true
+				break
+			}
+		}
+		for _, tag := range item.DownloadTags {
+			if strings.EqualFold(strings.TrimSpace(tag), "vip") {
 				isVipTag = true
 				break
 			}
 		}
 		isHiddenPaid := (item.ChargeAuditions == "1" && priceVal >= 200)
 
+		// Keep paid formats in search and playlist results. Entitlement is
+		// resolved by the playback endpoint, while IsVIP remains visible to callers.
 		if allowPaid || (!isVipTag && !isHiddenPaid) {
-			candidates = append(candidates, validFormat{index: i, size: sizeVal, ext: ext})
+			candidates = append(candidates, validFormat{
+				index: i,
+				size:  sizeVal,
+				ext:   ext,
+				rank:  miguFormatRank(fmtItem.FormatType),
+				vip:   isVipTag || isHiddenPaid,
+			})
 		}
 	}
 
@@ -497,14 +532,16 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 		return nil
 	}
 
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].size > candidates[j].size })
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].rank != candidates[j].rank {
+			return candidates[i].rank > candidates[j].rank
+		}
+		return candidates[i].size > candidates[j].size
+	})
 	bestInfo := candidates[0]
 	bestFormat := rateFormats[bestInfo.index]
 
 	displaySize := bestInfo.size
-	if pqSize > 0 {
-		displaySize = pqSize
-	}
 
 	bitrate := 0
 	if duration > 0 && bestInfo.size > 0 {
@@ -522,6 +559,14 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 	if item.CopyrightID != "" {
 		extra["copyright_id"] = item.CopyrightID
 	}
+	if item.SongID != "" {
+		extra["song_id"] = item.SongID
+	}
+	if item.AlbumID != "" {
+		extra["album_id"] = item.AlbumID
+	}
+
+	isVIP := item.ChargeAuditions == "1" || bestInfo.vip
 
 	return &model.Song{
 		Source:   "migu",
@@ -536,6 +581,70 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 		Ext:      bestInfo.ext,
 		Link:     fmt.Sprintf("https://music.migu.cn/v3/music/song/%s", linkID),
 		Extra:    extra,
+		IsVIP:    isVIP,
+	}
+}
+
+func collectMiguFormats(item MiguSongItem) []miguRateFormat {
+	groups := [][]miguRateFormat{
+		item.NewRateFormats,
+		item.RateFormats,
+		item.AudioFormats,
+	}
+	if item.Z3DCode.FormatType != "" {
+		groups = append(groups, []miguRateFormat{{
+			FormatType:      item.Z3DCode.FormatType,
+			ResourceType:    item.Z3DCode.ResourceType,
+			Size:            item.Z3DCode.Size,
+			AndroidSize:     item.Z3DCode.AndroidSize,
+			ISize:           item.Z3DCode.ISize,
+			ASize:           item.Z3DCode.ASize,
+			FileType:        item.Z3DCode.FileType,
+			AndroidFileType: item.Z3DCode.AndroidFileType,
+			IFormat:         item.Z3DCode.IFormat,
+			AFormat:         item.Z3DCode.AFormat,
+			Price:           item.Z3DCode.Price,
+		}})
+	}
+
+	formats := make([]miguRateFormat, 0)
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, format := range group {
+			key := strings.ToUpper(strings.TrimSpace(format.FormatType)) + "|" + strings.TrimSpace(format.ResourceType)
+			if key == "|" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			formats = append(formats, format)
+		}
+	}
+	return formats
+}
+
+func miguFormatRank(formatType string) int {
+	switch strings.ToUpper(strings.TrimSpace(formatType)) {
+	case "ZQ32":
+		return 80
+	case "ZQ", "ZQ24":
+		return 75
+	case "SQ":
+		return 70
+	case "HQ":
+		return 60
+	case "I3D", "Z3D":
+		return 50
+	case "3D60":
+		return 40
+	case "PQ":
+		return 30
+	case "LQ":
+		return 20
+	default:
+		return 10
 	}
 }
 
@@ -620,7 +729,17 @@ func normalizeMiguImageURL(image string) string {
 func miguFormatExt(formatType, formatCode string) string {
 	formatType = strings.ToUpper(strings.TrimSpace(formatType))
 	formatCode = strings.TrimSpace(formatCode)
-	if strings.Contains(formatType, "SQ") || strings.HasPrefix(formatCode, "011") {
+	switch formatType {
+	case "SQ", "ZQ", "ZQ24":
+		return "flac"
+	case "ZQ32", "Z3D", "3D60":
+		return "wav"
+	case "I3D":
+		return "m4a"
+	case "PQ", "HQ", "LQ":
+		return "mp3"
+	}
+	if strings.HasPrefix(formatCode, "011") {
 		return "flac"
 	}
 	return "mp3"
