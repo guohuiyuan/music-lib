@@ -9,6 +9,8 @@ import (
 
 var ErrPlaylistCategoriesUnsupported = errors.New("playlist categories not supported")
 var ErrUserPlaylistsUnsupported = errors.New("user playlists not supported")
+var ErrTopListsUnsupported = errors.New("top lists not supported")
+var ErrHotSongsUnsupported = errors.New("hot songs not supported")
 
 // Song 是所有音乐源通用的歌曲结构
 type Song struct {
@@ -52,6 +54,20 @@ type Playlist struct {
 
 	// [新增] 用于存储源特有的元数据，避免在 ID 中拼接字符串
 	Extra map[string]string `json:"extra,omitempty"`
+}
+
+// TopList 是所有音乐源通用的排行榜结构
+type TopList struct {
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	Cover           string            `json:"cover"`
+	Description     string            `json:"description"`
+	UpdateFrequency string            `json:"update_frequency"` // 更新周期，例如 "每天更新"
+	TrackCount      int               `json:"track_count"`
+	PlayCount       int64             `json:"play_count"`
+	Source          string            `json:"source"`
+	Link            string            `json:"link"`
+	Extra           map[string]string `json:"extra,omitempty"`
 }
 
 type PlaylistCategory struct {

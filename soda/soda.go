@@ -27,8 +27,14 @@ const (
 )
 
 type Soda struct {
-	cookie     string
-	isVipCache *bool
+	cookie string
+	// 仅会员曲目走 App 端整曲取流时需要的应用级签名（参考 sodam / libresoda）。
+	signer *SignerConfig
+	// localSigner 为 nil 表示不使用本机签名；非 nil 时用内置 JS 垫片直连官方客户端的 bdms.node。
+	localSigner    *localSigner
+	appCreds       AppCredentials
+	signerIdentity *AppCredentials
+	isVipCache     *bool
 }
 
 type sodaArtist struct {
@@ -217,7 +223,36 @@ type sodaShareAlbumPage struct {
 	} `json:"loaderData"`
 }
 
-func New(cookie string) *Soda { return &Soda{cookie: cookie} }
+// New 创建汽水客户端。若设置了 QISHUI_SIGNER_URL，会自动接上应用级签名器；
+// 需要显式控制签名器时用 NewWithOptions / NewWithSigner。
+func New(cookie string) *Soda {
+	s := &Soda{cookie: cookie}
+	if signer := signerFromEnv(); signer != nil {
+		s.signer = signer
+	}
+	// 没配远程签名器也默认带上本机签名器：装了官方客户端就能直接取整曲流，不必起服务。
+	if localSignerAutoEnabled() {
+		s.SetLocalSigner(LocalSignerOptions{})
+	}
+	return s
+}
+
+// NewWithOptions 创建汽水客户端并应用选项（WithSigner / WithAppCredentials 等）。
+func NewWithOptions(cookie string, opts ...Option) *Soda {
+	s := New(cookie)
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
+}
+
+// NewWithSigner 创建带应用级签名器的汽水客户端：
+// 会员整曲走 POST /luna/pc/track_v2（x-helios / x-medusa），免费曲目自动回退公开接口。
+func NewWithSigner(cookie, signerURL, signerToken string) *Soda {
+	return NewWithOptions(cookie, WithSigner(signerURL, signerToken))
+}
 
 var defaultSoda = New("")
 
@@ -1152,6 +1187,9 @@ type DownloadInfo struct {
 	Duration float64
 	Bitrate  int
 	Quality  string
+	// Preview 为 true 表示拿到的是平台下发的试听片段（会员曲目在缺少应用级签名或账号
+	// 无权益时只有 30s/60s），而不是完整整曲。
+	Preview bool
 }
 
 type sodaPlayerInfo struct {
@@ -1435,35 +1473,8 @@ func sodaSeoTrackURL(trackID string) string {
 	return sodaSeoBase + "?" + params.Encode()
 }
 
-func sodaPCAppParams() url.Values {
-	now := time.Now().UnixMilli()
-	deviceID := strconv.FormatInt(now, 10)
-	iid := strconv.FormatInt(now+1, 10)
-
-	params := url.Values{}
-	params.Set("aid", "386088")
-	params.Set("app_name", "luna_pc")
-	params.Set("region", "cn")
-	params.Set("geo_region", "cn")
-	params.Set("os_region", "cn")
-	params.Set("sim_region", "")
-	params.Set("device_id", deviceID)
-	params.Set("cdid", "")
-	params.Set("iid", iid)
-	params.Set("version_name", "3.3.0")
-	params.Set("version_code", "30030000")
-	params.Set("channel", "official")
-	params.Set("build_mode", "master")
-	params.Set("network_carrier", "")
-	params.Set("ac", "wifi")
-	params.Set("tz_name", "Asia/Shanghai")
-	params.Set("resolution", "")
-	params.Set("device_platform", "windows")
-	params.Set("device_type", "Windows")
-	params.Set("os_version", "Windows 11")
-	params.Set("fp", deviceID)
-	return params
-}
+// sodaPCAppParams 生成 PC App 端公共查询参数（未配置设备指纹时用临时值）。
+func sodaPCAppParams() url.Values { return sodaPCAppParamsWith(nil) }
 
 func sodaPCTrackV2URL() string {
 	params := sodaPCAppParams()
@@ -1577,6 +1588,11 @@ func (s *Soda) fetchPCTrackV2(trackID string) (*sodaTrackV2Response, error) {
 		return nil, errors.New("soda pc track_v2 requires cookie")
 	}
 
+	creds, err := s.ensureAppCredentials()
+	if err != nil {
+		return nil, err
+	}
+
 	reqData := map[string]string{
 		"track_id":   trackID,
 		"media_type": "track",
@@ -1588,11 +1604,45 @@ func (s *Soda) fetchPCTrackV2(trackID string) (*sodaTrackV2Response, error) {
 		return nil, err
 	}
 
-	body, err := utils.Post(sodaPCTrackV2URL(), bytes.NewReader(jsonData),
-		s.pcRequestOptions(utils.WithHeader("Content-Type", "application/json; charset=utf-8"))...,
-	)
+	reqURL := sodaPCTrackV2URLWith(&creds)
+	headers := map[string]string{
+		"User-Agent":               creds.userAgentOrDefault(),
+		"Content-Type":             "application/json; charset=utf-8",
+		"X-SS-STUB":                sodaMD5HexUpper(jsonData),
+		"x-luna-background-type":   "foreground",
+		"x-luna-is-background-req": "0",
+		"x-luna-is-local-user":     "0",
+		"Cookie":                   s.cookie,
+	}
+	for key, value := range creds.staticSignatureHeaders() {
+		headers[key] = value
+	}
+
+	// 整曲端点逐请求校验应用级签名；签名器同时负责把 msToken / a_bogus 追加到 URL。
+	signedURL, extraHeaders, err := s.signStreamRequest(reqURL, string(jsonData), headers)
 	if err != nil {
 		return nil, err
+	}
+	reqURL = signedURL
+	for key, value := range extraHeaders {
+		headers[key] = value
+	}
+
+	opts := make([]utils.RequestOption, 0, len(headers))
+	opts = append(opts, utils.WithHeader("Accept", "application/json"))
+	for key, value := range headers {
+		opts = append(opts, utils.WithHeader(key, value))
+	}
+
+	body, err := utils.Post(reqURL, bytes.NewReader(jsonData), opts...)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		// 服务端对「缺应用级签名头」的请求就是 HTTP 200 + 空 body（不是接口下线）。
+		return nil, errors.New(
+			"soda pc track_v2 returned empty body: 缺应用级签名头（x-helios / x-medusa），" +
+				"请配置签名器（QISHUI_SIGNER_URL 或 SetSigner）后重试")
 	}
 	return parseSodaTrackV2Response(body)
 }

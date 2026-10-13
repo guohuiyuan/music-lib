@@ -110,8 +110,11 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 	}
 
 	webIsPreview := sodaDownloadInfoIsPreview(webInfo, fullDuration)
-	shouldTryPC := strings.TrimSpace(s.cookie) != "" && (isVIPTrack || webIsPreview || !sodaDownloadInfoIsLossless(webInfo))
-	// PC track_v2 已下线；若 SEO 已返回完整、非 VIP 且音质足够，无需再浪费一次请求。
+	// App 端整曲流（POST /luna/pc/track_v2）需要 Cookie + 应用级签名（x-helios / x-medusa）。
+	// 没接签名器时保持旧行为：只走公开 SEO/web 端点（会员曲目只有试听片段）。
+	signedAppReady := s.CanFetchSignedStream()
+	shouldTryPC := signedAppReady && (isVIPTrack || webIsPreview || !sodaDownloadInfoIsLossless(webInfo))
+	// 若 SEO 已返回完整、非 VIP 且音质足够，无需再浪费一次请求。
 	if webInfo != nil && !isVIPTrack && !webIsPreview && sodaQualityRank(webInfo.Quality, webInfo.Format, webInfo.Bitrate) >= 60 {
 		shouldTryPC = false
 	}
@@ -131,6 +134,7 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 						isVip := true
 						s.isVipCache = &isVip
 					}
+					videoInfo.Preview = false
 					return videoInfo, nil
 				}
 				lastErr = errors.New("soda pc track_v2 returned preview stream")
@@ -143,6 +147,7 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 							isVip := true
 							s.isVipCache = &isVip
 						}
+						pcInfo.Preview = false
 						return pcInfo, nil
 					}
 					lastErr = errors.New("soda pc track_v2 returned preview stream")
@@ -158,6 +163,7 @@ func (s *Soda) resolveDownloadInfo(trackID string, webResp *sodaTrackV2Response)
 	}
 
 	if webInfo != nil && webInfo.URL != "" {
+		webInfo.Preview = webIsPreview
 		if isVIPTrack && webIsPreview {
 			if strings.TrimSpace(s.cookie) != "" {
 				isVip := false

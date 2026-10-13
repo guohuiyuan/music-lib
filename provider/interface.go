@@ -41,6 +41,23 @@ type RecommendedPlaylistProvider interface {
 	GetRecommendedPlaylists() ([]model.Playlist, error)
 }
 
+// TopListProvider 排行榜能力：榜单列表 + 榜单歌曲
+type TopListProvider interface {
+	GetTopLists() ([]model.TopList, error)
+	GetTopListSongs(topListID string) ([]model.Song, error)
+}
+
+// HotSongProvider 热门单曲能力
+type HotSongProvider interface {
+	GetHotSongs(limit int) ([]model.Song, error)
+}
+
+// RankingProvider 聚合排行榜与热门单曲能力
+type RankingProvider interface {
+	TopListProvider
+	HotSongProvider
+}
+
 type PlaylistCategoryProvider interface {
 	GetPlaylistCategories() ([]model.PlaylistCategory, error)
 	GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error)

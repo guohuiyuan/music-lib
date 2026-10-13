@@ -299,6 +299,12 @@ func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Son
 }
 
 func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []model.Song, error) {
+	return n.fetchPlaylistDetailLimited(playlistID, 0)
+}
+
+// fetchPlaylistDetailLimited fetches playlist metadata and songs.
+// maxSongs limits how many songs are fetched (0 means no limit).
+func (n *Netease) fetchPlaylistDetailLimited(playlistID string, maxSongs int) (*model.Playlist, []model.Song, error) {
 	reqData := map[string]interface{}{
 		"id":         playlistID,
 		"n":          0, // 0表示不直接返回详情，我们只需要ID列表
@@ -365,6 +371,9 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 	var allIDs []string
 	for _, tid := range resp.Playlist.TrackIds {
 		allIDs = append(allIDs, strconv.FormatInt(tid.ID, 10))
+	}
+	if maxSongs > 0 && len(allIDs) > maxSongs {
+		allIDs = allIDs[:maxSongs]
 	}
 
 	// Fetch song details in batches.

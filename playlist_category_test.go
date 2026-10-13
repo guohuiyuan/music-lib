@@ -32,6 +32,7 @@ func TestPlaylistCategoryPlatforms(t *testing.T) {
 		{name: "kuwo", source: "kuwo", getCategories: kuwo.GetPlaylistCategories, getCategoryPlaylists: kuwo.GetCategoryPlaylists},
 		{name: "joox", source: "joox", getCategories: joox.GetPlaylistCategories, getCategoryPlaylists: joox.GetCategoryPlaylists},
 		{name: "migu", source: "migu", getCategories: migu.GetPlaylistCategories, getCategoryPlaylists: migu.GetCategoryPlaylists},
+		{name: "soda", source: "soda", getCategories: soda.GetPlaylistCategories, getCategoryPlaylists: soda.GetCategoryPlaylists},
 	}
 
 	for _, suite := range suites {
@@ -97,7 +98,6 @@ func TestPlaylistCategoryUnsupportedPlatforms(t *testing.T) {
 		{name: "bilibili", getCategories: bilibili.GetPlaylistCategories, getPlaylists: bilibili.GetCategoryPlaylists},
 		{name: "fivesing", getCategories: fivesing.GetPlaylistCategories, getPlaylists: fivesing.GetCategoryPlaylists},
 		{name: "jamendo", getCategories: jamendo.GetPlaylistCategories, getPlaylists: jamendo.GetCategoryPlaylists},
-		{name: "soda", getCategories: soda.GetPlaylistCategories, getPlaylists: soda.GetCategoryPlaylists},
 	}
 
 	for _, suite := range suites {
