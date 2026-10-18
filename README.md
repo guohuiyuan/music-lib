@@ -427,9 +427,16 @@ s := soda.New(cookie)
 // 也可以显式声明（零值 = 自动探测运行时、客户端目录与身份缓存）：
 s = soda.NewWithOptions(cookie, soda.WithLocalSigner(soda.LocalSignerOptions{}))
 
+// 客户端不在默认位置时，直接传入包含 SodaMusic.exe 和 bdms.node 的版本目录：
+opts := soda.LocalSignerOptions{
+	ClientDir: `D:\Apps\Soda Music\3.1.0`,
+}
+s = soda.NewWithOptions(cookie, soda.WithLocalSigner(opts))
+
 // 设备身份（device_id / iid / fp）首次签名时生成并缓存到
 // <用户配置目录>/music-lib/soda-identity.json，可用 QISHUI_DEVICE_ID 固定。
-soda.LocalSignerAvailable() // 探测本机是否可用，供上层做状态展示
+soda.LocalSignerAvailable()                      // 使用默认目录探测
+soda.LocalSignerAvailableWithOptions(opts)       // 使用自定义目录探测
 
 // 换源/解析得到汽水歌曲后：
 info, err := s.GetDownloadInfo(song) // info.Preview 为 true 表示拿到的是试听片段

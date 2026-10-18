@@ -109,10 +109,16 @@ func (s *Soda) HasLocalSigner() bool {
 
 // LocalSignerAvailable 用默认配置探测本机签名器是否可用（供上层做状态展示）。
 func LocalSignerAvailable() bool {
+	return LocalSignerAvailableWithOptions(LocalSignerOptions{})
+}
+
+// LocalSignerAvailableWithOptions 用指定配置探测本机签名器是否可用。
+// 上层可传入自定义的 ClientDir，以支持非默认位置的汽水音乐客户端。
+func LocalSignerAvailableWithOptions(opts LocalSignerOptions) bool {
 	if !localSignerAutoEnabled() {
 		return false
 	}
-	signer := &localSigner{}
+	signer := &localSigner{opts: opts}
 	_, _, err := signer.resolve()
 	return err == nil
 }

@@ -67,6 +67,34 @@ func TestLocalSignerUnavailableWithoutClient(t *testing.T) {
 	}
 }
 
+func TestLocalSignerAvailableWithExplicitClientDir(t *testing.T) {
+	baseDir := t.TempDir()
+	clientDir := filepath.Join(baseDir, "Soda Music", "3.1.0")
+	bdmsPath := filepath.Join(clientDir, "resources", "app.asar.unpacked", "bdms.node")
+	if err := os.MkdirAll(filepath.Dir(bdmsPath), 0o755); err != nil {
+		t.Fatalf("create client resources: %v", err)
+	}
+	if err := os.WriteFile(bdmsPath, []byte("test"), 0o644); err != nil {
+		t.Fatalf("write bdms.node: %v", err)
+	}
+	runtimePath := filepath.Join(baseDir, "node")
+	if err := os.WriteFile(runtimePath, []byte("test"), 0o755); err != nil {
+		t.Fatalf("write runtime: %v", err)
+	}
+
+	t.Setenv(LocalSignerEnvEnabled, "1")
+	t.Setenv(LocalSignerEnvClientDir, "")
+	t.Setenv(LocalSignerEnvBDMS, "")
+	t.Setenv(LocalSignerEnvRuntime, runtimePath)
+
+	if !LocalSignerAvailableWithOptions(LocalSignerOptions{ClientDir: clientDir}) {
+		t.Fatal("自定义 ClientDir 下应检测到本机签名器")
+	}
+	if LocalSignerAvailableWithOptions(LocalSignerOptions{ClientDir: filepath.Join(baseDir, "missing")}) {
+		t.Fatal("缺失的 ClientDir 不应报告本机签名器可用")
+	}
+}
+
 // 需要本机装有汽水客户端（bdms.node）才能跑：
 //
 //	QISHUI_LOCAL_SIGNER_TEST=1 go test ./soda -run TestLocalSignerSignsWithClient -v
