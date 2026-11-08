@@ -313,6 +313,33 @@ func TestSpotifyPublicTrackEmbedWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestSpotifyDownloadURLPrefersPublicPreviewBeforeCatalogAPI(t *testing.T) {
+	clearSpotifyEnvironment(t)
+	_, restore := newSpotifyTestServer(t)
+	defer restore()
+
+	var apiRequests int32
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&apiRequests, 1)
+		http.Error(w, "catalog API must not be called", http.StatusInternalServerError)
+	}))
+	defer apiServer.Close()
+	spotifyAPIBase = apiServer.URL
+
+	downloadURL, err := New(`{"access_token":"configured-token"}`).GetDownloadURL(
+		&model.Song{ID: "public-track"},
+	)
+	if err != nil {
+		t.Fatalf("GetDownloadURL() preview-first error = %v", err)
+	}
+	if downloadURL != "https://cdn.example/public-track.mp3" {
+		t.Fatalf("GetDownloadURL() preview-first = %q", downloadURL)
+	}
+	if got := atomic.LoadInt32(&apiRequests); got != 0 {
+		t.Fatalf("catalog API requests = %d, want 0", got)
+	}
+}
+
 func TestSpotifyPublicTrackEmbedUsesAlternativeHost(t *testing.T) {
 	clearSpotifyEnvironment(t)
 	server, restore := newSpotifyTestServer(t)

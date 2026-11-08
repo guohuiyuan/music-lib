@@ -132,6 +132,16 @@ func (s *Spotify) GetDownloadURL(song *model.Song) (string, error) {
 		}
 	}
 
+	publicSong, fallbackErr := s.fetchPublicTrack(id)
+	if fallbackErr == nil {
+		if preview := strings.TrimSpace(publicSong.URL); preview != "" {
+			return preview, nil
+		}
+		fallbackErr = errors.New(
+			"spotify public embed does not provide a preview URL for this track",
+		)
+	}
+
 	var apiErr error
 	if s.hasCatalogCredentials() {
 		track, err := s.getTrack(id)
@@ -148,25 +158,16 @@ func (s *Spotify) GetDownloadURL(song *model.Song) (string, error) {
 		}
 	}
 
-	publicSong, fallbackErr := s.fetchPublicTrack(id)
-	if fallbackErr == nil {
-		if preview := strings.TrimSpace(publicSong.URL); preview != "" {
-			return preview, nil
-		}
-		fallbackErr = errors.New(
-			"spotify public embed does not provide a preview URL for this track",
-		)
-	}
 	if apiErr != nil {
 		return "", fmt.Errorf(
-			"spotify track %s: %w (public embed fallback: %v)",
+			"spotify track %s: public embed: %v; official API: %w; full tracks are DRM protected",
 			id,
-			apiErr,
 			fallbackErr,
+			apiErr,
 		)
 	}
 	return "", fmt.Errorf(
-		"spotify track %s: %w; full tracks are DRM protected",
+		"spotify track %s: public embed: %w; full tracks are DRM protected",
 		id,
 		fallbackErr,
 	)

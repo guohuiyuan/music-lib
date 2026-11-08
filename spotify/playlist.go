@@ -18,7 +18,7 @@ import (
 const (
 	spotifyPlaylistSearchLimit = 20
 	spotifyPlaylistPageSize    = 50
-	spotifyTrackEmbedTimeout   = 4 * time.Second
+	spotifyTrackEmbedTimeout   = 8 * time.Second
 )
 
 type spotifyEmbedPageResponse struct {
