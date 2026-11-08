@@ -18,6 +18,7 @@ import (
 	"github.com/guohuiyuan/music-lib/qianqian"
 	"github.com/guohuiyuan/music-lib/qq"
 	"github.com/guohuiyuan/music-lib/soda"
+	"github.com/guohuiyuan/music-lib/spotify"
 )
 
 var _ provider.TopListProvider = (*netease.Netease)(nil)
@@ -32,6 +33,7 @@ var _ provider.TopListProvider = (*jamendo.Jamendo)(nil)
 var _ provider.TopListProvider = (*joox.Joox)(nil)
 var _ provider.TopListProvider = (*bilibili.Bilibili)(nil)
 var _ provider.TopListProvider = (*apple.Apple)(nil)
+var _ provider.TopListProvider = (*spotify.Spotify)(nil)
 
 var _ provider.HotSongProvider = (*netease.Netease)(nil)
 var _ provider.HotSongProvider = (*qq.QQ)(nil)
@@ -45,6 +47,7 @@ var _ provider.HotSongProvider = (*jamendo.Jamendo)(nil)
 var _ provider.HotSongProvider = (*joox.Joox)(nil)
 var _ provider.HotSongProvider = (*bilibili.Bilibili)(nil)
 var _ provider.HotSongProvider = (*apple.Apple)(nil)
+var _ provider.HotSongProvider = (*spotify.Spotify)(nil)
 
 var _ provider.RankingProvider = (*netease.Netease)(nil)
 var _ provider.RankingProvider = (*qq.QQ)(nil)
@@ -58,6 +61,7 @@ var _ provider.RankingProvider = (*jamendo.Jamendo)(nil)
 var _ provider.RankingProvider = (*joox.Joox)(nil)
 var _ provider.RankingProvider = (*bilibili.Bilibili)(nil)
 var _ provider.RankingProvider = (*apple.Apple)(nil)
+var _ provider.RankingProvider = (*spotify.Spotify)(nil)
 
 func TestRankingProviderUnsupported(t *testing.T) {
 	// 未实现排行榜能力的平台应返回明确的 Unsupported 错误（这里以千千音乐为例）。

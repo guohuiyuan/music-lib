@@ -1,6 +1,7 @@
 package apple
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -46,17 +47,25 @@ var defaultApple = New("")
 
 // Package-level convenience functions delegating to defaultApple.
 
-func Search(keyword string) ([]model.Song, error)                      { return defaultApple.Search(keyword) }
-func GetDownloadURL(s *model.Song) (string, error)                     { return defaultApple.GetDownloadURL(s) }
-func GetLyrics(s *model.Song) (string, error)                          { return defaultApple.GetLyrics(s) }
-func Parse(link string) (*model.Song, error)                           { return defaultApple.Parse(link) }
-func SearchAlbum(keyword string) ([]model.Playlist, error)             { return defaultApple.SearchAlbum(keyword) }
-func SearchPlaylist(keyword string) ([]model.Playlist, error)          { return defaultApple.SearchPlaylist(keyword) }
-func GetAlbumSongs(id string) ([]model.Song, error)                    { return defaultApple.GetAlbumSongs(id) }
-func GetPlaylistSongs(id string) ([]model.Song, error)                 { return defaultApple.GetPlaylistSongs(id) }
-func ParseAlbum(link string) (*model.Playlist, []model.Song, error)    { return defaultApple.ParseAlbum(link) }
-func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) { return defaultApple.ParsePlaylist(link) }
-func GetPlaylistCategories() ([]model.PlaylistCategory, error)         { return defaultApple.GetPlaylistCategories() }
+func Search(keyword string) ([]model.Song, error)          { return defaultApple.Search(keyword) }
+func GetDownloadURL(s *model.Song) (string, error)         { return defaultApple.GetDownloadURL(s) }
+func GetLyrics(s *model.Song) (string, error)              { return defaultApple.GetLyrics(s) }
+func Parse(link string) (*model.Song, error)               { return defaultApple.Parse(link) }
+func SearchAlbum(keyword string) ([]model.Playlist, error) { return defaultApple.SearchAlbum(keyword) }
+func SearchPlaylist(keyword string) ([]model.Playlist, error) {
+	return defaultApple.SearchPlaylist(keyword)
+}
+func GetAlbumSongs(id string) ([]model.Song, error)    { return defaultApple.GetAlbumSongs(id) }
+func GetPlaylistSongs(id string) ([]model.Song, error) { return defaultApple.GetPlaylistSongs(id) }
+func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
+	return defaultApple.ParseAlbum(link)
+}
+func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
+	return defaultApple.ParsePlaylist(link)
+}
+func GetPlaylistCategories() ([]model.PlaylistCategory, error) {
+	return defaultApple.GetPlaylistCategories()
+}
 func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
 	return defaultApple.GetCategoryPlaylists(categoryID, page, limit)
 }
@@ -478,29 +487,77 @@ func fetchAppleToken() (string, error) {
 		return "", fmt.Errorf("apple: fetch homepage error: %w", err)
 	}
 
-	// Find index.js URI
-	re := regexp.MustCompile(`/(assets/index-legacy[~\-][^/"]+\.js)`)
-	match := re.FindSubmatch(body)
-	if len(match) < 2 {
-		return "", fmt.Errorf("apple: index.js URI not found")
+	bundlePath := extractAppleAppBundlePath(body)
+	if bundlePath == "" {
+		return "", fmt.Errorf("apple: app bundle URI not found")
 	}
 
-	jsURL := appleHomepageURL + "/" + string(match[1])
+	jsURL := appleHomepageURL + "/" + strings.TrimLeft(bundlePath, "/")
 	jsBody, err := utils.Get(jsURL,
 		utils.WithHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
 	)
 	if err != nil {
-		return "", fmt.Errorf("apple: fetch index.js error: %w", err)
+		return "", fmt.Errorf("apple: fetch app bundle error: %w", err)
 	}
 
-	// Find token (starts with eyJh)
-	tokenRe := regexp.MustCompile(`(?:=["'])(eyJh[^"']+)`)
-	tokenMatch := tokenRe.FindSubmatch(jsBody)
-	if len(tokenMatch) < 2 {
-		return "", fmt.Errorf("apple: token not found in index.js")
+	token := extractAppleDeveloperToken(jsBody)
+	if token == "" {
+		return "", fmt.Errorf("apple: developer token not found in app bundle")
 	}
+	return token, nil
+}
 
-	return string(tokenMatch[1]), nil
+var (
+	appleAppBundlePattern = regexp.MustCompile(`(?i)(?:src|href)=["']([^"']*assets/index[^"']*\.js)["']`)
+	appleJWTPattern       = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)
+)
+
+func extractAppleAppBundlePath(page []byte) string {
+	match := appleAppBundlePattern.FindSubmatch(page)
+	if len(match) < 2 {
+		return ""
+	}
+	return string(match[1])
+}
+
+func extractAppleDeveloperToken(bundle []byte) string {
+	tokens := appleJWTPattern.FindAll(bundle, -1)
+	var fallback string
+	for _, token := range tokens {
+		parts := strings.Split(string(token), ".")
+		if len(parts) != 3 {
+			continue
+		}
+		if fallback == "" {
+			fallback = string(token)
+		}
+
+		headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+		if err != nil {
+			continue
+		}
+		var header struct {
+			Kid string `json:"kid"`
+		}
+		if err := json.Unmarshal(headerJSON, &header); err != nil {
+			continue
+		}
+		if header.Kid == "WebPlayKid" {
+			return string(token)
+		}
+
+		claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			continue
+		}
+		var claims struct {
+			Issuer string `json:"iss"`
+		}
+		if err := json.Unmarshal(claimsJSON, &claims); err == nil && claims.Issuer == "AMPWebPlay" {
+			return string(token)
+		}
+	}
+	return fallback
 }
 
 // --- ID extraction ---

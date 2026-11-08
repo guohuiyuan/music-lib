@@ -1,5 +1,51 @@
 # music-lib
 
+## Spotify
+
+Spotify support follows the official Web API design used by
+[`zmb3/spotify`](https://github.com/zmb3/spotify): authenticated catalog
+metadata comes from the Spotify Web API; public playlists fall back to Spotify's
+public embed metadata, and charts can additionally use public chart data when
+Spotify's embed domain is unavailable. Lyrics use the public LRCLIB service.
+[`spotDL`](https://github.com/spotDL/spotify-downloader) was also reviewed for
+its metadata-first provider design. This package does not download from
+third-party audio sites and does not bypass Spotify DRM.
+
+```go
+client := spotify.New(`{
+  "client_id": "your-client-id",
+  "client_secret": "your-client-secret",
+  "refresh_token": "optional-user-refresh-token",
+  "market": "US"
+}`)
+
+songs, err := client.Search("Taylor Swift")
+albums, err := client.SearchAlbum("Taylor Swift")
+playlists, err := client.SearchPlaylist("Top Hits")
+categories, err := client.GetPlaylistCategories()
+topLists, err := client.GetTopLists()
+hitSongs, err := client.GetHotSongs(20)
+```
+
+Implemented methods: song search/parse/download/lyrics, album search/detail/link
+parse, playlist search/detail/link parse, recommendations, playlist categories,
+category playlists, ranking/hot songs, and current-user playlists.
+
+`client_id` + `client_secret` are enough for authenticated search and browse
+data. Public playlists can also be read without credentials through the embed
+fallback. Top 50 charts use Spotify's public metadata first and automatically
+fall back to public chart data when Spotify is blocked or region-restricted.
+Personal playlists require an OAuth access token or refresh token with
+`playlist-read-private playlist-read-collaborative` scope. The same JSON can be
+stored in go-music-dl's Spotify settings, or supplied through
+`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REFRESH_TOKEN`,
+`SPOTIFY_ACCESS_TOKEN`, and `SPOTIFY_MARKET`.
+
+Spotify's official API exposes only preview URLs for most tracks. Full Spotify
+audio is DRM protected, so `GetDownloadURL` returns the preview and
+`Song.Extra["preview_only"] == "true"`. It never bypasses DRM or pretends that a
+preview is a full download.
+
 `music-lib` 是一个用 Go 编写的音乐平台能力库。
 
 它不提供 UI，主要用来统一不同平台的歌曲、歌单、专辑搜索与解析能力，适合拿来做下载器、播放器、聚合工具或你自己的上层服务。
@@ -22,6 +68,7 @@
 | JOOX       | `joox`       | ✅   | ✅   | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ✅       | ✅       | ✅           | 歌单支持 OpenJOOX 接口和网页数据兜底     |
 | Bilibili   | `bilibili`   | ✅   | ✅   | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ❌       | ❌       | ❌           | 支持 FLAC 无损                           |
 | Apple Music | `apple`     | ✅   | ⚠️  | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ✅       | ✅       | ✅           | 下载仅 preview，完整需 gamdl 解密        |
+| Spotify     | `spotify`   | ✅   | ⚠️  | ✅   | ✅       | ✅       | ✅       | ✅       | ✅           | ✅       | ✅       | ✅           | 官方 API 仅提供 preview，完整音轨受 DRM 保护 |
 
 > `⚠️` 表示方法已接入，但平台搜索接口结果不稳定；优先使用已知 ID 或链接解析。
 > 本次从 `❌` 升级的能力已在 `go-music-dl` 侧通过集成测试验证；千千音乐和 Jamendo 的歌单搜索仍按不稳定能力标记。
@@ -42,6 +89,7 @@
 | JOOX       | ❌       | ❌       | ✅       |
 | Bilibili   | ❌       | ✅       | ❌       |
 | Apple Music | ❌      | ❌       | ✅       |
+| Spotify    | ✅       | ❌       | ✅       |
 
 排行榜与热门单曲能力支持情况（`provider.TopListProvider` / `provider.HotSongProvider`）：
 
@@ -59,6 +107,7 @@
 | JOOX       | ❌         | ❌       | ❌       | 未支持，返回 `model.ErrTopListsUnsupported`               |
 | Bilibili   | ❌         | ❌       | ❌       | 未支持，返回 `model.ErrTopListsUnsupported`               |
 | Apple Music | ✅        | ✅       | ✅       | 支持中国内地/中国香港/中国台湾/美国/日本/韩国/英国/新加坡共 8 个官方 Top 100 歌曲榜（走 Apple 营销工具榜单接口，无需登录与 token），热门单曲取当前实例商店（默认 us）的 Top 100，试听地址由 iTunes 公开接口补全 |
+| Spotify    | ✅        | ✅       | ✅       | 支持 Global、美国、英国、日本、澳大利亚、加拿大 Top 50，热门单曲取 Global Top 50；无凭据时使用公开嵌入与榜单镜像兜底，配置 Client ID/Secret 后优先使用官方 API |
 
 未支持热门单曲的平台返回 `model.ErrHotSongsUnsupported`。
 
@@ -164,7 +213,7 @@ func main() {
 
 ### 4. 获取个人歌单
 
-个人歌单需要登录 Cookie。支持的平台可以使用 `New(cookie)` 创建实例，再调用 `GetUserPlaylists`。目前支持网易云音乐、QQ 音乐、酷狗音乐和汽水音乐。
+个人歌单需要登录 Cookie 或 OAuth Token。支持的平台可以使用 `New(cookie)` 创建实例，再调用 `GetUserPlaylists`。目前支持网易云音乐、QQ 音乐、酷狗音乐、汽水音乐和 Spotify。
 
 ```go
 package main
@@ -295,7 +344,7 @@ func main() {
 
 ### 7. 获取排行榜与热门单曲
 
-目前网易云音乐、QQ 音乐、酷狗音乐、酷我音乐、咪咕音乐、汽水音乐、Apple Music 实现了排行榜（`provider.TopListProvider`）和热门单曲（`provider.HotSongProvider`）能力，其余平台调用会返回 `model.ErrTopListsUnsupported` / `model.ErrHotSongsUnsupported`。这些平台的榜单接口都无需登录，带上 Cookie 也可以正常调用。汽水音乐没有公开的榜单目录接口，`GetTopLists()` 返回内置的 4 个官方榜单，并额外聚合发现页的推荐歌单（`toplist_type=playlist`，接口不可用时只返回官方榜单）；`GetTopListSongs()` 对官方榜单走 charts 接口、对推荐歌单走歌单详情接口，自动识别。Apple Music 的榜单目录同样是内置的，`GetTopLists()` 返回各国家/地区的 Top 100 歌曲榜，`GetTopListSongs()` 走 Apple 营销工具的 `most-played` 榜单接口（无需 token，遇到 5xx 会自动重试并切换备用域名），再用 iTunes 公开查询补全专辑、时长与试听地址。
+目前网易云音乐、QQ 音乐、酷狗音乐、酷我音乐、咪咕音乐、汽水音乐、Apple Music 和 Spotify 实现了排行榜（`provider.TopListProvider`）和热门单曲（`provider.HotSongProvider`）能力，其余平台调用会返回 `model.ErrTopListsUnsupported` / `model.ErrHotSongsUnsupported`。汽水音乐没有公开的榜单目录接口，`GetTopLists()` 返回内置的 4 个官方榜单，并额外聚合发现页的推荐歌单（`toplist_type=playlist`，接口不可用时只返回官方榜单）；`GetTopListSongs()` 对官方榜单走 charts 接口、对推荐歌单走歌单详情接口，自动识别。Apple Music 的榜单目录同样是内置的，`GetTopLists()` 返回各国家/地区的 Top 100 歌曲榜，`GetTopListSongs()` 走 Apple 营销工具的 `most-played` 榜单接口（遇到 5xx 会自动重试并切换备用域名），再用 iTunes 公开查询补全专辑、时长与试听地址。Spotify 榜单配置 Client ID/Secret 后优先走 Web API；无凭据时会同时尝试公开嵌入数据和榜单镜像，避免 `open.spotify.com` 超时或区域限制导致榜单不可用。
 
 ```go
 package main

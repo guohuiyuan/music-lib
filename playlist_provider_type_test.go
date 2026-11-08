@@ -16,6 +16,7 @@ import (
 	"github.com/guohuiyuan/music-lib/qianqian"
 	"github.com/guohuiyuan/music-lib/qq"
 	"github.com/guohuiyuan/music-lib/soda"
+	"github.com/guohuiyuan/music-lib/spotify"
 )
 
 var _ provider.PlaylistProvider = (*netease.Netease)(nil)
@@ -30,6 +31,7 @@ var _ provider.PlaylistProvider = (*jamendo.Jamendo)(nil)
 var _ provider.PlaylistProvider = (*joox.Joox)(nil)
 var _ provider.PlaylistProvider = (*bilibili.Bilibili)(nil)
 var _ provider.PlaylistProvider = (*apple.Apple)(nil)
+var _ provider.PlaylistProvider = (*spotify.Spotify)(nil)
 
 var _ provider.PlaylistCategoryProvider = (*netease.Netease)(nil)
 var _ provider.PlaylistCategoryProvider = (*qq.QQ)(nil)
@@ -42,6 +44,7 @@ var _ provider.PlaylistCategoryProvider = (*fivesing.Fivesing)(nil)
 var _ provider.PlaylistCategoryProvider = (*jamendo.Jamendo)(nil)
 var _ provider.PlaylistCategoryProvider = (*joox.Joox)(nil)
 var _ provider.PlaylistCategoryProvider = (*bilibili.Bilibili)(nil)
+var _ provider.PlaylistCategoryProvider = (*spotify.Spotify)(nil)
 
 var _ provider.UserPlaylistProvider = (*netease.Netease)(nil)
 var _ provider.UserPlaylistProvider = (*qq.QQ)(nil)
@@ -54,6 +57,7 @@ var _ provider.UserPlaylistProvider = (*fivesing.Fivesing)(nil)
 var _ provider.UserPlaylistProvider = (*jamendo.Jamendo)(nil)
 var _ provider.UserPlaylistProvider = (*joox.Joox)(nil)
 var _ provider.UserPlaylistProvider = (*bilibili.Bilibili)(nil)
+var _ provider.UserPlaylistProvider = (*spotify.Spotify)(nil)
 
 var _ provider.QRLoginProvider = (*netease.Netease)(nil)
 var _ provider.QRLoginProvider = (*qq.QQ)(nil)
@@ -65,6 +69,7 @@ var _ provider.RecommendedPlaylistProvider = (*qq.QQ)(nil)
 var _ provider.RecommendedPlaylistProvider = (*kugou.Kugou)(nil)
 var _ provider.RecommendedPlaylistProvider = (*kuwo.Kuwo)(nil)
 var _ provider.RecommendedPlaylistProvider = (*soda.Soda)(nil)
+var _ provider.RecommendedPlaylistProvider = (*spotify.Spotify)(nil)
 
 func TestPlaylistProviderTypeContracts(t *testing.T) {
 	playlistProviders := []provider.PlaylistProvider{
@@ -79,6 +84,7 @@ func TestPlaylistProviderTypeContracts(t *testing.T) {
 		jamendo.New(""),
 		joox.New(""),
 		bilibili.New(""),
+		spotify.New(""),
 	}
 	categoryProviders := []provider.PlaylistCategoryProvider{
 		netease.New(""),
@@ -92,6 +98,7 @@ func TestPlaylistProviderTypeContracts(t *testing.T) {
 		jamendo.New(""),
 		joox.New(""),
 		bilibili.New(""),
+		spotify.New(""),
 	}
 
 	if len(playlistProviders) != len(categoryProviders) {
