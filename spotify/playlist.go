@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/guohuiyuan/music-lib/model"
 )
@@ -17,12 +18,14 @@ import (
 const (
 	spotifyPlaylistSearchLimit = 20
 	spotifyPlaylistPageSize    = 50
+	spotifyTrackEmbedTimeout   = 4 * time.Second
 )
 
 type spotifyEmbedPageResponse struct {
 	Props struct {
 		PageProps struct {
-			State struct {
+			Status int `json:"status"`
+			State  struct {
 				Data struct {
 					Entity spotifyEmbedEntity `json:"entity"`
 				} `json:"data"`
@@ -32,13 +35,19 @@ type spotifyEmbedPageResponse struct {
 }
 
 type spotifyEmbedEntity struct {
-	Type      string              `json:"type"`
-	URI       string              `json:"uri"`
-	ID        string              `json:"id"`
-	Name      string              `json:"name"`
-	Title     string              `json:"title"`
-	Subtitle  string              `json:"subtitle"`
-	CoverArt  spotifyEmbedArt     `json:"coverArt"`
+	Type           string               `json:"type"`
+	URI            string               `json:"uri"`
+	ID             string               `json:"id"`
+	Name           string               `json:"name"`
+	Title          string               `json:"title"`
+	Subtitle       string               `json:"subtitle"`
+	Artists        []spotifyArtist      `json:"artists"`
+	Duration       int                  `json:"duration"`
+	AudioPreview   *spotifyEmbedPreview `json:"audioPreview"`
+	CoverArt       spotifyEmbedArt      `json:"coverArt"`
+	VisualIdentity struct {
+		Image []spotifyImage `json:"image"`
+	} `json:"visualIdentity"`
 	TrackList []spotifyEmbedTrack `json:"trackList"`
 }
 
@@ -304,34 +313,67 @@ func (s *Spotify) fetchPlaylistEmbedEntityContext(
 	parent context.Context,
 	id string,
 ) (*spotifyEmbedEntity, error) {
-	type embedEndpoint struct {
-		name string
-		url  string
-	}
-	type embedResult struct {
-		endpoint embedEndpoint
-		entity   *spotifyEmbedEntity
-		err      error
-	}
+	return s.fetchSpotifyEmbedEntityContext(parent, "playlist", id)
+}
 
-	endpoints := []embedEndpoint{
+type spotifyEmbedEndpoint struct {
+	name string
+	url  string
+}
+
+func spotifyEmbedEndpoints(entityType string, id string) []spotifyEmbedEndpoint {
+	entityType = strings.TrimSpace(entityType)
+	return []spotifyEmbedEndpoint{
 		{
 			name: "open.spotify.com",
 			url: strings.TrimRight(spotifyOpenBase, "/") +
-				"/embed/playlist/" + url.PathEscape(id),
+				"/embed/" + url.PathEscape(entityType) + "/" + url.PathEscape(id),
 		},
 		{
 			name: "embed.spotify.com",
 			url: strings.TrimRight(spotifyEmbedBase, "/") +
-				"/?uri=" + url.QueryEscape("spotify:playlist:"+id),
+				"/?uri=" + url.QueryEscape("spotify:"+entityType+":"+id),
 		},
 	}
+}
+
+func (s *Spotify) fetchSpotifyEmbedEntityContext(
+	parent context.Context,
+	entityType string,
+	id string,
+) (*spotifyEmbedEntity, error) {
+	return s.fetchSpotifyEmbedEntityContextWithTimeout(
+		parent,
+		entityType,
+		id,
+		defaultRequestTimeout,
+	)
+}
+
+func (s *Spotify) fetchSpotifyEmbedEntityContextWithTimeout(
+	parent context.Context,
+	entityType string,
+	id string,
+	timeout time.Duration,
+) (*spotifyEmbedEntity, error) {
+	type embedResult struct {
+		endpoint spotifyEmbedEndpoint
+		entity   *spotifyEmbedEntity
+		err      error
+	}
+
+	endpoints := spotifyEmbedEndpoints(entityType, id)
 	results := make(chan embedResult, len(endpoints))
-	ctx, cancel := context.WithTimeout(parent, defaultRequestTimeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	fetch := func(endpoint embedEndpoint) {
-		entity, err := s.fetchSpotifyEmbedEndpoint(ctx, endpoint.url, id)
+	fetch := func(endpoint spotifyEmbedEndpoint) {
+		entity, err := s.fetchSpotifyEmbedEndpoint(
+			ctx,
+			endpoint.url,
+			entityType,
+			id,
+		)
 		results <- embedResult{endpoint: endpoint, entity: entity, err: err}
 	}
 	for _, endpoint := range endpoints {
@@ -352,10 +394,18 @@ func (s *Spotify) fetchPlaylistEmbedEntityContext(
 			)
 		case <-ctx.Done():
 			failures = append(failures, ctx.Err())
-			return nil, fmt.Errorf("spotify embed request: %w", errors.Join(failures...))
+			return nil, fmt.Errorf(
+				"spotify %s embed request: %w",
+				entityType,
+				errors.Join(failures...),
+			)
 		}
 	}
-	return nil, fmt.Errorf("spotify embed request: %w", errors.Join(failures...))
+	return nil, fmt.Errorf(
+		"spotify %s embed request: %w",
+		entityType,
+		errors.Join(failures...),
+	)
 }
 
 func (s *Spotify) fetchPlaylistTracksFromPublicAlternatives(
@@ -407,6 +457,7 @@ func (s *Spotify) fetchPlaylistTracksFromPublicAlternatives(
 func (s *Spotify) fetchSpotifyEmbedEndpoint(
 	ctx context.Context,
 	endpoint string,
+	entityType string,
 	id string,
 ) (*spotifyEmbedEntity, error) {
 	req, err := http.NewRequestWithContext(
@@ -448,12 +499,21 @@ func (s *Spotify) fetchSpotifyEmbedEndpoint(
 	if err := json.Unmarshal([]byte(payload), &page); err != nil {
 		return nil, fmt.Errorf("spotify embed json: %w", err)
 	}
+	if page.Props.PageProps.Status == http.StatusUnavailableForLegalReasons {
+		return nil, fmt.Errorf(
+			"spotify %s unavailable in the current region (HTTP 451)",
+			entityType,
+		)
+	}
 	entity := page.Props.PageProps.State.Data.Entity
-	if !strings.EqualFold(strings.TrimSpace(entity.Type), "playlist") {
+	if !strings.EqualFold(strings.TrimSpace(entity.Type), entityType) {
 		return nil, fmt.Errorf("spotify embed returned entity type %q", entity.Type)
 	}
 	if firstSpotifyNonEmpty(entity.ID, id) == "" {
-		return nil, errors.New("spotify embed response did not contain a playlist")
+		return nil, fmt.Errorf(
+			"spotify embed response did not contain a %s",
+			entityType,
+		)
 	}
 	return &entity, nil
 }
@@ -523,6 +583,64 @@ func spotifySongsFromEmbed(entity spotifyEmbedEntity) []model.Song {
 		})
 	}
 	return songs
+}
+
+func spotifySongFromEmbed(entity spotifyEmbedEntity) (model.Song, error) {
+	id := strings.TrimPrefix(strings.TrimSpace(entity.URI), "spotify:track:")
+	if !strings.EqualFold(strings.TrimSpace(entity.Type), "track") {
+		return model.Song{}, fmt.Errorf(
+			"spotify public embed returned %q instead of a track",
+			entity.Type,
+		)
+	}
+	if strings.TrimSpace(entity.ID) != "" {
+		id = strings.TrimSpace(entity.ID)
+	}
+	if id == "" || id == strings.TrimSpace(entity.URI) {
+		return model.Song{}, errors.New(
+			"spotify public embed did not contain a track id",
+		)
+	}
+
+	name := firstSpotifyNonEmpty(
+		cleanSpotifyEmbedText(entity.Name),
+		cleanSpotifyEmbedText(entity.Title),
+	)
+	if name == "" {
+		return model.Song{}, errors.New(
+			"spotify public embed did not contain a track name",
+		)
+	}
+	artist := spotifyArtists(entity.Artists)
+	if artist == "" {
+		artist = cleanSpotifyEmbedText(entity.Subtitle)
+	}
+	previewURL := ""
+	if entity.AudioPreview != nil {
+		previewURL = strings.TrimSpace(entity.AudioPreview.URL)
+	}
+	cover := spotifyCover(entity.VisualIdentity.Image)
+	if cover == "" {
+		cover = spotifyCover(entity.CoverArt.Sources)
+	}
+
+	return model.Song{
+		Source:   "spotify",
+		ID:       id,
+		Name:     name,
+		Artist:   artist,
+		Duration: entity.Duration / 1000,
+		Cover:    cover,
+		URL:      previewURL,
+		Ext:      "mp3",
+		Link:     spotifyTrackLink(id),
+		Extra: map[string]string{
+			"type":            "track",
+			"spotify_id":      id,
+			"preview_only":    "true",
+			"metadata_source": "embed",
+		},
+	}, nil
 }
 
 func cleanSpotifyEmbedText(value string) string {

@@ -106,9 +106,12 @@ func TestSpotifyCatalogMethods(t *testing.T) {
 		t.Fatalf("GetDownloadURL() = %q", downloadURL)
 	}
 
-	_, err = ctx.client.GetDownloadURL(&model.Song{ID: "no-preview"})
-	if err == nil || !strings.Contains(err.Error(), "DRM protected") {
-		t.Fatalf("GetDownloadURL() preview error = %v", err)
+	fallbackURL, err := ctx.client.GetDownloadURL(&model.Song{ID: "no-preview"})
+	if err != nil {
+		t.Fatalf("GetDownloadURL() public preview fallback error = %v", err)
+	}
+	if fallbackURL != "https://cdn.example/public-track.mp3" {
+		t.Fatalf("GetDownloadURL() public preview fallback = %q", fallbackURL)
 	}
 
 	lyrics, err := ctx.client.GetLyrics(parsed)
@@ -276,6 +279,69 @@ func TestSpotifyPublicPlaylistEmbedUsesAlternativeHost(t *testing.T) {
 	}
 	if len(songs) != 2 || songs[0].ID != "embed-track-1" {
 		t.Fatalf("unexpected alternative embed songs: %#v", songs)
+	}
+}
+
+func TestSpotifyPublicTrackEmbedWithoutCredentials(t *testing.T) {
+	clearSpotifyEnvironment(t)
+	_, restore := newSpotifyTestServer(t)
+	defer restore()
+	client := New("")
+
+	song, err := client.Parse(
+		"https://open.spotify.com/track/public-track?si=test",
+	)
+	if err != nil {
+		t.Fatalf("Parse() public track fallback error = %v", err)
+	}
+	if song.ID != "public-track" ||
+		song.Name != "Public Track" ||
+		song.Artist != "Public Artist" ||
+		song.URL != "https://cdn.example/public-track.mp3" ||
+		song.Extra["metadata_source"] != "embed" {
+		t.Fatalf("unexpected public track: %#v", song)
+	}
+
+	downloadURL, err := client.GetDownloadURL(&model.Song{
+		ID: "public-track",
+	})
+	if err != nil {
+		t.Fatalf("GetDownloadURL() public track fallback error = %v", err)
+	}
+	if downloadURL != "https://cdn.example/public-track.mp3" {
+		t.Fatalf("GetDownloadURL() public track = %q", downloadURL)
+	}
+}
+
+func TestSpotifyPublicTrackEmbedUsesAlternativeHost(t *testing.T) {
+	clearSpotifyEnvironment(t)
+	server, restore := newSpotifyTestServer(t)
+	defer restore()
+
+	spotifyOpenBase = server.URL + "/unavailable"
+	spotifyEmbedBase = server.URL
+
+	downloadURL, err := New("").GetDownloadURL(&model.Song{
+		ID: "public-track",
+	})
+	if err != nil {
+		t.Fatalf("GetDownloadURL() alternative host error = %v", err)
+	}
+	if downloadURL != "https://cdn.example/public-track.mp3" {
+		t.Fatalf("GetDownloadURL() alternative host = %q", downloadURL)
+	}
+}
+
+func TestSpotifyPublicTrackReportsRegionUnavailable(t *testing.T) {
+	clearSpotifyEnvironment(t)
+	_, restore := newSpotifyTestServer(t)
+	defer restore()
+
+	_, err := New("").GetDownloadURL(&model.Song{
+		ID: "blocked-track",
+	})
+	if err == nil || !strings.Contains(err.Error(), "track unavailable") {
+		t.Fatalf("GetDownloadURL() region error = %v", err)
 	}
 }
 
@@ -558,9 +624,25 @@ func newSpotifyTestServer(t *testing.T) (*httptest.Server, func()) {
 
 func handleSpotifyTestRequest(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/embed/playlist/") ||
-		(r.URL.Path == "/" && r.URL.Query().Get("uri") != "") {
+		(r.URL.Path == "/" &&
+			strings.HasPrefix(r.URL.Query().Get("uri"), "spotify:playlist:")) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(spotifyEmbedTestPage()))
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/embed/track/") ||
+		(r.URL.Path == "/" &&
+			strings.HasPrefix(r.URL.Query().Get("uri"), "spotify:track:")) {
+		id := strings.TrimPrefix(r.URL.Path, "/embed/track/")
+		if id == r.URL.Path {
+			id = strings.TrimPrefix(r.URL.Query().Get("uri"), "spotify:track:")
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if id == "blocked-track" {
+			_, _ = w.Write([]byte(spotifyRegionBlockedTestPage()))
+		} else {
+			_, _ = w.Write([]byte(spotifyTrackEmbedTestPage(id)))
+		}
 		return
 	}
 	if r.URL.Path == "/oembed" {
@@ -779,6 +861,66 @@ func spotifyEmbedTestPage() string {
 						},
 					},
 				},
+			},
+		},
+	}
+	encoded, _ := json.Marshal(payload)
+	return `<!doctype html><html><body><script id="__NEXT_DATA__" type="application/json">` +
+		string(encoded) +
+		`</script></body></html>`
+}
+
+func spotifyTrackEmbedTestPage(id string) string {
+	if strings.TrimSpace(id) == "" {
+		id = "public-track"
+	}
+	payload := map[string]any{
+		"props": map[string]any{
+			"pageProps": map[string]any{
+				"state": map[string]any{
+					"data": map[string]any{
+						"entity": map[string]any{
+							"type":     "track",
+							"id":       id,
+							"uri":      "spotify:track:" + id,
+							"name":     "Public Track",
+							"title":    "Public Track",
+							"subtitle": "Public Artist",
+							"duration": 208000,
+							"artists": []any{
+								map[string]any{"name": "Public Artist"},
+							},
+							"audioPreview": map[string]any{
+								"url": "https://cdn.example/public-track.mp3",
+							},
+							"visualIdentity": map[string]any{
+								"image": []any{
+									map[string]any{
+										"url":    "https://cdn.example/public-track.jpg",
+										"width":  640,
+										"height": 640,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	encoded, _ := json.Marshal(payload)
+	return `<!doctype html><html><body><script id="__NEXT_DATA__" type="application/json">` +
+		string(encoded) +
+		`</script></body></html>`
+}
+
+func spotifyRegionBlockedTestPage() string {
+	payload := map[string]any{
+		"props": map[string]any{
+			"pageProps": map[string]any{
+				"status":      451,
+				"title":       "Sorry, that’s not currently available.",
+				"description": "This content is not available in your country.",
 			},
 		},
 	}

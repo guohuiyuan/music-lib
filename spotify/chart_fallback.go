@@ -101,6 +101,7 @@ func (s *Spotify) fetchTopListTracksFromChart(
 		extra := map[string]string{
 			"type":            "track",
 			"spotify_id":      entry.ID,
+			"preview_only":    "true",
 			"metadata_source": "kworb",
 			"chart_source":    "spotify_daily",
 			"chart_country":   country,

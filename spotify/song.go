@@ -66,12 +66,37 @@ func (s *Spotify) Parse(link string) (*model.Song, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !s.hasCatalogCredentials() {
+		song, fallbackErr := s.fetchPublicTrack(id)
+		if fallbackErr != nil {
+			return nil, fmt.Errorf(
+				"spotify public track %s: %w",
+				id,
+				fallbackErr,
+			)
+		}
+		return song, nil
+	}
+
 	track, err := s.getTrack(id)
 	if err != nil {
+		if song, fallbackErr := s.fetchPublicTrack(id); fallbackErr == nil {
+			return song, nil
+		}
 		return nil, err
 	}
 	song := spotifySongFromTrack(*track, nil)
 	return &song, nil
+}
+
+func (s *Spotify) hasCatalogCredentials() bool {
+	if s == nil {
+		return false
+	}
+	return strings.TrimSpace(s.accessToken) != "" ||
+		strings.TrimSpace(s.refreshToken) != "" ||
+		(strings.TrimSpace(s.clientID) != "" &&
+			strings.TrimSpace(s.clientSecret) != "")
 }
 
 func (s *Spotify) getTrack(id string) (*spotifyTrack, error) {
@@ -106,15 +131,64 @@ func (s *Spotify) GetDownloadURL(song *model.Song) (string, error) {
 			return "", errors.New("spotify song id is empty")
 		}
 	}
-	track, err := s.getTrack(id)
+
+	var apiErr error
+	if s.hasCatalogCredentials() {
+		track, err := s.getTrack(id)
+		if err == nil {
+			preview := strings.TrimSpace(track.PreviewURL)
+			if preview != "" {
+				return preview, nil
+			}
+			apiErr = errors.New(
+				"spotify does not provide an API preview URL for this track",
+			)
+		} else {
+			apiErr = err
+		}
+	}
+
+	publicSong, fallbackErr := s.fetchPublicTrack(id)
+	if fallbackErr == nil {
+		if preview := strings.TrimSpace(publicSong.URL); preview != "" {
+			return preview, nil
+		}
+		fallbackErr = errors.New(
+			"spotify public embed does not provide a preview URL for this track",
+		)
+	}
+	if apiErr != nil {
+		return "", fmt.Errorf(
+			"spotify track %s: %w (public embed fallback: %v)",
+			id,
+			apiErr,
+			fallbackErr,
+		)
+	}
+	return "", fmt.Errorf(
+		"spotify track %s: %w; full tracks are DRM protected",
+		id,
+		fallbackErr,
+	)
+}
+
+func (s *Spotify) fetchPublicTrack(id string) (*model.Song, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultRequestTimeout)
+	defer cancel()
+	entity, err := s.fetchSpotifyEmbedEntityContextWithTimeout(
+		ctx,
+		"track",
+		id,
+		spotifyTrackEmbedTimeout,
+	)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	preview := strings.TrimSpace(track.PreviewURL)
-	if preview == "" {
-		return "", errors.New("spotify does not provide a preview URL for this track; full tracks are DRM protected")
+	song, err := spotifySongFromEmbed(*entity)
+	if err != nil {
+		return nil, err
 	}
-	return preview, nil
+	return &song, nil
 }
 
 func (s *Spotify) GetLyrics(song *model.Song) (string, error) {
