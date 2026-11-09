@@ -39,6 +39,17 @@ func (s *Spotify) Search(keyword string) ([]model.Song, error) {
 	if keyword == "" {
 		return nil, errors.New("spotify search keyword is empty")
 	}
+	if !s.hasCatalogAuthentication() {
+		songs, err := s.searchSongsFromWebPlayer(
+			context.Background(),
+			keyword,
+			spotifySearchLimit,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("spotify search anonymous fallback: %w", err)
+		}
+		return songs, nil
+	}
 
 	query := url.Values{}
 	query.Set("q", keyword)
@@ -48,6 +59,21 @@ func (s *Spotify) Search(keyword string) ([]model.Song, error) {
 
 	var response spotifySearchResponse
 	if err := s.getJSON(context.Background(), "/search", query, false, &response); err != nil {
+		if spotifyAllowsAnonymousSearchFallback(err) {
+			songs, fallbackErr := s.searchSongsFromWebPlayer(
+				context.Background(),
+				keyword,
+				spotifySearchLimit,
+			)
+			if fallbackErr == nil {
+				return songs, nil
+			}
+			return nil, fmt.Errorf(
+				"spotify search: official API: %v; anonymous fallback: %w",
+				err,
+				fallbackErr,
+			)
+		}
 		return nil, fmt.Errorf("spotify search: %w", err)
 	}
 

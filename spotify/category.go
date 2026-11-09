@@ -142,17 +142,14 @@ func (s *Spotify) searchCategoryFallback(categoryID string, limit int) ([]model.
 		}
 	}
 
-	query := url.Values{}
-	query.Set("q", name)
-	query.Set("type", "playlist")
-	query.Set("limit", strconv.Itoa(limit))
-	query.Set("market", s.marketOrDefault())
-
-	var response spotifySearchResponse
-	if err := s.getJSON(context.Background(), "/search", query, false, &response); err != nil {
+	playlists, err := s.SearchPlaylist(name)
+	if err != nil {
 		return nil, fmt.Errorf("spotify category playlist fallback: %w", err)
 	}
-	return spotifyPlaylistsFromPaging(response.Playlists, limit), nil
+	if limit > 0 && len(playlists) > limit {
+		playlists = playlists[:limit]
+	}
+	return playlists, nil
 }
 
 func spotifyPlaylistsFromPaging(page spotifyPaging[spotifyPlaylist], limit int) []model.Playlist {
@@ -176,6 +173,9 @@ func cloneSpotifyCategories(source []model.PlaylistCategory) []model.PlaylistCat
 }
 
 func isSpotifyBrowseUnavailable(err error) bool {
+	if errors.Is(err, errSpotifyMissingCredentials) {
+		return true
+	}
 	var apiErr *spotifyHTTPError
 	if !errors.As(err, &apiErr) {
 		return false

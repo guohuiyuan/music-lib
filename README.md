@@ -2,16 +2,20 @@
 
 ## Spotify
 
-Spotify support follows the official Web API design used by
-[`zmb3/spotify`](https://github.com/zmb3/spotify): authenticated catalog
-metadata comes from the Spotify Web API; public playlists fall back to Spotify's
-public embed metadata, and charts can additionally use public chart data when
-Spotify's embed domain is unavailable. Lyrics use the public LRCLIB service.
-[`spotDL`](https://github.com/spotDL/spotify-downloader) was also reviewed for
-its metadata-first provider design. This package does not download from
-third-party audio sites and does not bypass Spotify DRM.
+Spotify uses the official Web API when credentials are configured. Without any
+Cookie, Client ID, or token, it automatically uses Spotify's anonymous Web
+Player search for songs, albums, and playlists. Public track, album, and
+playlist links, public charts, categories, lyrics, and preview audio also work
+without configuration. [`spotDL`](https://github.com/spotDL/spotify-downloader)
+was reviewed for its metadata-first provider design. This package does not use
+other platforms as an indirect Spotify source and does not bypass Spotify DRM.
 
 ```go
+// Search without any Spotify configuration.
+anonymous := spotify.New("")
+songs, err := anonymous.Search("Taylor Swift")
+
+// If configured, official API credentials are preferred.
 client := spotify.New(`{
   "client_id": "your-client-id",
   "client_secret": "your-client-secret",
@@ -19,7 +23,6 @@ client := spotify.New(`{
   "market": "US"
 }`)
 
-songs, err := client.Search("Taylor Swift")
 albums, err := client.SearchAlbum("Taylor Swift")
 playlists, err := client.SearchPlaylist("Top Hits")
 categories, err := client.GetPlaylistCategories()
@@ -31,11 +34,18 @@ Implemented methods: song search/parse/download/lyrics, album search/detail/link
 parse, playlist search/detail/link parse, recommendations, playlist categories,
 category playlists, ranking/hot songs, and current-user playlists.
 
-`client_id` + `client_secret` are enough for authenticated search and browse
-data. Public playlists can also be read without credentials through the embed
-fallback. Top 50 charts use Spotify's public metadata first and automatically
-fall back to public chart data when Spotify is blocked or region-restricted.
-Personal playlists require an OAuth access token or refresh token with
+`client_id` + `client_secret` are enough for the official Web API and are
+preferred when available. Anonymous search results are marked with
+`Song.Extra["auth_source"] == "anonymous_web_player"` and
+`Song.Extra["metadata_source"] == "web_player"`. The anonymous endpoint is not
+an official public API and may occasionally change; failures are returned as
+errors instead of being reported as an empty result. Spotify requests honor
+`HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`. On Windows, when no proxy
+environment variable is set, the current user's static Internet Settings proxy
+is detected automatically, including `ProxyServer` and `ProxyOverride`. Top 50 charts use Spotify's
+public metadata first and automatically fall back to public chart data when
+Spotify is blocked or region-restricted. Personal playlists require an OAuth
+access token or refresh token with
 `playlist-read-private playlist-read-collaborative` scope. The same JSON can be
 stored in go-music-dl's Spotify settings, or supplied through
 `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REFRESH_TOKEN`,
@@ -68,7 +78,7 @@ preview is a full download.
 | JOOX       | `joox`       | ✅   | ✅   | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ✅       | ✅       | ✅           | 歌单支持 OpenJOOX 接口和网页数据兜底     |
 | Bilibili   | `bilibili`   | ✅   | ✅   | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ❌       | ❌       | ❌           | 支持 FLAC 无损                           |
 | Apple Music | `apple`     | ✅   | ⚠️  | ✅   | ✅       | ✅       | ❌       | ✅       | ✅           | ✅       | ✅       | ✅           | 下载仅 preview，完整需 gamdl 解密        |
-| Spotify     | `spotify`   | ✅   | ⚠️  | ✅   | ✅       | ✅       | ✅       | ✅       | ✅           | ✅       | ✅       | ✅           | 官方 API 仅提供 preview，完整音轨受 DRM 保护 |
+| Spotify     | `spotify`   | ✅   | ⚠️  | ✅   | ✅       | ✅       | ✅       | ✅       | ✅           | ✅       | ✅       | ✅           | 无凭据可用匿名 Web Player 搜索；官方 API 仅提供 preview，完整音轨受 DRM 保护 |
 
 > `⚠️` 表示方法已接入，但平台搜索接口结果不稳定；优先使用已知 ID 或链接解析。
 > 本次从 `❌` 升级的能力已在 `go-music-dl` 侧通过集成测试验证；千千音乐和 Jamendo 的歌单搜索仍按不稳定能力标记。

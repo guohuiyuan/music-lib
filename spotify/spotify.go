@@ -30,7 +30,7 @@ var (
 	spotifyAccountsBase          = "https://accounts.spotify.com"
 	spotifyOpenBase              = "https://open.spotify.com"
 	spotifyEmbedBase             = "https://embed.spotify.com"
-	spotifyHTTPClient            = &http.Client{Timeout: defaultRequestTimeout}
+	spotifyHTTPClient            = newSpotifyHTTPClient(defaultRequestTimeout)
 	errSpotifyMissingCredentials = errors.New(
 		"spotify requires client_id and client_secret, or an access_token, configured in the spotify settings",
 	)

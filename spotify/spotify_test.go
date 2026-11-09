@@ -462,11 +462,11 @@ func TestSpotifyUserPlaylistsUseUserToken(t *testing.T) {
 	_ = server
 }
 
-func TestSpotifyMissingCredentials(t *testing.T) {
+func TestSpotifyEmptySearchKeyword(t *testing.T) {
 	client := &Spotify{market: "US"}
-	_, err := client.Search("hello")
-	if err == nil || !strings.Contains(err.Error(), "client_id and client_secret") {
-		t.Fatalf("Search() credentials error = %v", err)
+	_, err := client.Search("   ")
+	if err == nil || !strings.Contains(err.Error(), "keyword is empty") {
+		t.Fatalf("Search() empty keyword error = %v", err)
 	}
 }
 

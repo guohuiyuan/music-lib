@@ -43,6 +43,7 @@ type spotifyEmbedEntity struct {
 	Subtitle       string               `json:"subtitle"`
 	Artists        []spotifyArtist      `json:"artists"`
 	Duration       int                  `json:"duration"`
+	ReleaseDate    string               `json:"releaseDate"`
 	AudioPreview   *spotifyEmbedPreview `json:"audioPreview"`
 	CoverArt       spotifyEmbedArt      `json:"coverArt"`
 	VisualIdentity struct {
@@ -87,6 +88,17 @@ func (s *Spotify) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	if keyword == "" {
 		return nil, errors.New("spotify playlist search keyword is empty")
 	}
+	if !s.hasCatalogAuthentication() {
+		playlists, err := s.searchPlaylistsFromWebPlayer(
+			context.Background(),
+			keyword,
+			spotifyPlaylistSearchLimit,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("spotify playlist search anonymous fallback: %w", err)
+		}
+		return playlists, nil
+	}
 
 	query := url.Values{}
 	query.Set("q", keyword)
@@ -96,6 +108,21 @@ func (s *Spotify) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 	var response spotifySearchResponse
 	if err := s.getJSON(context.Background(), "/search", query, false, &response); err != nil {
+		if spotifyAllowsAnonymousSearchFallback(err) {
+			playlists, fallbackErr := s.searchPlaylistsFromWebPlayer(
+				context.Background(),
+				keyword,
+				spotifyPlaylistSearchLimit,
+			)
+			if fallbackErr == nil {
+				return playlists, nil
+			}
+			return nil, fmt.Errorf(
+				"spotify playlist search: official API: %v; anonymous fallback: %w",
+				err,
+				fallbackErr,
+			)
+		}
 		return nil, fmt.Errorf("spotify playlist search: %w", err)
 	}
 
@@ -160,7 +187,7 @@ func (s *Spotify) fetchPlaylist(id string) (*spotifyPlaylist, error) {
 
 	var playlist spotifyPlaylist
 	if err := s.getJSON(context.Background(), "/playlists/"+url.PathEscape(id), query, false, &playlist); err != nil {
-		if spotifyAllowsPublicPlaylistFallback(err) {
+		if spotifyAllowsPublicFallback(err) {
 			fallback, fallbackErr := s.fetchPlaylistFromEmbed(id)
 			if fallbackErr == nil {
 				return fallback, nil
@@ -211,7 +238,7 @@ func (s *Spotify) fetchPlaylistTracks(id string) ([]model.Song, error) {
 				endpoint = "tracks"
 				continue
 			}
-			if spotifyAllowsPublicPlaylistFallback(err) {
+			if spotifyAllowsPublicFallback(err) {
 				fallbackSongs, fallbackErr := s.fetchPlaylistTracksFromEmbed(id)
 				if fallbackErr == nil {
 					return fallbackSongs, nil
@@ -249,7 +276,7 @@ func (s *Spotify) hasCatalogAuthentication() bool {
 		(strings.TrimSpace(s.clientID) != "" && strings.TrimSpace(s.clientSecret) != "")
 }
 
-func spotifyAllowsPublicPlaylistFallback(err error) bool {
+func spotifyAllowsPublicFallback(err error) bool {
 	if errors.Is(err, errSpotifyMissingCredentials) {
 		return true
 	}
@@ -258,7 +285,10 @@ func spotifyAllowsPublicPlaylistFallback(err error) bool {
 		return false
 	}
 	switch apiErr.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+	case http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusTooManyRequests:
 		return true
 	default:
 		return false
