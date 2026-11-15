@@ -61,7 +61,7 @@ func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 			"notice":      0,
 			"platform":    "yqq.json",
 			"needNewCode": 1,
-			"uin":         0,
+			"uin":         q.accountUIN(),
 		},
 		"req_1": map[string]interface{}{
 			"module": "music.vkey.GetVkey",
@@ -70,7 +70,7 @@ func (q *QQ) GetDownloadURL(s *model.Song) (string, error) {
 				"guid":      guid,
 				"songmid":   songmids,
 				"songtype":  songtypes,
-				"uin":       "0",
+				"uin":       fmt.Sprintf("%d", q.accountUIN()),
 				"loginflag": 1,
 				"platform":  "20",
 				"filename":  filenames,
