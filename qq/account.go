@@ -39,7 +39,7 @@ func (q *QQ) IsVipAccount() (bool, error) {
 			"notice":      0,
 			"platform":    "yqq.json",
 			"needNewCode": 1,
-			"uin":         0,
+			"uin":         q.accountUIN(),
 		},
 		"req_1": map[string]interface{}{
 			"module": "music.vkey.GetVkey",
@@ -48,7 +48,7 @@ func (q *QQ) IsVipAccount() (bool, error) {
 				"guid":      guid,
 				"songmid":   []string{songMID},
 				"songtype":  []int{0},
-				"uin":       "0",
+				"uin":       fmt.Sprintf("%d", q.accountUIN()),
 				"loginflag": 1,
 				"platform":  "20",
 				"filename":  []string{filename},
