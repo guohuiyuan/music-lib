@@ -218,7 +218,7 @@ func (s *Spotify) fetchAlbumFromPublic(
 	if creator == "" {
 		creator = cleanSpotifyEmbedText(entity.Subtitle)
 	}
-	releaseDate := strings.TrimSpace(entity.ReleaseDate)
+	releaseDate := strings.TrimSpace(entity.ReleaseDate.String())
 	playlist := model.Playlist{
 		Source:      "spotify",
 		ID:          albumID,

@@ -19,7 +19,8 @@ const (
 )
 
 type Migu struct {
-	cookie string
+	cookie                string
+	availableQualityCache []model.AudioQualityOption
 }
 
 func New(cookie string) *Migu { return &Migu{cookie: cookie} }

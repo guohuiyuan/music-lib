@@ -21,8 +21,9 @@ const (
 )
 
 type QQ struct {
-	cookie     string
-	isVipCache *bool
+	cookie                string
+	isVipCache            *bool
+	availableQualityCache []model.AudioQualityOption
 }
 
 func New(cookie string) *QQ { return &QQ{cookie: cookie} }

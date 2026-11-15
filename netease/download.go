@@ -4,16 +4,42 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
-	"github.com/guohuiyuan/music-lib/utils"
 	"net/url"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
+	"github.com/guohuiyuan/music-lib/utils"
 )
 
 func GetDownloadURL(s *model.Song) (string, error) { return defaultNetease.GetDownloadURL(s) }
 
 // GetDownloadURL returns a download URL.
 func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
+	return n.getDownloadURL(s, preferredDownloadLevels(s), true)
+}
+
+// GetDownloadURLWithQuality resolves an explicit quality tier. The selector
+// never silently downgrades a premium tier; only auto may choose a lower tier.
+func (n *Netease) GetDownloadURLWithQuality(s *model.Song, quality string) (string, error) {
+	normalized, ok := model.NormalizeAudioQuality(quality)
+	if !ok {
+		return "", fmt.Errorf("unsupported netease audio quality: %s", quality)
+	}
+	if normalized == model.AudioQualityAuto {
+		levels := preferredDownloadLevels(s)
+		return n.getDownloadURL(s, levels, true)
+	}
+	level, ok := neteaseLevelForQuality(string(normalized))
+	if !ok {
+		return "", fmt.Errorf("unsupported netease audio quality: %s", quality)
+	}
+	return n.getDownloadURL(s, []string{level}, false)
+}
+
+func (n *Netease) getDownloadURL(s *model.Song, levels []string, allowFallback bool) (string, error) {
+	if s == nil {
+		return "", errors.New("song is nil")
+	}
 	if s.Source != "netease" {
 		return "", errors.New("source mismatch")
 	}
@@ -23,24 +49,51 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 		songID = s.Extra["song_id"]
 	}
 
-	levels := preferredDownloadLevels(s)
+	if cached, ok := n.getCachedDownloadURL(songID, strings.Join(levels, ",")); ok {
+		if cached.ext != "" {
+			s.Ext = cached.ext
+		}
+		return cached.url, nil
+	}
 
-	if n.cookie != "" {
-		isVip, _ := n.IsVipAccount()
-		if isVip {
-			if cached, ok := n.getCachedDownloadURL(songID, strings.Join(levels, ",")); ok {
-				if cached.ext != "" {
-					s.Ext = cached.ext
-				}
-				return cached.url, nil
+	for _, level := range levels {
+		url, ext, bitrate, actualLevel, err := n.getEAPIDownloadURL(songID, level)
+		if err == nil && url != "" {
+			requestedLevel, ok := model.NormalizeAudioQuality(level)
+			if !ok {
+				continue
 			}
+			actualLevelQuality := neteaseAudioQuality(bitrate, ext, actualLevel)
+			if !neteaseQualityAtLeast(actualLevelQuality, requestedLevel) {
+				continue
+			}
+			s.Ext = ext
+			n.setCachedDownloadURL(songID, strings.Join(levels, ","), url, s.Ext)
+			return url, nil
+		}
+	}
+	if !allowFallback {
+		if len(levels) == 1 && (levels[0] == "lossless" || levels[0] == "hires") {
+			return "", neteaseQualityError(levels[0])
+		}
+	}
 
-			for _, level := range levels {
-				if url, ext, err := n.getEAPIDownloadURL(songID, level); err == nil && url != "" {
-					s.Ext = ext
-					n.setCachedDownloadURL(songID, strings.Join(levels, ","), url, s.Ext)
-					return url, nil
-				}
+	br := 320000
+	expectedBr := 0
+	if len(levels) == 1 {
+		switch levels[0] {
+		case "standard":
+			br = 128000
+			expectedBr = br
+		case "higher":
+			br = 192000
+			expectedBr = br
+		case "exhigh":
+			br = 320000
+			expectedBr = br
+		default:
+			if !allowFallback {
+				return "", neteaseQualityError(levels[0])
 			}
 		}
 	}
@@ -48,7 +101,7 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	// Fall back to the original weapi route.
 	reqData := map[string]interface{}{
 		"ids": []string{songID},
-		"br":  320000,
+		"br":  br,
 	}
 	reqJSON, _ := json.Marshal(reqData)
 	params, encSecKey := EncryptWeApi(string(reqJSON))
@@ -80,6 +133,13 @@ func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	}
 	if len(resp.Data) == 0 || resp.Data[0].URL == "" {
 		return "", errors.New("download url not found (might be vip or copyright restricted)")
+	}
+	if expectedBr > 0 && resp.Data[0].Br > 0 && resp.Data[0].Br != expectedBr {
+		return "", fmt.Errorf(
+			"netease returned %d bps instead of requested %d bps",
+			resp.Data[0].Br,
+			expectedBr,
+		)
 	}
 	n.setCachedDownloadURL(songID, strings.Join(levels, ","), resp.Data[0].URL, s.Ext)
 	return resp.Data[0].URL, nil

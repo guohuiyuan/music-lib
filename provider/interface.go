@@ -14,6 +14,14 @@ type SongDownloader interface {
 	GetDownloadURL(s *model.Song) (string, error)
 }
 
+// AudioQualityProvider exposes the quality tiers that the current account can
+// actually use. Implementations must account for the configured cookie rather
+// than inferring entitlement from a standalone VIP boolean.
+type AudioQualityProvider interface {
+	AvailableQualityOptions() ([]model.AudioQualityOption, error)
+	GetDownloadURLWithQuality(s *model.Song, quality string) (string, error)
+}
+
 type LyricProvider interface {
 	GetLyrics(s *model.Song) (string, error)
 }

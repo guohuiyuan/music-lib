@@ -35,7 +35,8 @@ var (
 )
 
 type Kuwo struct {
-	cookie string
+	cookie                string
+	availableQualityCache []model.AudioQualityOption
 }
 
 func New(cookie string) *Kuwo { return &Kuwo{cookie: cookie} }
@@ -580,38 +581,9 @@ func (k *Kuwo) fetchAudioURL(rid string) (string, error) {
 	randomID := fmt.Sprintf("C_APK_guanwang_%d%d", time.Now().UnixNano(), rand.Intn(1000000))
 
 	for _, br := range qualities {
-		params := url.Values{}
-		params.Set("f", "web")
-		params.Set("source", "kwplayercar_ar_6.0.0.9_B_jiakong_vh.apk")
-		params.Set("from", "PC")
-		params.Set("type", "convert_url_with_sign")
-		params.Set("br", br)
-		params.Set("rid", rid)
-		params.Set("user", randomID)
-
-		apiURL := "https://mobi.kuwo.cn/mobi.s?" + params.Encode()
-
-		body, err := utils.Get(apiURL,
-			utils.WithHeader("User-Agent", UserAgent),
-			utils.WithHeader("Cookie", k.cookie),
-			utils.WithRandomIPHeader(),
-		)
-		if err != nil {
-			continue
-		}
-
-		var resp struct {
-			Data struct {
-				URL     string `json:"url"`
-				Bitrate int    `json:"bitrate"`
-				Format  string `json:"format"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			continue
-		}
-		if resp.Data.URL != "" {
-			return resp.Data.URL, nil
+		info, err := k.fetchKuwoAudioInfoWithUser(rid, br, randomID)
+		if err == nil && info.URL != "" {
+			return info.URL, nil
 		}
 	}
 
@@ -643,6 +615,57 @@ func (k *Kuwo) fetchAudioURL(rid string) (string, error) {
 	}
 
 	return "", errors.New("download url not found (copyright restricted)")
+}
+
+type kuwoAudioInfo struct {
+	URL     string
+	Bitrate int
+	Format  string
+}
+
+func (k *Kuwo) fetchKuwoAudioInfo(rid, br string) (*kuwoAudioInfo, error) {
+	randomID := fmt.Sprintf("C_APK_guanwang_%d%d", time.Now().UnixNano(), rand.Intn(1000000))
+	return k.fetchKuwoAudioInfoWithUser(rid, br, randomID)
+}
+
+func (k *Kuwo) fetchKuwoAudioInfoWithUser(rid, br, randomID string) (*kuwoAudioInfo, error) {
+	params := url.Values{}
+	params.Set("f", "web")
+	params.Set("source", "kwplayercar_ar_6.0.0.9_B_jiakong_vh.apk")
+	params.Set("from", "PC")
+	params.Set("type", "convert_url_with_sign")
+	params.Set("br", br)
+	params.Set("rid", rid)
+	params.Set("user", randomID)
+
+	apiURL := "https://mobi.kuwo.cn/mobi.s?" + params.Encode()
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Cookie", k.cookie),
+		utils.WithRandomIPHeader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			URL     string `json:"url"`
+			Bitrate int    `json:"bitrate"`
+			Format  string `json:"format"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(resp.Data.URL) == "" {
+		return nil, errors.New("empty audio url")
+	}
+	return &kuwoAudioInfo{
+		URL:     resp.Data.URL,
+		Bitrate: resp.Data.Bitrate,
+		Format:  resp.Data.Format,
+	}, nil
 }
 
 func (k *Kuwo) fetchNewLyrics(rid string) (string, error) {

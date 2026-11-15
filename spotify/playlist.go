@@ -35,21 +35,65 @@ type spotifyEmbedPageResponse struct {
 }
 
 type spotifyEmbedEntity struct {
-	Type           string               `json:"type"`
-	URI            string               `json:"uri"`
-	ID             string               `json:"id"`
-	Name           string               `json:"name"`
-	Title          string               `json:"title"`
-	Subtitle       string               `json:"subtitle"`
-	Artists        []spotifyArtist      `json:"artists"`
-	Duration       int                  `json:"duration"`
-	ReleaseDate    string               `json:"releaseDate"`
-	AudioPreview   *spotifyEmbedPreview `json:"audioPreview"`
-	CoverArt       spotifyEmbedArt      `json:"coverArt"`
+	Type           string                  `json:"type"`
+	URI            string                  `json:"uri"`
+	ID             string                  `json:"id"`
+	Name           string                  `json:"name"`
+	Title          string                  `json:"title"`
+	Subtitle       string                  `json:"subtitle"`
+	Artists        []spotifyArtist         `json:"artists"`
+	Duration       int                     `json:"duration"`
+	ReleaseDate    spotifyEmbedReleaseDate `json:"releaseDate"`
+	AudioPreview   *spotifyEmbedPreview    `json:"audioPreview"`
+	CoverArt       spotifyEmbedArt         `json:"coverArt"`
 	VisualIdentity struct {
 		Image []spotifyImage `json:"image"`
 	} `json:"visualIdentity"`
 	TrackList []spotifyEmbedTrack `json:"trackList"`
+}
+
+// spotifyEmbedReleaseDate accepts both the historical string format and the
+// object format currently returned by Spotify's public embed endpoints.
+type spotifyEmbedReleaseDate struct {
+	ISOString string
+	Year      int
+}
+
+func (d *spotifyEmbedReleaseDate) UnmarshalJSON(data []byte) error {
+	data = []byte(strings.TrimSpace(string(data)))
+	if len(data) == 0 || string(data) == "null" {
+		*d = spotifyEmbedReleaseDate{}
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*d = spotifyEmbedReleaseDate{ISOString: strings.TrimSpace(text)}
+		return nil
+	}
+
+	var object struct {
+		ISOString string `json:"isoString"`
+		Year      int    `json:"year"`
+	}
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	*d = spotifyEmbedReleaseDate{
+		ISOString: strings.TrimSpace(object.ISOString),
+		Year:      object.Year,
+	}
+	return nil
+}
+
+func (d spotifyEmbedReleaseDate) String() string {
+	if value := strings.TrimSpace(d.ISOString); value != "" {
+		return value
+	}
+	if d.Year > 0 {
+		return strconv.Itoa(d.Year)
+	}
+	return ""
 }
 
 type spotifyEmbedArt struct {

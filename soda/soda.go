@@ -31,10 +31,11 @@ type Soda struct {
 	// 仅会员曲目走 App 端整曲取流时需要的应用级签名（参考 sodam / libresoda）。
 	signer *SignerConfig
 	// localSigner 为 nil 表示不使用本机签名；非 nil 时用内置 JS 垫片直连官方客户端的 bdms.node。
-	localSigner    *localSigner
-	appCreds       AppCredentials
-	signerIdentity *AppCredentials
-	isVipCache     *bool
+	localSigner           *localSigner
+	appCreds              AppCredentials
+	signerIdentity        *AppCredentials
+	isVipCache            *bool
+	availableQualityCache []model.AudioQualityOption
 }
 
 type sodaArtist struct {

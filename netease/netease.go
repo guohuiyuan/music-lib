@@ -30,8 +30,9 @@ const (
 )
 
 type Netease struct {
-	cookie     string
-	isVipCache *bool
+	cookie                string
+	isVipCache            *bool
+	availableQualityCache []model.AudioQualityOption
 }
 
 type neteaseLinkKind string
@@ -614,11 +615,12 @@ func preferredDownloadLevels(s *model.Song) []string {
 	return []string{"lossless", "hires", "exhigh"}
 }
 
-// getEAPIDownloadURL fetches a high-quality download URL via eapi.
-func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, string, error) {
+// getEAPIDownloadURL fetches a download URL and the metadata describing the
+// stream that was actually returned.
+func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, string, int, string, error) {
 	idNum, err := strconv.Atoi(songID)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid song id: %v", err)
+		return "", "", 0, "", fmt.Errorf("invalid song id: %v", err)
 	}
 
 	headerJSON := `{"os":"pc","appver":"","osver":"","deviceId":"pyncm!","requestId":"12345678"}`
@@ -645,36 +647,54 @@ func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, str
 
 	body, err := utils.Post(DownloadEAPI, strings.NewReader(form.Encode()), headers...)
 	if err != nil {
-		return "", "", err
+		return "", "", 0, "", err
 	}
 
 	var resp struct {
 		Data []struct {
-			URL  string `json:"url"`
-			Code int    `json:"code"`
-			Type string `json:"type"`
+			URL        string `json:"url"`
+			Code       int    `json:"code"`
+			Type       string `json:"type"`
+			Bitrate    int    `json:"br"`
+			Level      string `json:"level"`
+			EncodeType string `json:"encodeType"`
 		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", "", fmt.Errorf("eapi json parse error: %w", err)
+		return "", "", 0, "", fmt.Errorf("eapi json parse error: %w", err)
 	}
 	if len(resp.Data) == 0 || resp.Data[0].URL == "" {
-		return "", "", errors.New("eapi download url not found")
+		return "", "", 0, "", errors.New("eapi download url not found")
 	}
-	return resp.Data[0].URL, normalizeNeteaseAudioType(resp.Data[0].Type, quality), nil
+	item := resp.Data[0]
+	actualLevel := strings.ToLower(strings.TrimSpace(item.Level))
+	ext := normalizeNeteaseAudioType(
+		firstNeteaseNonEmpty(item.Type, item.EncodeType),
+		actualLevel,
+	)
+	return item.URL, ext, item.Bitrate, actualLevel, nil
 }
 
-func normalizeNeteaseAudioType(audioType string, quality string) string {
+func normalizeNeteaseAudioType(audioType string, actualLevel string) string {
 	audioType = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(audioType, ".")))
 	switch audioType {
-	case "flac", "mp3", "m4a":
+	case "flac", "mp3", "m4a", "wav":
 		return audioType
 	}
-	switch quality {
+	switch strings.ToLower(strings.TrimSpace(actualLevel)) {
 	case "lossless", "hires":
 		return "flac"
 	default:
 		return ""
 	}
+}
+
+func firstNeteaseNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }

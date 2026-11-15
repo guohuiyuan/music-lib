@@ -23,7 +23,8 @@ const (
 )
 
 type Qianqian struct {
-	cookie string
+	cookie                string
+	availableQualityCache []model.AudioQualityOption
 }
 
 func New(cookie string) *Qianqian { return &Qianqian{cookie: cookie} }
@@ -371,45 +372,52 @@ func (q *Qianqian) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, e
 func (q *Qianqian) fetchDownloadURL(tsid string) (string, error) {
 	qualities := []string{"3000", "320", "128", "64"}
 	for _, rate := range qualities {
-		params := url.Values{}
-		params.Set("TSID", tsid)
-		params.Set("appid", AppID)
-		params.Set("rate", rate)
-		signParams(params)
-		apiURL := "https://music.91q.com/v1/song/tracklink?" + params.Encode()
-
-		body, err := utils.Get(apiURL,
-			utils.WithHeader("User-Agent", UserAgent),
-			utils.WithHeader("Referer", Referer),
-			utils.WithHeader("Cookie", q.cookie),
-		)
-		if err != nil {
-			continue
-		}
-
-		var resp struct {
-			Data struct {
-				Path           string `json:"path"`
-				Format         string `json:"format"`
-				Size           int64  `json:"size"`
-				Duration       int    `json:"duration"`
-				TrailAudioInfo struct {
-					Path string `json:"path"`
-				} `json:"trail_audio_info"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(body, &resp); err != nil {
-			continue
-		}
-		downloadURL := resp.Data.Path
-		if downloadURL == "" {
-			downloadURL = resp.Data.TrailAudioInfo.Path
-		}
-		if downloadURL != "" {
+		if downloadURL, err := q.fetchDownloadURLWithRate(tsid, rate); err == nil {
 			return downloadURL, nil
 		}
 	}
 	return "", errors.New("download url not found")
+}
+
+func (q *Qianqian) fetchDownloadURLWithRate(tsid, rate string) (string, error) {
+	params := url.Values{}
+	params.Set("TSID", tsid)
+	params.Set("appid", AppID)
+	params.Set("rate", rate)
+	signParams(params)
+	apiURL := "https://music.91q.com/v1/song/tracklink?" + params.Encode()
+
+	body, err := utils.Get(apiURL,
+		utils.WithHeader("User-Agent", UserAgent),
+		utils.WithHeader("Referer", Referer),
+		utils.WithHeader("Cookie", q.cookie),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	var resp struct {
+		Data struct {
+			Path           string `json:"path"`
+			Format         string `json:"format"`
+			Size           int64  `json:"size"`
+			Duration       int    `json:"duration"`
+			TrailAudioInfo struct {
+				Path string `json:"path"`
+			} `json:"trail_audio_info"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("qianqian track link json error: %w", err)
+	}
+	downloadURL := strings.TrimSpace(resp.Data.Path)
+	if downloadURL == "" {
+		downloadURL = strings.TrimSpace(resp.Data.TrailAudioInfo.Path)
+	}
+	if downloadURL == "" {
+		return "", errors.New("qianqian track link is empty")
+	}
+	return downloadURL, nil
 }
 
 // fetchSongInfo 内部方法：获取元数据

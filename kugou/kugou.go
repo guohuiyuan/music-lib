@@ -28,8 +28,9 @@ const (
 )
 
 type Kugou struct {
-	cookie     string
-	isVipCache *bool
+	cookie                string
+	isVipCache            *bool
+	availableQualityCache []model.AudioQualityOption
 }
 
 func New(cookie string) *Kugou { return &Kugou{cookie: cookie} }
@@ -1099,8 +1100,8 @@ func (k *Kugou) fetchSongInfo(hash string) (*model.Song, error) {
 		Artist:   resp.AuthorName,
 		Duration: resp.TimeLength,
 		Size:     resp.FileSize,
-		Bitrate:  resp.BitRate / 1000,
-		Ext:      resp.ExtName,
+		Bitrate:  inferKugouBitrate(resp.BitRate, resp.FileSize, resp.TimeLength),
+		Ext:      normalizeKugouExt(resp.ExtName, resp.URL),
 		Cover:    cover,
 		URL:      resp.URL,
 		Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
@@ -1444,6 +1445,17 @@ func normalizeKugouBitrate(v int) int {
 		return v / 1000
 	}
 	return v
+}
+
+func inferKugouBitrate(bitrate int, size int64, duration int) int {
+	if normalized := normalizeKugouBitrate(bitrate); normalized > 0 {
+		return normalized
+	}
+	duration = normalizeKugouDuration(duration)
+	if size <= 0 || duration <= 0 {
+		return 0
+	}
+	return int(size * 8 / int64(duration) / 1000)
 }
 
 func normalizeKugouExt(extName, downloadURL string) string {
