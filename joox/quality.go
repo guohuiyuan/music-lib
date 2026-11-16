@@ -114,7 +114,7 @@ var jooxQualityCandidates = []jooxQualityCandidate{
 			Value:   model.AudioQualityLow,
 			Label:   "低品质",
 			Format:  "m4a",
-			Bitrate: 64,
+			Bitrate: 96,
 		},
 		key: "96",
 		url: func(resp jooxSongDetailResponse) string { return resp.M4aURL },

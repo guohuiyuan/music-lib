@@ -24,6 +24,9 @@ func TestListQualityOptionsPreservesJOOXOrder(t *testing.T) {
 			t.Fatalf("option %d = %s, want %s", i, options[i].Value, want[i])
 		}
 	}
+	if options[len(options)-1].Bitrate != 96 {
+		t.Fatalf("low quality bitrate = %d, want 96", options[len(options)-1].Bitrate)
+	}
 }
 
 func TestJOOXKbpsMapControlsAvailableTiers(t *testing.T) {

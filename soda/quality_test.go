@@ -47,3 +47,24 @@ func TestSodaQualityOptionsUseObservedBitrateLabels(t *testing.T) {
 		t.Errorf("missing quality option %s", quality)
 	}
 }
+
+func TestSodaQualityOptionsAreOrderedHighestFirst(t *testing.T) {
+	want := []model.AudioQuality{
+		model.AudioQualityHiRes,
+		model.AudioQualityLossless,
+		model.AudioQualitySpatial,
+		model.AudioQualityHigh,
+		model.AudioQualityHigher,
+		model.AudioQualityStandard,
+		model.AudioQualityPreview,
+	}
+	options := ListQualityOptions()
+	if len(options) != len(want) {
+		t.Fatalf("quality option count = %d, want %d", len(options), len(want))
+	}
+	for i, quality := range want {
+		if options[i].Value != quality {
+			t.Errorf("quality option %d = %s, want %s", i, options[i].Value, quality)
+		}
+	}
+}

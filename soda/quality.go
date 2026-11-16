@@ -11,9 +11,9 @@ import (
 )
 
 var sodaQualityCandidates = []model.AudioQualityOption{
-	{Value: model.AudioQualitySpatial, Label: "空间音频", Format: "m4a", VIP: true},
 	{Value: model.AudioQualityHiRes, Label: "Hi-Res 无损", Format: "flac", VIP: true},
 	{Value: model.AudioQualityLossless, Label: "无损音质", Format: "flac", VIP: true},
+	{Value: model.AudioQualitySpatial, Label: "空间音频", Format: "m4a", VIP: true},
 	{Value: model.AudioQualityHigh, Label: "高品质 320k", Format: "m4a", Bitrate: 320},
 	{Value: model.AudioQualityHigher, Label: "较高品质 128k", Format: "m4a", Bitrate: 128},
 	{Value: model.AudioQualityStandard, Label: "标准音质 64k", Format: "m4a", Bitrate: 64},
