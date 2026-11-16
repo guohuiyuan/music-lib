@@ -296,7 +296,7 @@ func TestLiveMiguFLACDownload(t *testing.T) {
 		},
 	}
 
-	info, err := New(cookie).GetDownloadInfo(song)
+	info, err := New(cookie).GetDownloadInfoWithQuality(song, string(model.AudioQualityLossless))
 	if err != nil {
 		t.Fatalf("GetDownloadInfo() error = %v", err)
 	}

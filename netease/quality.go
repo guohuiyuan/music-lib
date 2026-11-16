@@ -12,15 +12,19 @@ const neteaseQualityProbeKeyword = "周杰伦"
 
 type neteaseQualityCandidate struct {
 	option model.AudioQualityOption
-	level  string
+	levels []string
 }
 
 var neteaseQualityCandidates = []neteaseQualityCandidate{
-	{option: model.AudioQualityOption{Value: model.AudioQualityHiRes, Label: "Hi-Res 无损", Format: "flac", VIP: true}, level: "hires"},
-	{option: model.AudioQualityOption{Value: model.AudioQualityLossless, Label: "无损音质", Format: "flac", VIP: true}, level: "lossless"},
-	{option: model.AudioQualityOption{Value: model.AudioQualityHigh, Label: "高品质 320k", Format: "mp3", Bitrate: 320}, level: "exhigh"},
-	{option: model.AudioQualityOption{Value: model.AudioQualityHigher, Label: "较高品质 192k", Format: "mp3", Bitrate: 192}, level: "higher"},
-	{option: model.AudioQualityOption{Value: model.AudioQualityStandard, Label: "标准音质 128k", Format: "mp3", Bitrate: 128}, level: "standard"},
+	{option: model.AudioQualityOption{Value: model.AudioQualityMaster, Label: "超清母带", Format: "wav", VIP: true}, levels: []string{"jymaster"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualitySpatial, Label: "沉浸环绕声", Format: "flac", VIP: true}, levels: []string{"sky", "jyeffect"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualityVivid, Label: "臻音全景声", Format: "mp3", VIP: true}, levels: []string{"vivid"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualityAtmos, Label: "杜比全景声", Format: "flac", VIP: true}, levels: []string{"dolby"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualityHiRes, Label: "Hi-Res 无损", Format: "flac", VIP: true}, levels: []string{"hires"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualityLossless, Label: "无损音质", Format: "flac", VIP: true}, levels: []string{"lossless"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualityHigh, Label: "高品质 320k", Format: "mp3", Bitrate: 320}, levels: []string{"exhigh"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualityHigher, Label: "较高品质 192k", Format: "mp3", Bitrate: 192}, levels: []string{"higher"}},
+	{option: model.AudioQualityOption{Value: model.AudioQualityStandard, Label: "标准音质 128k", Format: "mp3", Bitrate: 128}, levels: []string{"standard"}},
 }
 
 // ListQualityOptions returns all quality tiers understood by NetEase.
@@ -119,35 +123,71 @@ func neteaseQualityLadderFrom(highestAvailableIndex int) []model.AudioQualityOpt
 
 func neteaseCandidateForQuality(quality model.AudioQuality) (neteaseQualityCandidate, bool) {
 	switch quality {
-	case model.AudioQualityStandard:
-		return neteaseQualityCandidates[4], true
-	case model.AudioQualityHigher:
-		return neteaseQualityCandidates[3], true
-	case model.AudioQualityHigh:
-		return neteaseQualityCandidates[2], true
-	case model.AudioQualityLossless:
-		return neteaseQualityCandidates[1], true
-	case model.AudioQualityHiRes:
+	case model.AudioQualityMaster:
 		return neteaseQualityCandidates[0], true
+	case model.AudioQualitySpatial:
+		return neteaseQualityCandidates[1], true
+	case model.AudioQualityVivid:
+		return neteaseQualityCandidates[2], true
+	case model.AudioQualityAtmos:
+		return neteaseQualityCandidates[3], true
+	case model.AudioQualityStandard:
+		return neteaseQualityCandidates[8], true
+	case model.AudioQualityHigher:
+		return neteaseQualityCandidates[7], true
+	case model.AudioQualityHigh:
+		return neteaseQualityCandidates[6], true
+	case model.AudioQualityLossless:
+		return neteaseQualityCandidates[5], true
+	case model.AudioQualityHiRes:
+		return neteaseQualityCandidates[4], true
 	default:
 		return neteaseQualityCandidate{}, false
 	}
 }
 
-func neteaseLevelForQuality(quality string) (string, bool) {
+func neteaseLevelsForQuality(quality string) ([]string, bool) {
 	normalized, ok := model.NormalizeAudioQuality(quality)
 	if !ok {
-		return "", false
+		return nil, false
 	}
 	candidate, ok := neteaseCandidateForQuality(normalized)
 	if !ok {
+		return nil, false
+	}
+	return append([]string(nil), candidate.levels...), true
+}
+
+func neteaseLevelForQuality(quality string) (string, bool) {
+	levels, ok := neteaseLevelsForQuality(quality)
+	if !ok || len(levels) == 0 {
 		return "", false
 	}
-	return candidate.level, true
+	return levels[0], true
+}
+
+func neteaseQualityForLevel(level string) (model.AudioQuality, bool) {
+	level = strings.ToLower(strings.TrimSpace(level))
+	for _, candidate := range neteaseQualityCandidates {
+		for _, candidateLevel := range candidate.levels {
+			if level == candidateLevel {
+				return candidate.option.Value, true
+			}
+		}
+	}
+	return "", false
 }
 
 func neteaseAudioQuality(bitrate int, ext string, level string) model.AudioQuality {
 	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "jymaster":
+		return model.AudioQualityMaster
+	case "sky", "jyeffect":
+		return model.AudioQualitySpatial
+	case "vivid":
+		return model.AudioQualityVivid
+	case "dolby":
+		return model.AudioQualityAtmos
 	case "hires":
 		return model.AudioQualityHiRes
 	case "lossless":
@@ -162,6 +202,8 @@ func neteaseAudioQuality(bitrate int, ext string, level string) model.AudioQuali
 
 	ext = strings.ToLower(strings.TrimSpace(ext))
 	switch {
+	case ext == "wav" && bitrate >= 2_000_000:
+		return model.AudioQualityMaster
 	case (ext == "flac" || ext == "wav") && bitrate >= 1_000_000:
 		return model.AudioQualityHiRes
 	case ext == "flac" || ext == "wav" || bitrate >= 700_000:
@@ -180,6 +222,14 @@ func neteaseAudioQuality(bitrate int, ext string, level string) model.AudioQuali
 func neteaseQualityAtLeast(actual model.AudioQuality, requested model.AudioQuality) bool {
 	rank := func(quality model.AudioQuality) int {
 		switch quality {
+		case model.AudioQualityMaster:
+			return 9
+		case model.AudioQualitySpatial:
+			return 8
+		case model.AudioQualityVivid:
+			return 7
+		case model.AudioQualityAtmos:
+			return 6
 		case model.AudioQualityHiRes:
 			return 5
 		case model.AudioQualityLossless:

@@ -14,6 +14,9 @@ func TestNeteaseLevelForQuality(t *testing.T) {
 		"320k":     "exhigh",
 		"lossless": "lossless",
 		"hi_res":   "hires",
+		"dolby":    "dolby",
+		"spatial":  "sky",
+		"master":   "jymaster",
 	}
 	for input, want := range tests {
 		got, ok := neteaseLevelForQuality(input)
@@ -21,8 +24,13 @@ func TestNeteaseLevelForQuality(t *testing.T) {
 			t.Fatalf("neteaseLevelForQuality(%q) = %q, %t; want %q, true", input, got, ok, want)
 		}
 	}
-	if _, ok := neteaseLevelForQuality(string(model.AudioQualityMaster)); ok {
-		t.Fatal("Netease master should not be reported without a verified endpoint mapping")
+	levels, ok := neteaseLevelsForQuality(string(model.AudioQualitySpatial))
+	if !ok || len(levels) != 2 || levels[0] != "sky" || levels[1] != "jyeffect" {
+		t.Fatalf("Netease spatial levels = %#v, %t; want sky and jyeffect", levels, ok)
+	}
+	vividLevels, ok := neteaseLevelsForQuality(string(model.AudioQualityVivid))
+	if !ok || len(vividLevels) != 1 || vividLevels[0] != "vivid" {
+		t.Fatalf("Netease vivid levels = %#v, %t; want vivid", vividLevels, ok)
 	}
 }
 
@@ -35,6 +43,10 @@ func TestNeteaseActualQuality(t *testing.T) {
 		expected model.AudioQuality
 	}{
 		{name: "api level wins", bitrate: 320_000, ext: "mp3", level: "higher", expected: model.AudioQualityHigher},
+		{name: "master level", bitrate: 2_304_000, ext: "wav", level: "jymaster", expected: model.AudioQualityMaster},
+		{name: "spatial level", bitrate: 900_000, ext: "flac", level: "sky", expected: model.AudioQualitySpatial},
+		{name: "vivid level", bitrate: 320_000, ext: "mp3", level: "vivid", expected: model.AudioQualityVivid},
+		{name: "atmos level", bitrate: 900_000, ext: "flac", level: "dolby", expected: model.AudioQualityAtmos},
 		{name: "hires level", bitrate: 900_000, ext: "flac", level: "hires", expected: model.AudioQualityHiRes},
 		{name: "lossless level", bitrate: 900_000, ext: "flac", level: "lossless", expected: model.AudioQualityLossless},
 		{name: "bitrate fallback", bitrate: 128_000, ext: "mp3", expected: model.AudioQualityStandard},
@@ -65,9 +77,13 @@ func TestNeteaseQualityLadderFrom(t *testing.T) {
 		want  []model.AudioQuality
 	}{
 		{
-			name:  "hires includes every lower tier",
+			name:  "master includes every lower tier",
 			index: 0,
 			want: []model.AudioQuality{
+				model.AudioQualityMaster,
+				model.AudioQualitySpatial,
+				model.AudioQualityVivid,
+				model.AudioQualityAtmos,
 				model.AudioQualityHiRes,
 				model.AudioQualityLossless,
 				model.AudioQualityHigh,
@@ -77,7 +93,7 @@ func TestNeteaseQualityLadderFrom(t *testing.T) {
 		},
 		{
 			name:  "high includes standard tiers",
-			index: 2,
+			index: 6,
 			want: []model.AudioQuality{
 				model.AudioQualityHigh,
 				model.AudioQualityHigher,

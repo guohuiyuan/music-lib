@@ -608,11 +608,23 @@ func preferredDownloadLevels(s *model.Song) []string {
 			level = strings.ToLower(strings.TrimSpace(s.Extra["level"]))
 		}
 		switch level {
-		case "standard", "exhigh", "lossless", "hires":
+		case "standard", "higher", "exhigh", "lossless", "hires",
+			"dolby", "vivid", "sky", "jyeffect", "jymaster":
 			return []string{level}
 		}
 	}
-	return []string{"lossless", "hires", "exhigh"}
+	return []string{
+		"jymaster",
+		"sky",
+		"jyeffect",
+		"vivid",
+		"dolby",
+		"hires",
+		"lossless",
+		"exhigh",
+		"higher",
+		"standard",
+	}
 }
 
 // getEAPIDownloadURL fetches a download URL and the metadata describing the
@@ -624,11 +636,17 @@ func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, str
 	}
 
 	headerJSON := `{"os":"pc","appver":"","osver":"","deviceId":"pyncm!","requestId":"12345678"}`
+	encodeType := "flac"
+	if strings.EqualFold(strings.TrimSpace(quality), "vivid") {
+		// NetEase only exposes vivid through its current Android client.
+		headerJSON = `{"os":"android","appver":"9.5.61","osver":"","deviceId":"pyncm!","requestId":"12345678"}`
+		encodeType = "mp3"
+	}
 
 	payload := map[string]interface{}{
 		"ids":        []int{idNum},
 		"level":      quality,
-		"encodeType": "flac",
+		"encodeType": encodeType,
 		"header":     headerJSON,
 	}
 

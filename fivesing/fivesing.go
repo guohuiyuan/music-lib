@@ -261,8 +261,36 @@ func (f *Fivesing) fetchSongInfo(songID, songType string) (*model.Song, error) {
 	}, nil
 }
 
-// fetchAudioLink 仅获取音频链接
-func (f *Fivesing) fetchAudioLink(songID, songType string) (string, error) {
+type fivesingAudioLinks struct {
+	sq string
+	hq string
+	lq string
+}
+
+func (links fivesingAudioLinks) urlFor(tier string) string {
+	switch tier {
+	case "sq":
+		return links.sq
+	case "hq":
+		return links.hq
+	case "lq":
+		return links.lq
+	default:
+		return ""
+	}
+}
+
+func (links fivesingAudioLinks) best() string {
+	for _, tier := range []string{"sq", "hq", "lq"} {
+		if streamURL := links.urlFor(tier); streamURL != "" {
+			return streamURL
+		}
+	}
+	return ""
+}
+
+// fetchAudioLinks returns every audio tier exposed by the 5sing API.
+func (f *Fivesing) fetchAudioLinks(songID, songType string) (fivesingAudioLinks, error) {
 	params := url.Values{}
 	params.Set("songid", songID)
 	params.Set("songtype", songType)
@@ -270,7 +298,7 @@ func (f *Fivesing) fetchAudioLink(songID, songType string) (string, error) {
 	apiURL := "http://mobileapi.5sing.kugou.com/song/getSongUrl?" + params.Encode()
 	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Cookie", f.cookie))
 	if err != nil {
-		return "", err
+		return fivesingAudioLinks{}, err
 	}
 
 	var resp struct {
@@ -286,24 +314,30 @@ func (f *Fivesing) fetchAudioLink(songID, songType string) (string, error) {
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", fmt.Errorf("json parse error: %w", err)
+		return fivesingAudioLinks{}, fmt.Errorf("json parse error: %w", err)
 	}
 
 	if resp.Code != 1000 {
-		return "", errors.New("api returned error code")
+		return fivesingAudioLinks{}, fmt.Errorf("api returned error code %d", resp.Code)
 	}
 
-	if url := getFirstValid(resp.Data.SQUrl, resp.Data.SQUrlBackup); url != "" {
-		return url, nil
+	links := fivesingAudioLinks{
+		sq: getFirstValid(resp.Data.SQUrl, resp.Data.SQUrlBackup),
+		hq: getFirstValid(resp.Data.HQUrl, resp.Data.HQUrlBackup),
+		lq: getFirstValid(resp.Data.LQUrl, resp.Data.LQUrlBackup),
 	}
-	if url := getFirstValid(resp.Data.HQUrl, resp.Data.HQUrlBackup); url != "" {
-		return url, nil
+	if links.best() == "" {
+		return fivesingAudioLinks{}, errors.New("no valid download url found")
 	}
-	if url := getFirstValid(resp.Data.LQUrl, resp.Data.LQUrlBackup); url != "" {
-		return url, nil
-	}
+	return links, nil
+}
 
-	return "", errors.New("no valid download url found")
+func (f *Fivesing) fetchAudioLink(songID, songType string) (string, error) {
+	links, err := f.fetchAudioLinks(songID, songType)
+	if err != nil {
+		return "", err
+	}
+	return links.best(), nil
 }
 
 func getFirstValid(urls ...string) string {

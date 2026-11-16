@@ -33,3 +33,17 @@ func TestQianqianRejectsUnsupportedQualityBeforeRequest(t *testing.T) {
 		t.Fatal("master quality should be rejected")
 	}
 }
+
+func TestQianqianExactQualityDoesNotReuseUnknownSongURL(t *testing.T) {
+	q := New("")
+	_, err := q.GetDownloadURLWithQuality(
+		&model.Song{
+			Source: "qianqian",
+			URL:    "https://example.com/already-resolved.mp3",
+		},
+		string(model.AudioQualityHigh),
+	)
+	if err == nil {
+		t.Fatal("exact quality request reused a URL without verifying its quality")
+	}
+}

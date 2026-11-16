@@ -25,3 +25,17 @@ func TestKuwoAudioQuality(t *testing.T) {
 		}
 	}
 }
+
+func TestKuwoExactQualityDoesNotReuseUnknownSongURL(t *testing.T) {
+	k := New("")
+	_, err := k.GetDownloadURLWithQuality(
+		&model.Song{
+			Source: "kuwo",
+			URL:    "https://example.com/already-resolved.mp3",
+		},
+		string(model.AudioQualityHigh),
+	)
+	if err == nil {
+		t.Fatal("exact quality request reused a URL without verifying its quality")
+	}
+}

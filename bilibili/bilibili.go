@@ -411,76 +411,14 @@ func (b *Bilibili) fetchSeasonSongs(mid, seasonID int64) ([]model.Song, error) {
 	return allSongs, nil
 }
 
-// fetchAudioURL 内部逻辑提取
+// fetchAudioURL returns the best account-accessible DASH/DURL audio stream.
 func (b *Bilibili) fetchAudioURL(bvid, cid string, isVip bool) (string, error) {
-	fnval := 80
-	if isVip {
-		// 4048 allows requesting FLAC/Hi-Res/Dolby formats instead of default standard 80
-		fnval = 4048
-	}
-
-	apiURL := fmt.Sprintf("https://api.bilibili.com/x/player/playurl?fnval=%d&qn=127&bvid=%s&cid=%s", fnval, bvid, cid)
-	body, err := utils.Get(apiURL, utils.WithHeader("User-Agent", UserAgent), utils.WithHeader("Referer", Referer), utils.WithHeader("Cookie", b.cookie))
+	candidates, err := b.fetchAudioCandidates(bvid, cid, isVip)
 	if err != nil {
 		return "", err
 	}
-
-	var resp struct {
-		Data struct {
-			Durl []struct {
-				URL string `json:"url"`
-			} `json:"durl"`
-			Dash struct {
-				Audio []struct {
-					ID      int    `json:"id"`
-					BaseURL string `json:"baseUrl"`
-				} `json:"audio"`
-				Flac struct {
-					Audio struct {
-						ID      int    `json:"id"`
-						BaseURL string `json:"baseUrl"`
-					} `json:"audio"`
-				} `json:"flac"`
-				Dolby struct {
-					Audio []struct {
-						ID      int    `json:"id"`
-						BaseURL string `json:"baseUrl"`
-					} `json:"audio"`
-				} `json:"dolby"`
-			} `json:"dash"`
-		} `json:"data"`
+	if len(candidates) == 0 {
+		return "", errors.New("no audio found")
 	}
-	json.Unmarshal(body, &resp)
-
-	// 1. Highest Priority: Hi-Res FLAC format specifically marked by id 30251
-	if resp.Data.Dash.Flac.Audio.ID == 30251 && resp.Data.Dash.Flac.Audio.BaseURL != "" {
-		return resp.Data.Dash.Flac.Audio.BaseURL, nil
-	}
-
-	// 2. Secondary Priority: Dolby Atmos format specifically marked by id 30250
-	for _, a := range resp.Data.Dash.Dolby.Audio {
-		if a.ID == 30250 && a.BaseURL != "" {
-			return a.BaseURL, nil
-		}
-	}
-
-	// 3. Loop through standard DASH audio evaluating the highest ID quality natively (e.g. 30280 for 192kbps vs 30232 for 132kbps)
-	var bestURL string
-	var highestID = -1
-	for _, a := range resp.Data.Dash.Audio {
-		if a.ID > highestID && a.BaseURL != "" {
-			highestID = a.ID
-			bestURL = a.BaseURL
-		}
-	}
-	if bestURL != "" {
-		return bestURL, nil
-	}
-
-	// 4. Fallback to generic unsegmented DURL format if no Dash
-	if len(resp.Data.Durl) > 0 {
-		return resp.Data.Durl[0].URL, nil
-	}
-
-	return "", errors.New("no audio found")
+	return candidates[0].url, nil
 }

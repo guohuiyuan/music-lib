@@ -70,10 +70,6 @@ func (k *Kuwo) GetDownloadURLWithQuality(s *model.Song, quality string) (string,
 	if s.Source != "kuwo" {
 		return "", errors.New("source mismatch")
 	}
-	if strings.TrimSpace(s.URL) != "" {
-		return s.URL, nil
-	}
-
 	candidate, ok := kuwoCandidateForQuality(normalized)
 	if !ok {
 		return "", fmt.Errorf("unsupported kuwo audio quality: %s", quality)

@@ -17,6 +17,7 @@ const (
 	AudioQualityHiRes    AudioQuality = "hires"
 	AudioQualityUltra    AudioQuality = "ultra"
 	AudioQualitySpatial  AudioQuality = "spatial"
+	AudioQualityVivid    AudioQuality = "vivid"
 	AudioQualityAtmos    AudioQuality = "atmos"
 	AudioQualityAtmos51  AudioQuality = "atmos_51"
 	AudioQualityMaster   AudioQuality = "master"
@@ -52,13 +53,15 @@ func NormalizeAudioQuality(value string) (AudioQuality, bool) {
 		return AudioQualityHiRes, true
 	case "ultra", "640", "640k", "ogg", "o801":
 		return AudioQualityUltra, true
-	case "spatial":
+	case "spatial", "sky", "jyeffect":
 		return AudioQualitySpatial, true
-	case "atmos", "q000":
+	case "vivid":
+		return AudioQualityVivid, true
+	case "atmos", "q000", "dolby":
 		return AudioQualityAtmos, true
 	case "atmos_51", "spatial_51", "5.1", "q001":
 		return AudioQualityAtmos51, true
-	case "master", "ai00", "zq32":
+	case "master", "ai00", "zq32", "jymaster":
 		return AudioQualityMaster, true
 	default:
 		return "", false

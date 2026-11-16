@@ -44,30 +44,41 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions validates each tier against a real Migu track. This
-// catches account and copyright restrictions that a VIP flag alone misses.
+// AvailableQualityOptions reports the highest stream the current account can
+// obtain from a real Migu track, plus every lower quality in the fallback
+// ladder. Migu sometimes exposes FLAC through a rewritten standard URL even
+// when an explicit VIP tone request is rejected, so probing the normal
+// download path is more accurate than checking each VIP flag independently.
 func (m *Migu) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	if m.availableQualityCache != nil {
 		return append([]model.AudioQualityOption(nil), m.availableQualityCache...), nil
 	}
 
-	options := make([]model.AudioQualityOption, 0, len(miguQualityCandidates))
-	var firstErr error
-	for _, candidate := range miguQualityCandidates {
-		_, err := m.GetDownloadInfoWithQuality(miguQualityProbeSong, string(candidate.option.Value))
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		options = append(options, candidate.option)
+	info, err := m.GetDownloadInfo(miguQualityProbeSong)
+	if err != nil {
+		return nil, err
 	}
-	if len(options) == 0 && firstErr != nil {
-		return nil, firstErr
+	options := miguQualityOptionsFromTone(info.Format)
+	if len(options) == 0 {
+		return nil, fmt.Errorf("migu returned unsupported quality %q", info.Format)
 	}
 	m.availableQualityCache = append([]model.AudioQualityOption(nil), options...)
 	return append([]model.AudioQualityOption(nil), options...), nil
+}
+
+func miguQualityOptionsFromTone(tone string) []model.AudioQualityOption {
+	tone = normalizeMiguTone(tone)
+	for index, candidate := range miguQualityCandidates {
+		if !miguCandidateMatchesTone(candidate, tone) {
+			continue
+		}
+		options := make([]model.AudioQualityOption, 0, len(miguQualityCandidates)-index)
+		for _, fallback := range miguQualityCandidates[index:] {
+			options = append(options, fallback.option)
+		}
+		return options
+	}
+	return nil
 }
 
 func miguCandidateForQuality(quality model.AudioQuality) (miguQualityCandidate, bool) {
@@ -134,9 +145,10 @@ func (m *Migu) GetDownloadInfoWithQuality(song *model.Song, quality string) (*Do
 		}
 	}
 
-	responses := make([]*miguListenResponse, 0, len(candidate.tones))
+	requestTones := miguQualityRequestTones(song, candidate)
+	responses := make([]*miguListenResponse, 0, len(requestTones))
 	var firstErr error
-	for _, tone := range candidate.tones {
+	for _, tone := range requestTones {
 		resp, fetchErr := m.fetchListenInfo(contentID, copyrightID, songID, albumID, resourceType, tone)
 		if fetchErr == nil {
 			responses = append(responses, resp)
@@ -156,6 +168,28 @@ func (m *Migu) GetDownloadInfoWithQuality(song *model.Song, quality string) (*Do
 		return nil, fmt.Errorf("migu quality %s unavailable: %w", candidate.option.Value, firstErr)
 	}
 	return nil, fmt.Errorf("migu audio quality %s is unavailable for this song or account", candidate.option.Value)
+}
+
+func miguQualityRequestTones(song *model.Song, candidate miguQualityCandidate) []string {
+	_, _, sourceTone := miguSongParts(song)
+	values := make([]string, 0, len(candidate.tones)+3)
+	values = append(values, candidate.tones...)
+	values = append(values, sourceTone, "HQ", "PQ")
+
+	tones := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		tone := normalizeMiguTone(value)
+		if tone == "" {
+			continue
+		}
+		if _, ok := seen[tone]; ok {
+			continue
+		}
+		seen[tone] = struct{}{}
+		tones = append(tones, tone)
+	}
+	return tones
 }
 
 func (m *Migu) GetDownloadURLWithQuality(song *model.Song, quality string) (string, error) {

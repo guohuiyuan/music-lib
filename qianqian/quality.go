@@ -81,10 +81,6 @@ func (q *Qianqian) GetDownloadURLWithQuality(song *model.Song, quality string) (
 	if song.Source != "" && !strings.EqualFold(song.Source, "qianqian") {
 		return "", errors.New("source mismatch")
 	}
-	if strings.TrimSpace(song.URL) != "" {
-		return song.URL, nil
-	}
-
 	candidate, ok := qianqianQualityCandidateFor(normalized)
 	if !ok {
 		return "", fmt.Errorf("unsupported qianqian audio quality: %s", quality)

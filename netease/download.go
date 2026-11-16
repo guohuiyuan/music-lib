@@ -29,11 +29,11 @@ func (n *Netease) GetDownloadURLWithQuality(s *model.Song, quality string) (stri
 		levels := preferredDownloadLevels(s)
 		return n.getDownloadURL(s, levels, true)
 	}
-	level, ok := neteaseLevelForQuality(string(normalized))
+	levels, ok := neteaseLevelsForQuality(string(normalized))
 	if !ok {
 		return "", fmt.Errorf("unsupported netease audio quality: %s", quality)
 	}
-	return n.getDownloadURL(s, []string{level}, false)
+	return n.getDownloadURL(s, levels, false)
 }
 
 func (n *Netease) getDownloadURL(s *model.Song, levels []string, allowFallback bool) (string, error) {
@@ -59,7 +59,7 @@ func (n *Netease) getDownloadURL(s *model.Song, levels []string, allowFallback b
 	for _, level := range levels {
 		url, ext, bitrate, actualLevel, err := n.getEAPIDownloadURL(songID, level)
 		if err == nil && url != "" {
-			requestedLevel, ok := model.NormalizeAudioQuality(level)
+			requestedLevel, ok := neteaseQualityForLevel(level)
 			if !ok {
 				continue
 			}
@@ -73,9 +73,7 @@ func (n *Netease) getDownloadURL(s *model.Song, levels []string, allowFallback b
 		}
 	}
 	if !allowFallback {
-		if len(levels) == 1 && (levels[0] == "lossless" || levels[0] == "hires") {
-			return "", neteaseQualityError(levels[0])
-		}
+		return "", neteaseQualityError(strings.Join(levels, ","))
 	}
 
 	br := 320000

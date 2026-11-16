@@ -2,8 +2,8 @@ package fivesing
 
 import (
 	"errors"
+
 	"github.com/guohuiyuan/music-lib/model"
-	"strings"
 )
 
 func GetDownloadURL(s *model.Song) (string, error) { return defaultFivesing.GetDownloadURL(s) }
@@ -17,20 +17,9 @@ func (f *Fivesing) GetDownloadURL(s *model.Song) (string, error) {
 		return s.URL, nil
 	}
 
-	var songID, songType string
-	if s.Extra != nil {
-		songID = s.Extra["songid"]
-		songType = s.Extra["songtype"]
-	}
-
-	if songID == "" || songType == "" {
-		parts := strings.Split(s.ID, "|")
-		if len(parts) == 2 {
-			songID = parts[0]
-			songType = parts[1]
-		} else {
-			return "", errors.New("invalid id structure")
-		}
+	songID, songType, err := fivesingSongIdentity(s)
+	if err != nil {
+		return "", err
 	}
 
 	return f.fetchAudioLink(songID, songType)

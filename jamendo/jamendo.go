@@ -327,23 +327,11 @@ func (j *Jamendo) fetchAlbumTracks(albumItem *jamendoAlbumItem, creator string) 
 }
 
 func (j *Jamendo) getTrackByID(id string, meta jamendoTrackMeta) (*model.Song, error) {
-	params := url.Values{}
-	params.Set("id", id)
-
-	body, err := j.apiGet(TrackAPI+"?"+params.Encode(), TrackApiPath)
+	item, err := j.fetchTrackItem(id)
 	if err != nil {
 		return nil, err
 	}
 
-	var results []jamendoTrackItem
-	if err := json.Unmarshal(body, &results); err != nil {
-		return nil, fmt.Errorf("jamendo track json error: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, errors.New("track not found")
-	}
-
-	item := results[0]
 	resolvedMeta, err := j.resolveTrackMeta(item, meta)
 	if err != nil {
 		return nil, err
@@ -354,6 +342,25 @@ func (j *Jamendo) getTrackByID(id string, meta jamendoTrackMeta) (*model.Song, e
 		return nil, errors.New("no valid stream found")
 	}
 	return song, nil
+}
+
+func (j *Jamendo) fetchTrackItem(id string) (jamendoTrackItem, error) {
+	params := url.Values{}
+	params.Set("id", id)
+
+	body, err := j.apiGet(TrackAPI+"?"+params.Encode(), TrackApiPath)
+	if err != nil {
+		return jamendoTrackItem{}, err
+	}
+
+	var results []jamendoTrackItem
+	if err := json.Unmarshal(body, &results); err != nil {
+		return jamendoTrackItem{}, fmt.Errorf("jamendo track json error: %w", err)
+	}
+	if len(results) == 0 {
+		return jamendoTrackItem{}, errors.New("track not found")
+	}
+	return results[0], nil
 }
 
 func (j *Jamendo) resolveTrackMeta(item jamendoTrackItem, meta jamendoTrackMeta) (jamendoTrackMeta, error) {
