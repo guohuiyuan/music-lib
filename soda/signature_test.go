@@ -121,6 +121,34 @@ func TestSignStreamRequestSendsFullRequestAndMergesHeaders(t *testing.T) {
 	}
 }
 
+func TestSignRequestPreservesHTTPMethod(t *testing.T) {
+	var received sodaSignRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &received); err != nil {
+			t.Errorf("signer request parse error: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"headers":{"X-Helios":"helios-get","X-Medusa":"medusa-get"}}`))
+	}))
+	defer server.Close()
+
+	s := NewWithSigner("sessionid_ss=test", server.URL+"/sign", "")
+	s.ClearLocalSigner()
+	_, extra, err := s.signRequest(http.MethodGet, "https://api.qishui.com/luna/pc/search/track?q=test", "", map[string]string{
+		"User-Agent": "LunaPC/3.8.0",
+	})
+	if err != nil {
+		t.Fatalf("signRequest error: %v", err)
+	}
+	if received.Method != http.MethodGet {
+		t.Fatalf("signer method = %q, want GET", received.Method)
+	}
+	if extra["X-Helios"] != "helios-get" {
+		t.Fatalf("extra headers = %#v", extra)
+	}
+}
+
 func TestSignStreamRequestWithoutSignerKeepsRequestUntouched(t *testing.T) {
 	s := New("sessionid_ss=test")
 	s.ClearSigner()

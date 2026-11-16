@@ -346,7 +346,7 @@ func (l *localSigner) timeout() time.Duration {
 
 // sign 起一个短命进程做一次签名：node（或客户端 Electron）执行内置垫片，
 // 请求体走 stdin，签好的头走 stdout。
-func (l *localSigner) sign(reqURL, body string, headers map[string]string, deviceID string) (map[string]string, error) {
+func (l *localSigner) sign(method, reqURL, body string, headers map[string]string, deviceID string) (map[string]string, error) {
 	runtimePath, bdmsPath, err := l.resolve()
 	if err != nil {
 		return nil, err
@@ -358,7 +358,7 @@ func (l *localSigner) sign(reqURL, body string, headers map[string]string, devic
 
 	payload, err := json.Marshal(map[string]interface{}{
 		"url":     reqURL,
-		"method":  "POST",
+		"method":  method,
 		"body":    body,
 		"ts_ms":   time.Now().UnixMilli(),
 		"headers": copyStringMap(headers),

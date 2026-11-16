@@ -1,9 +1,11 @@
 package soda
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/guohuiyuan/music-lib/model"
 )
 
@@ -13,12 +15,16 @@ func Parse(link string) (*model.Song, error) { return defaultSoda.Parse(link) }
 
 // Search 搜索歌曲 (PC API)
 func (s *Soda) Search(keyword string) ([]model.Song, error) {
-	body, err := s.fetchAndroidSearch("track", keyword, 1, sodaAndroidSearchPageSize)
+	body, err := s.fetchTrackSearch(keyword)
 	if err != nil {
 		return nil, err
 	}
 
 	var resp struct {
+		StatusCode int `json:"status_code"`
+		StatusInfo struct {
+			StatusMsg string `json:"status_msg"`
+		} `json:"status_info"`
 		ResultGroups []struct {
 			Data []struct {
 				Entity struct {
@@ -29,7 +35,17 @@ func (s *Soda) Search(keyword string) ([]model.Song, error) {
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
+		if len(bytes.TrimSpace(body)) == 0 {
+			return nil, errors.New("soda search returned an empty response")
+		}
 		return nil, fmt.Errorf("soda search json parse error: %w", err)
+	}
+	if resp.StatusCode != 0 {
+		msg := resp.StatusInfo.StatusMsg
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("soda search api error: status_code=%d status_msg=%s", resp.StatusCode, msg)
 	}
 
 	var songs []model.Song

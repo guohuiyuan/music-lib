@@ -94,51 +94,69 @@ func (s *Soda) GetCategoryPlaylists(categoryID string, page, limit int) ([]model
 }
 
 func (s *Soda) SearchPlaylist(keyword string) ([]model.Playlist, error) {
-	body, err := s.fetchAndroidSearch("playlist", keyword, 1, sodaAndroidSearchPageSize)
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil, errors.New("soda playlist search keyword is empty")
+	}
+
+	body, err := s.fetchPCWebPlaylistSearch(keyword)
 	if err != nil {
 		return nil, err
 	}
+	return parseSodaPlaylistSearchResponse(body)
+}
 
-	var resp struct {
-		ResultGroups []struct {
-			Data []struct {
-				Entity struct {
-					Playlist sodaUserPlaylistItem `json:"playlist"`
-				} `json:"entity"`
-			} `json:"data"`
-		} `json:"result_groups"`
-	}
-
+func parseSodaPlaylistSearchResponse(body []byte) ([]model.Playlist, error) {
+	var resp sodaPlaylistSearchResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("soda playlist json parse error: %w", err)
 	}
+	if resp.StatusCode != 0 {
+		msg := strings.TrimSpace(resp.StatusInfo.StatusMsg)
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("soda playlist search api error: status_code=%d status_msg=%s", resp.StatusCode, msg)
+	}
 
-	var playlists []model.Playlist
+	seen := make(map[string]struct{})
+	playlists := make([]model.Playlist, 0, len(resp.ResultGroups)*sodaPCWebSearchPageSize)
 	for _, group := range resp.ResultGroups {
 		for _, item := range group.Data {
 			pl := item.Entity.Playlist
-			if pl.ID == "" {
+			playlistID := strings.TrimSpace(pl.ID)
+			if playlistID == "" {
 				continue
 			}
-
-			creator := pl.Owner.PublicName
-			if creator == "" {
-				creator = pl.Owner.Nickname
+			if _, ok := seen[playlistID]; ok {
+				continue
 			}
-
-			playlists = append(playlists, model.Playlist{
-				Source:      "soda",
-				ID:          pl.ID,
-				Name:        pl.Title,
-				Cover:       sodaBuildImageURL(pl.URLCover, "~c5_300x300.jpg"),
-				TrackCount:  pl.CountTracks,
-				Creator:     creator,
-				Description: pl.Desc,
-				Link:        fmt.Sprintf("https://www.qishui.com/playlist/%s", pl.ID),
-			})
+			seen[playlistID] = struct{}{}
+			if playlist := sodaBuildPlaylistFromUserItem(pl, "", ""); playlist.ID != "" {
+				playlists = append(playlists, playlist)
+			}
 		}
 	}
+	if len(playlists) == 0 && resp.Extra.EmptySearch != 0 {
+		return nil, errors.New("soda playlist search returned empty_search")
+	}
 	return playlists, nil
+}
+
+type sodaPlaylistSearchResponse struct {
+	StatusCode int               `json:"status_code"`
+	StatusInfo sodaAPIStatusInfo `json:"status_info"`
+	Extra      struct {
+		EmptySearch int `json:"empty_search"`
+	} `json:"extra"`
+	ResultGroups []struct {
+		ID   string `json:"id"`
+		Data []struct {
+			Entity struct {
+				Playlist sodaUserPlaylistItem `json:"playlist"`
+			} `json:"entity"`
+		} `json:"data"`
+	} `json:"result_groups"`
 }
 
 func (s *Soda) GetPlaylistSongs(id string) ([]model.Song, error) {

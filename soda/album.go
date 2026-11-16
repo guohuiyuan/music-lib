@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/guohuiyuan/music-lib/model"
 	"strconv"
 	"strings"
+
+	"github.com/guohuiyuan/music-lib/model"
 )
 
 func SearchAlbum(keyword string) ([]model.Playlist, error) {
@@ -23,9 +24,17 @@ func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 
 // SearchAlbum 搜索专辑 (PC API)
 func (s *Soda) SearchAlbum(keyword string) ([]model.Playlist, error) {
-	body, err := s.fetchAndroidSearch("album", keyword, 1, sodaAndroidSearchPageSize)
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil, errors.New("soda album search keyword is empty")
+	}
+
+	body, err := s.fetchPCWebSearch("album", keyword)
 	if err != nil {
 		return nil, err
+	}
+	if err := validateSodaSearchBody(body); err != nil {
+		return nil, fmt.Errorf("soda album search: %w", err)
 	}
 
 	var resp struct {
@@ -50,16 +59,22 @@ func (s *Soda) SearchAlbum(keyword string) ([]model.Playlist, error) {
 		return nil, fmt.Errorf("soda album search json parse error: %w", err)
 	}
 
+	seen := make(map[string]struct{})
 	var albums []model.Playlist
 	for _, group := range resp.ResultGroups {
 		for _, item := range group.Data {
 			album := item.Entity.Album
-			if album.ID == "" {
+			albumID := strings.TrimSpace(album.ID)
+			if albumID == "" {
 				continue
 			}
+			if _, ok := seen[albumID]; ok {
+				continue
+			}
+			seen[albumID] = struct{}{}
 
 			extra := map[string]string{
-				"album_id": album.ID,
+				"album_id": albumID,
 			}
 			if album.ReleaseDate > 0 {
 				extra["release_date"] = strconv.FormatInt(album.ReleaseDate, 10)
@@ -67,13 +82,13 @@ func (s *Soda) SearchAlbum(keyword string) ([]model.Playlist, error) {
 
 			albums = append(albums, model.Playlist{
 				Source:      "soda",
-				ID:          album.ID,
+				ID:          albumID,
 				Name:        album.Name,
 				Cover:       sodaBuildImageURL(album.URLCover, "~c5_300x300.jpg"),
 				TrackCount:  album.CountTracks,
 				Creator:     sodaJoinArtists(album.Artists),
 				Description: strings.TrimSpace(album.Company),
-				Link:        sodaAlbumLink(album.ID),
+				Link:        sodaAlbumLink(albumID),
 				Extra:       extra,
 			})
 		}

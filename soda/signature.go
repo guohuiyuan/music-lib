@@ -314,27 +314,36 @@ type sodaSignResponse struct {
 	Headers  map[string]string `json:"headers"`
 }
 
-// signStreamRequest 向签名器要一对 x-helios / x-medusa，并返回可能被追加查询参数的 URL
+// signStreamRequest 保留原有 POST 调用语义，供 track_v2 使用。
+func (s *Soda) signStreamRequest(reqURL, body string, headers map[string]string) (string, map[string]string, error) {
+	return s.signRequest(http.MethodPost, reqURL, body, headers)
+}
+
+// signRequest 向签名器要请求签名，并返回可能被追加查询参数的 URL
 // 以及要补进请求头的键值。
 //
 // 优先级：显式配置的远程签名服务 > 本机签名器（进程内调 bdms.node）> 无签名。
-func (s *Soda) signStreamRequest(reqURL, body string, headers map[string]string) (string, map[string]string, error) {
+func (s *Soda) signRequest(method, reqURL, body string, headers map[string]string) (string, map[string]string, error) {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		method = http.MethodPost
+	}
 	if s.hasRemoteSigner() {
-		return s.signStreamRequestRemote(reqURL, body, headers)
+		return s.signStreamRequestRemote(method, reqURL, body, headers)
 	}
 	// 默认路径：进程内桥接官方客户端的 bdms.node，能不起服务就不起服务。
 	if s.localSigner != nil && s.HasLocalSigner() {
-		return s.signStreamRequestLocal(reqURL, body, headers)
+		return s.signStreamRequestLocal(method, reqURL, body, headers)
 	}
 	return reqURL, map[string]string{}, nil
 }
 
-func (s *Soda) signStreamRequestLocal(reqURL, body string, headers map[string]string) (string, map[string]string, error) {
+func (s *Soda) signStreamRequestLocal(method, reqURL, body string, headers map[string]string) (string, map[string]string, error) {
 	identity, err := s.ensureAppCredentials()
 	if err != nil {
 		return reqURL, nil, err
 	}
-	signed, err := s.localSigner.sign(reqURL, body, headers, identity.DeviceID)
+	signed, err := s.localSigner.sign(method, reqURL, body, headers, identity.DeviceID)
 	if err != nil {
 		return reqURL, nil, err
 	}
@@ -351,10 +360,10 @@ func (s *Soda) signStreamRequestLocal(reqURL, body string, headers map[string]st
 	return reqURL, extra, nil
 }
 
-func (s *Soda) signStreamRequestRemote(reqURL, body string, headers map[string]string) (string, map[string]string, error) {
+func (s *Soda) signStreamRequestRemote(method, reqURL, body string, headers map[string]string) (string, map[string]string, error) {
 	payload := sodaSignRequest{
 		URL:     reqURL,
-		Method:  http.MethodPost,
+		Method:  method,
 		Body:    body,
 		TSMs:    time.Now().UnixMilli(),
 		Headers: copyStringMap(headers),
