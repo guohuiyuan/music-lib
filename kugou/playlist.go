@@ -13,6 +13,11 @@ import (
 	"github.com/guohuiyuan/music-lib/utils"
 )
 
+const (
+	kugouRecommendedPlaylistURL         = "https://m.kugou.com/plist/index?json=true"
+	kugouRecommendedPlaylistFallbackURL = "http://mobilecdn.kugou.com/api/v3/tag/specialList"
+)
+
 func SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return defaultKugou.SearchPlaylist(keyword)
 }
@@ -340,38 +345,56 @@ func (k *Kugou) ParsePlaylist(link string) (*model.Playlist, []model.Song, error
 
 // GetRecommendedPlaylists 获取推荐歌单
 func (k *Kugou) GetRecommendedPlaylists() ([]model.Playlist, error) {
-	// [修改] 使用 m.kugou.com 的 plist 接口，这个接口对 MobileUserAgent 更友好
-	// json=true 返回 JSON 数据
-	apiURL := "http://m.kugou.com/plist/index&json=true"
+	return k.getRecommendedPlaylists(kugouRecommendedPlaylistURL, kugouRecommendedPlaylistFallbackURL)
+}
 
+func (k *Kugou) getRecommendedPlaylists(primaryURL, fallbackURL string) ([]model.Playlist, error) {
+	playlists, primaryErr := k.fetchHomepageRecommendedPlaylists(primaryURL)
+	if len(playlists) > 0 {
+		return playlists, nil
+	}
+	if primaryErr == nil {
+		primaryErr = errors.New("empty recommended playlist response")
+	}
+
+	playlists, fallbackErr := k.fetchTagRecommendedPlaylists(fallbackURL)
+	if len(playlists) > 0 {
+		return playlists, nil
+	}
+	if fallbackErr == nil {
+		fallbackErr = errors.New("empty recommended playlist fallback response")
+	}
+	return nil, fmt.Errorf("kugou recommended playlists unavailable: primary: %v; fallback: %w", primaryErr, fallbackErr)
+}
+
+type kugouRecommendedPlaylistItem struct {
+	SpecialID       int    `json:"specialid"`
+	GlobalSpecialID string `json:"global_specialid"`
+	SpecialName     string `json:"specialname"`
+	ImgURL          string `json:"imgurl"`
+	PlayCount       int    `json:"playcount"`
+	SongCount       int    `json:"songcount"`
+	Username        string `json:"username"`
+	SingerName      string `json:"singername"`
+	Intro           string `json:"intro"`
+	PubTime         string `json:"publishtime"`
+}
+
+func (k *Kugou) fetchHomepageRecommendedPlaylists(apiURL string) ([]model.Playlist, error) {
 	body, err := utils.Get(apiURL,
 		utils.WithHeader("User-Agent", MobileUserAgent),
 		utils.WithHeader("Referer", MobileReferer),
 		utils.WithHeader("Cookie", k.cookie),
-		utils.WithRandomIPHeader(),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// 检查 Body 是否是 JSON 格式 (简单的开头检查)
-	// 如果酷狗返回 HTML 错误页，这里可以拦截到
-	if len(body) == 0 || body[0] != '{' {
-		return nil, fmt.Errorf("kugou api returned invalid json: %s", string(body))
-	}
-
 	var resp struct {
 		Plist struct {
+			Info []kugouRecommendedPlaylistItem `json:"info"`
 			List struct {
-				Info []struct {
-					SpecialID   int    `json:"specialid"`
-					SpecialName string `json:"specialname"`
-					ImgURL      string `json:"imgurl"`
-					PlayCount   int    `json:"playcount"`
-					SongCount   int    `json:"songcount"`
-					Username    string `json:"username"`
-					Intro       string `json:"intro"`
-				} `json:"info"`
+				Info []kugouRecommendedPlaylistItem `json:"info"`
 			} `json:"list"`
 		} `json:"plist"`
 	}
@@ -380,26 +403,86 @@ func (k *Kugou) GetRecommendedPlaylists() ([]model.Playlist, error) {
 		return nil, fmt.Errorf("kugou recommended playlist json parse error: %w", err)
 	}
 
-	var playlists []model.Playlist
-	for _, item := range resp.Plist.List.Info {
+	items := resp.Plist.List.Info
+	if len(items) == 0 {
+		items = resp.Plist.Info
+	}
+	return buildKugouRecommendedPlaylists(items), nil
+}
+
+func (k *Kugou) fetchTagRecommendedPlaylists(apiURL string) ([]model.Playlist, error) {
+	parsedURL, err := url.Parse(apiURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid kugou recommended playlist fallback url: %w", err)
+	}
+	params := parsedURL.Query()
+	params.Set("plat", "0")
+	params.Set("page", "1")
+	params.Set("tagid", "0")
+	params.Set("pagesize", "30")
+	params.Set("ugc", "1")
+	params.Set("id", "0")
+	params.Set("sort", "2")
+	parsedURL.RawQuery = params.Encode()
+
+	body, err := utils.Get(parsedURL.String(),
+		utils.WithHeader("User-Agent", MobileUserAgent),
+		utils.WithHeader("Referer", MobileReferer),
+		utils.WithHeader("Cookie", k.cookie),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Status  int    `json:"status"`
+		Errcode int    `json:"errcode"`
+		Error   string `json:"error"`
+		Data    struct {
+			Info []kugouRecommendedPlaylistItem `json:"info"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("kugou recommended playlist fallback json parse error: %w", err)
+	}
+	if resp.Error != "" && len(resp.Data.Info) == 0 {
+		return nil, fmt.Errorf("kugou recommended playlist fallback api error: %s (status %d errcode %d)", resp.Error, resp.Status, resp.Errcode)
+	}
+	return buildKugouRecommendedPlaylists(resp.Data.Info), nil
+}
+
+func buildKugouRecommendedPlaylists(items []kugouRecommendedPlaylistItem) []model.Playlist {
+	playlists := make([]model.Playlist, 0, len(items))
+	for _, item := range items {
+		playlistID := strconv.Itoa(item.SpecialID)
+		if item.SpecialID <= 0 {
+			playlistID = strings.TrimSpace(item.GlobalSpecialID)
+		}
+		name := strings.TrimSpace(item.SpecialName)
+		if playlistID == "" || name == "" {
+			continue
+		}
 		cover := strings.Replace(item.ImgURL, "{size}", "240", 1)
+		creator := strings.TrimSpace(item.Username)
+		if creator == "" {
+			creator = strings.TrimSpace(item.SingerName)
+		}
 
 		playlists = append(playlists, model.Playlist{
 			Source:      "kugou",
-			ID:          strconv.Itoa(item.SpecialID),
-			Name:        item.SpecialName,
+			ID:          playlistID,
+			Name:        name,
 			Cover:       cover,
 			TrackCount:  item.SongCount,
 			PlayCount:   item.PlayCount,
-			Creator:     item.Username,
+			Creator:     creator,
 			Description: item.Intro,
-			Link:        fmt.Sprintf("https://www.kugou.com/yy/special/single/%d.html", item.SpecialID),
+			Link:        fmt.Sprintf("https://www.kugou.com/yy/special/single/%s.html", playlistID),
+			Extra: map[string]string{
+				"global_specialid": item.GlobalSpecialID,
+				"publish_time":     item.PubTime,
+			},
 		})
 	}
-
-	if len(playlists) == 0 {
-		return nil, errors.New("no recommended playlists found")
-	}
-
-	return playlists, nil
+	return playlists
 }
