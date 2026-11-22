@@ -65,6 +65,17 @@
 
 未支持热门单曲的平台返回 `model.ErrHotSongsUnsupported`。
 
+## 网易云高音质与客户端标识
+
+网易云的播放接口会根据 Cookie 里的 `os` 和 `appver` 判断调用方是不是官方客户端。只带 `MUSIC_U` 等登录字段时会被当成 Web 客户端，会员身份可能识别不到，高档请求被静默降级成 `lossless` 或更低档位，`超清母带` / `Hi-Res` / `沉浸环绕声` / `臻音全景声` / `杜比全景声` 都解锁不了。
+
+`netease.New(cookie)` 会自动补齐缺失的 `os=pc; appver=8.9.70`：调用方已填的值（比如 `os=android`）不会被覆盖，空 Cookie 保持为空，也不会改写调用方保存的 Cookie 字符串。上层不用自己拼这两个字段。
+
+```go
+n := netease.New(os.Getenv("NETEASE_COOKIE")) // 自动补齐客户端标识
+options, err := n.AvailableQualityOptions()   // 按账号实际权益返回，最高可用音质排在最前
+```
+
 ## Soda 扫码登录
 
 `soda.CreateQRLogin` / `soda.CheckQRLogin` 目前仍处于调试状态。汽水音乐新版 PC 官方 passport 扫码流程依赖动态 `a_bogus` / `msToken` 风控签名，当前实现尚未调通完整登录链路，调用方不要把它作为稳定扫码登录能力暴露给用户。
@@ -502,6 +513,12 @@ music-lib/
 ├── ...
 └── README.md
 ```
+
+## 贡献者
+
+| 贡献者 | 贡献 |
+| ------ | ---- |
+| [YupenBob](https://github.com/YupenBob) | 网易云客户端标识补齐：自动为 Cookie 补充 `os=pc; appver=8.9.70`，解锁超清母带 / Hi-Res / 沉浸环绕声等会员音质（[go-music-dl#269](https://github.com/guohuiyuan/go-music-dl/pull/269)） |
 
 ## 许可证
 

@@ -77,7 +77,9 @@ var vipStatusCache = struct {
 const downloadURLCacheTTL = 10 * time.Minute
 const vipStatusCacheTTL = 10 * time.Minute
 
-func New(cookie string) *Netease { return &Netease{cookie: cookie} }
+// New 创建网易云客户端。Cookie 会保留调用方的登录字段，并在缺失时补上高档
+// 音质需要的 PC 客户端标识；调用方传入的 os/appver 不会被覆盖。
+func New(cookie string) *Netease { return &Netease{cookie: withClientIdentity(cookie)} }
 
 var defaultNetease = New("")
 

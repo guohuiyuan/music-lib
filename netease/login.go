@@ -101,7 +101,9 @@ func (n *Netease) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 		}
 		result.Cookie = cookie
 		result.Cookies = cookies
-		n.cookie = cookie
+		// 返回给调用方的 Cookie 保持原样，方便调用方保存；当前实例的后续请求
+		// 使用补齐客户端标识后的形式。
+		n.cookie = withClientIdentity(cookie)
 		n.isVipCache = nil
 	}
 	return result, nil
