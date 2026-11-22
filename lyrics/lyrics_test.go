@@ -71,6 +71,58 @@ func TestConvertVerbatimLRCMapsExtraTracksByTimestampBeforeIndex(t *testing.T) {
 	}
 }
 
+func TestConvertVerbatimLRCSkipsTranslationDuplicatingOriginal(t *testing.T) {
+	_, orig := ParseLRC("[00:34.20]Look at look at me\n[00:35.27]Look at look at me")
+	_, ts := ParseLRC("[00:34.20]Look at look at me\n[00:35.27]Look at look at me")
+
+	got := ConvertVerbatimLRC(nil, MultiData{
+		"orig": orig,
+		"ts":   ts,
+	}, DefaultDisplayOrder())
+
+	if count := strings.Count(got, "Look at look at me"); count != 2 {
+		t.Fatalf("duplicate translation was emitted %d times, want 2:\n%s", count, got)
+	}
+}
+
+func TestConvertVerbatimLRCMapsRepeatedTimestampsByOccurrence(t *testing.T) {
+	_, orig := ParseLRC("[00:00.00] 作词 : A\n[00:00.00] 作曲 : B\n[00:00.00] 制作人 : C")
+	_, ts := ParseLRC("[00:00.00]Lyrics by A\n[00:00.00]Composed by B\n[00:00.00]Produced by C")
+
+	got := ConvertVerbatimLRC(nil, MultiData{
+		"orig": orig,
+		"ts":   ts,
+	}, DefaultDisplayOrder())
+
+	for _, want := range []string{"Lyrics by A", "Composed by B", "Produced by C"} {
+		if count := strings.Count(got, want); count != 1 {
+			t.Fatalf("%q was emitted %d times, want 1:\n%s", want, count, got)
+		}
+	}
+}
+
+func TestConvertVerbatimLRCAlignsTranslationsAfterLeadingCredits(t *testing.T) {
+	_, orig := ParseLRC("[00:00.00] 作词 : A\n[00:00.00] 作曲 : B\n[00:00.00]My rival, my idol\n[00:01.87]You got me")
+	_, ts := ParseLRC("[00:00.00]我的对手，我的偶像\n[00:01.87]你让我想自刎归天")
+
+	got := ConvertVerbatimLRC(nil, MultiData{
+		"orig": orig,
+		"ts":   ts,
+	}, DefaultDisplayOrder())
+
+	if count := strings.Count(got, "我的对手，我的偶像"); count != 1 {
+		t.Fatalf("translation was emitted %d times, want 1:\n%s", count, got)
+	}
+	if strings.Index(got, "My rival, my idol") > strings.Index(got, "我的对手，我的偶像") {
+		t.Fatalf("translation should follow its lyric line, not the credit lines:\n%s", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "作词") && strings.Contains(line, "我的对手") {
+			t.Fatalf("translation was attached to a credit line:\n%s", got)
+		}
+	}
+}
+
 func TestParseQRC(t *testing.T) {
 	raw := `<Lyric_1 LyricType="1" LyricContent="[ti:T]&#10;[1000,1000]你(1000,500)好(1500,500)"/>`
 	tags, data := ParseQRC(raw)

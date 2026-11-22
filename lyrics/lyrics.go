@@ -195,20 +195,68 @@ func ConvertVerbatimLRC(tags map[string]string, data MultiData, order []string) 
 		order = DefaultDisplayOrder()
 	}
 	orig := data["orig"]
+	origCounts := timedTextCounts(orig)
+	langCounts := make(map[string]map[int]int, len(order))
+	for _, lang := range order {
+		if lang == "orig" {
+			continue
+		}
+		if lines := data[lang]; len(lines) > 0 && hasTimedLines(lines) {
+			langCounts[lang] = timedTextCounts(lines)
+		}
+	}
+	occurrences := make(map[int]int)
+	emitted := make(map[string]struct{})
 	for i, origLine := range orig {
 		lineStart := lineStart(origLine)
 		lineEnd := lineEnd(origLine)
+		occurrence := 0
+		if origLine.Start.OK {
+			occurrence = occurrences[origLine.Start.MS]
+			if lineHasText(origLine) {
+				occurrences[origLine.Start.MS]++
+			}
+		}
 		for _, lang := range order {
 			lines := data[lang]
 			if len(lines) == 0 {
 				continue
 			}
-			idx := mappedIndex(lines, i, origLine)
+			target := occurrence
+			if lang != "orig" && origLine.Start.OK {
+				if counts, timed := langCounts[lang]; timed {
+					// 同一时间戳下若有原文行没有对应译文（常见于作词/作曲等
+					// 信息行），把译文对齐到该时间戳的最后几行原文。
+					if extra := origCounts[origLine.Start.MS] - counts[origLine.Start.MS]; extra > 0 {
+						target -= extra
+					}
+					if target < 0 {
+						continue
+					}
+				}
+			}
+			idx := i
+			if lang != "orig" {
+				idx = mappedIndex(lines, i, origLine, target)
+			}
 			if idx < 0 || idx >= len(lines) {
 				continue
 			}
 			if !lineHasText(lines[idx]) {
 				continue
+			}
+			text := strings.TrimSpace(lineText(lines[idx]))
+			// 译文与原文完全相同时不再重复输出。
+			if lang != "orig" && text == strings.TrimSpace(lineText(origLine)) {
+				continue
+			}
+			// 同一时间戳下的相同文本只保留一行。
+			if lineStart.OK {
+				key := strconv.Itoa(lineStart.MS) + "\x00" + text
+				if _, exists := emitted[key]; exists {
+					continue
+				}
+				emitted[key] = struct{}{}
 			}
 			b.WriteString(lineToVerbatimLRC(lines[idx], lineStart, lineEnd))
 			b.WriteByte('\n')
@@ -365,11 +413,15 @@ func writeTags(b *strings.Builder, tags map[string]string) {
 	}
 }
 
-func mappedIndex(lines Data, i int, orig Line) int {
+func mappedIndex(lines Data, i int, orig Line, occurrence int) int {
 	if orig.Start.OK {
+		matched := 0
 		for idx, line := range lines {
 			if line.Start.OK && line.Start.MS == orig.Start.MS && lineHasText(line) {
-				return idx
+				if matched == occurrence {
+					return idx
+				}
+				matched++
 			}
 		}
 		if hasTimedLines(lines) {
@@ -380,6 +432,24 @@ func mappedIndex(lines Data, i int, orig Line) int {
 		return i
 	}
 	return -1
+}
+
+func lineText(line Line) string {
+	var b strings.Builder
+	for _, word := range line.Words {
+		b.WriteString(word.Text)
+	}
+	return b.String()
+}
+
+func timedTextCounts(data Data) map[int]int {
+	counts := make(map[int]int)
+	for _, line := range data {
+		if line.Start.OK && lineHasText(line) {
+			counts[line.Start.MS]++
+		}
+	}
+	return counts
 }
 
 func hasTimedLines(lines Data) bool {
