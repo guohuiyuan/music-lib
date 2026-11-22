@@ -23,7 +23,7 @@ func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultNetease.ParsePlaylist(link)
 }
 
-// GetRecommendedPlaylists returns recommended playlists without login.
+// GetRecommendedPlaylists 返回无需登录的推荐歌单。
 func GetRecommendedPlaylists() ([]model.Playlist, error) {
 	return defaultNetease.GetRecommendedPlaylists()
 }
@@ -40,7 +40,7 @@ func GetUserPlaylists(page, limit int) ([]model.Playlist, error) {
 	return defaultNetease.GetUserPlaylists(page, limit)
 }
 
-// SearchPlaylist searches playlists.
+// SearchPlaylist 搜索歌单。
 func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	body, err := n.cloudSearch(keyword, 1000, 10)
 	if err != nil {
@@ -84,13 +84,13 @@ func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return playlists, nil
 }
 
-// GetPlaylistSongs returns songs in a playlist.
+// GetPlaylistSongs 返回歌单中的歌曲。
 func (n *Netease) GetPlaylistSongs(playlistID string) ([]model.Song, error) {
 	_, songs, err := n.fetchPlaylistDetail(playlistID)
 	return songs, err
 }
 
-// ParsePlaylist parses a playlist link.
+// ParsePlaylist 解析歌单链接。
 func (n *Netease) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	kind, playlistID, err := parseNeteaseLink(link)
 	if err != nil || kind != neteaseLinkPlaylist {
@@ -99,7 +99,7 @@ func (n *Netease) ParsePlaylist(link string) (*model.Playlist, []model.Song, err
 	return n.fetchPlaylistDetail(playlistID)
 }
 
-// GetRecommendedPlaylists returns homepage recommended playlists.
+// GetRecommendedPlaylists 返回首页推荐歌单。
 func (n *Netease) GetRecommendedPlaylists() ([]model.Playlist, error) {
 	reqData := map[string]interface{}{
 		"limit": 30,

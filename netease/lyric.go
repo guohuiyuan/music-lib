@@ -13,7 +13,7 @@ import (
 
 func GetLyrics(s *model.Song) (string, error) { return defaultNetease.GetLyrics(s) }
 
-// GetLyrics fetches lyrics.
+// GetLyrics 获取歌词。
 func (n *Netease) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "netease" {
 		return "", errors.New("source mismatch")

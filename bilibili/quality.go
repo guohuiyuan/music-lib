@@ -108,8 +108,8 @@ var bilibiliQualityOrder = []model.AudioQuality{
 	model.AudioQualityLow,
 }
 
-// ListQualityOptions returns every Bilibili audio tier recognized by the
-// DASH playurl API. The existing Hi-Res-first priority is preserved.
+// ListQualityOptions 返回 DASH playurl 接口支持的全部 B 站音频档位，
+// 并保留现有的 Hi-Res 优先顺序。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(bilibiliQualityOrder))
 	for _, quality := range bilibiliQualityOrder {
@@ -118,8 +118,8 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions probes a public music video using the configured
-// cookie. VIP-only tracks appear only when the playurl response exposes them.
+// AvailableQualityOptions 用配置的 Cookie 探测一个公开音乐视频。
+// VIP 专属音轨只有在 playurl 响应返回时才会出现。
 func (b *Bilibili) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	isVip, _ := b.IsVipAccount()
 	candidates, err := b.fetchAudioCandidates(
@@ -146,8 +146,8 @@ func (b *Bilibili) AvailableQualityOptions() ([]model.AudioQualityOption, error)
 	return options, nil
 }
 
-// GetDownloadURLWithQuality resolves an exact Bilibili DASH audio track. Auto
-// keeps the previous behavior: Hi-Res, then Dolby, then the largest normal ID.
+// GetDownloadURLWithQuality 解析指定的 B 站 DASH 音轨。Auto 保持原有行为：
+// 先 Hi-Res，再杜比，最后取最大的普通 ID。
 func (b *Bilibili) GetDownloadURLWithQuality(song *model.Song, quality string) (string, error) {
 	normalized, ok := model.NormalizeAudioQuality(quality)
 	if !ok {

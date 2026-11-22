@@ -139,8 +139,8 @@ func (s *Spotify) getTrack(id string) (*spotifyTrack, error) {
 	return &track, nil
 }
 
-// GetDownloadURL returns Spotify's official preview URL. Spotify's full tracks
-// are DRM protected and are intentionally not exposed as downloadable files.
+// GetDownloadURL 返回 Spotify 官方试听地址。Spotify 的完整音轨受 DRM 保护，
+// 有意不暴露为可下载文件。
 func (s *Spotify) GetDownloadURL(song *model.Song) (string, error) {
 	if song == nil {
 		return "", errors.New("spotify song is nil")

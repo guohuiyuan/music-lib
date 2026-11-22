@@ -43,7 +43,7 @@ var fivesingQualityCandidates = []fivesingQualityCandidate{
 	},
 }
 
-// ListQualityOptions returns the MP3 tiers exposed by 5sing.
+// ListQualityOptions 返回 5sing 支持的 MP3 档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(fivesingQualityCandidates))
 	for _, candidate := range fivesingQualityCandidates {
@@ -52,8 +52,8 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions probes a stable 5sing track and reports tiers that
-// the current request can actually resolve.
+// AvailableQualityOptions 探测一个稳定的 5sing 歌曲，并返回当前请求
+// 实际能解析到的档位。
 func (f *Fivesing) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	const (
 		probeSongID   = "3529943"
@@ -77,8 +77,8 @@ func (f *Fivesing) AvailableQualityOptions() ([]model.AudioQualityOption, error)
 	return options, nil
 }
 
-// GetDownloadURLWithQuality resolves an explicit 5sing tier. It does not
-// silently substitute another tier; the shared core fallback handles that.
+// GetDownloadURLWithQuality 解析指定的 5sing 档位。它不会静默替换成其他档位，
+// 这部分由公共核心的回退逻辑处理。
 func (f *Fivesing) GetDownloadURLWithQuality(s *model.Song, quality string) (string, error) {
 	normalized, ok := model.NormalizeAudioQuality(quality)
 	if !ok {

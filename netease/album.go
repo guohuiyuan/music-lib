@@ -19,7 +19,7 @@ func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return defaultNetease.ParseAlbum(link)
 }
 
-// SearchAlbum searches albums.
+// SearchAlbum 搜索专辑。
 func (n *Netease) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	body, err := n.cloudSearch(keyword, 10, 10)
 	if err != nil {
@@ -93,13 +93,13 @@ func (n *Netease) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	return albums, nil
 }
 
-// GetAlbumSongs returns songs in an album.
+// GetAlbumSongs 返回专辑中的歌曲。
 func (n *Netease) GetAlbumSongs(albumID string) ([]model.Song, error) {
 	_, songs, err := n.fetchAlbumDetail(albumID)
 	return songs, err
 }
 
-// ParseAlbum parses an album link.
+// ParseAlbum 解析专辑链接。
 func (n *Netease) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	kind, albumID, err := parseNeteaseLink(link)
 	if err != nil || kind != neteaseLinkAlbum {

@@ -16,13 +16,13 @@ var applePreviewQuality = model.AudioQualityOption{
 	Format: "m4a",
 }
 
-// ListQualityOptions returns every playable Apple quality tier.
+// ListQualityOptions 返回 Apple 所有可播放的音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	return []model.AudioQualityOption{applePreviewQuality}
 }
 
-// AvailableQualityOptions reports the only stream Apple currently exposes
-// without DRM decryption: its official preview.
+// AvailableQualityOptions 报告 Apple 目前唯一无需 DRM 解密就能获取的音频流：
+// 官方试听片段。
 func (a *Apple) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	_, err := a.GetDownloadURL(&model.Song{Source: "apple", ID: appleQualityProbeSongID})
 	if err != nil {

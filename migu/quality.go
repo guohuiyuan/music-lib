@@ -35,7 +35,7 @@ var miguQualityCandidates = []miguQualityCandidate{
 	{option: model.AudioQualityOption{Value: model.AudioQualityLow, Label: "低品质 64k", Format: "mp3", Bitrate: 64}, tones: []string{"LQ"}},
 }
 
-// ListQualityOptions returns the complete Migu quality taxonomy.
+// ListQualityOptions 返回咪咕完整的音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(miguQualityCandidates))
 	for _, candidate := range miguQualityCandidates {
@@ -44,11 +44,10 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions reports the highest stream the current account can
-// obtain from a real Migu track, plus every lower quality in the fallback
-// ladder. Migu sometimes exposes FLAC through a rewritten standard URL even
-// when an explicit VIP tone request is rejected, so probing the normal
-// download path is more accurate than checking each VIP flag independently.
+// AvailableQualityOptions 用一首真实的咪咕歌曲探测当前账号能拿到的最高
+// 音频流，以及回退阶梯里的全部更低档位。咪咕有时即使显式 VIP 音质请求被拒，
+// 也会通过改写后的标准地址提供 FLAC，所以探测正常下载路径比逐个检查 VIP
+// 标记更准确。
 func (m *Migu) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	if m.availableQualityCache != nil {
 		return append([]model.AudioQualityOption(nil), m.availableQualityCache...), nil

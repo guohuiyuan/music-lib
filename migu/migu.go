@@ -516,8 +516,8 @@ func (m *Migu) convertItemToSongWithOption(item MiguSongItem, allowPaid bool) *m
 		}
 		isHiddenPaid := (item.ChargeAuditions == "1" && priceVal >= 200)
 
-		// Keep paid formats in search and playlist results. Entitlement is
-		// resolved by the playback endpoint, while IsVIP remains visible to callers.
+		// 搜索和歌单结果里保留付费格式。权益由播放接口判定，
+		// 同时把 IsVIP 暴露给调用方。
 		if allowPaid || (!isVipTag && !isHiddenPaid) {
 			candidates = append(candidates, validFormat{
 				index: i,

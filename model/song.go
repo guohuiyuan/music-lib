@@ -22,7 +22,7 @@ type Song struct {
 	Duration int    `json:"duration"` // 秒
 	Size     int64  `json:"size"`     // 文件大小 (字节)
 	Bitrate  int    `json:"bitrate"`  // 码率 (kbps)
-	Source   string `json:"source"`   // kugou, netease, qq, bilibili...
+	Source   string `json:"source"`   // 例如 kugou、netease、qq、bilibili……
 	URL      string `json:"url"`      // 真实音频文件下载链接
 	Ext      string `json:"ext"`      // 文件后缀 (mp3, flac...)
 	Cover    string `json:"cover"`    // 封面图片链接
@@ -36,7 +36,7 @@ type Song struct {
 	// [新增] 标记歌曲是否无效 (经过 Probe 探测后)
 	IsInvalid bool `json:"is_invalid,omitempty"`
 
-	// IsVIP marks tracks that require a paid/VIP entitlement for full playback or download.
+	// IsVIP 标记完整播放或下载需要付费/VIP 权益的歌曲。
 	IsVIP bool `json:"is_vip,omitempty"`
 }
 

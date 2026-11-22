@@ -15,7 +15,7 @@ import (
 
 func GetLyrics(s *model.Song) (string, error) { return defaultQQ.GetLyrics(s) }
 
-// GetLyrics fetches lyrics.
+// GetLyrics 获取歌词。
 func (q *QQ) GetLyrics(s *model.Song) (string, error) {
 	if s.Source != "qq" {
 		return "", errors.New("source mismatch")

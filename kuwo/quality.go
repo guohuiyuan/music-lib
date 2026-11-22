@@ -22,7 +22,7 @@ var kuwoQualityCandidates = []kuwoQualityCandidate{
 	{option: model.AudioQualityOption{Value: model.AudioQualityStandard, Label: "标准音质 128k", Format: "mp3", Bitrate: 128}, br: "128kmp3"},
 }
 
-// ListQualityOptions returns all Kuwo stream tiers.
+// ListQualityOptions 返回酷我全部音频档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(kuwoQualityCandidates))
 	for _, candidate := range kuwoQualityCandidates {
@@ -31,8 +31,8 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions validates the configured account against a real
-// catalog track instead of assuming that every VIP account has every tier.
+// AvailableQualityOptions 用一首真实曲库歌曲校验配置的账号，
+// 而不是假设每个 VIP 账号都拥有全部档位。
 func (k *Kuwo) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	if k.availableQualityCache != nil {
 		return append([]model.AudioQualityOption(nil), k.availableQualityCache...), nil

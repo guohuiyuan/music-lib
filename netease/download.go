@@ -13,13 +13,13 @@ import (
 
 func GetDownloadURL(s *model.Song) (string, error) { return defaultNetease.GetDownloadURL(s) }
 
-// GetDownloadURL returns a download URL.
+// GetDownloadURL 返回下载地址。
 func (n *Netease) GetDownloadURL(s *model.Song) (string, error) {
 	return n.getDownloadURL(s, preferredDownloadLevels(s), true)
 }
 
-// GetDownloadURLWithQuality resolves an explicit quality tier. The selector
-// never silently downgrades a premium tier; only auto may choose a lower tier.
+// GetDownloadURLWithQuality 解析指定的音质档位。选择器不会静默降级会员档位，
+// 只有 auto 才会选择更低档位。
 func (n *Netease) GetDownloadURLWithQuality(s *model.Song, quality string) (string, error) {
 	normalized, ok := model.NormalizeAudioQuality(quality)
 	if !ok {
@@ -96,7 +96,7 @@ func (n *Netease) getDownloadURL(s *model.Song, levels []string, allowFallback b
 		}
 	}
 
-	// Fall back to the original weapi route.
+	// 回退到原来的 weapi 接口。
 	reqData := map[string]interface{}{
 		"ids": []string{songID},
 		"br":  br,

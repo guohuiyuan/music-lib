@@ -411,7 +411,7 @@ func (b *Bilibili) fetchSeasonSongs(mid, seasonID int64) ([]model.Song, error) {
 	return allSongs, nil
 }
 
-// fetchAudioURL returns the best account-accessible DASH/DURL audio stream.
+// fetchAudioURL 返回当前账号可访问的最佳 DASH/DURL 音频流。
 func (b *Bilibili) fetchAudioURL(bvid, cid string, isVip bool) (string, error) {
 	candidates, err := b.fetchAudioCandidates(bvid, cid, isVip)
 	if err != nil {

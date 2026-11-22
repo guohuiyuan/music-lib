@@ -2,8 +2,8 @@ package model
 
 import "strings"
 
-// AudioQuality is a source-independent quality identifier. Sources may map the
-// same identifier to different formats and bitrates.
+// AudioQuality 是与音源无关的音质标识。不同音源可以把同一个标识映射到
+// 不同的格式和码率。
 type AudioQuality string
 
 const (
@@ -23,7 +23,7 @@ const (
 	AudioQualityMaster   AudioQuality = "master"
 )
 
-// AudioQualityOption describes one selectable quality tier.
+// AudioQualityOption 描述一个可选的音质档位。
 type AudioQualityOption struct {
 	Value   AudioQuality `json:"value"`
 	Label   string       `json:"label"`
@@ -32,7 +32,7 @@ type AudioQualityOption struct {
 	VIP     bool         `json:"vip,omitempty"`
 }
 
-// NormalizeAudioQuality accepts canonical values and common bitrate aliases.
+// NormalizeAudioQuality 接受规范值和常见的码率别名。
 func NormalizeAudioQuality(value string) (AudioQuality, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "auto", "":

@@ -20,14 +20,14 @@ const (
 )
 
 type Apple struct {
-	cookie     string // media-user-token
-	token      string // bearer token
+	cookie     string // media-user-token 用户令牌
+	token      string // bearer token 访问令牌
 	storefront string
 }
 
 func New(cookie string) *Apple {
 	a := &Apple{cookie: cookie, storefront: defaultStorefront}
-	// cookie format: "media-user-token=xxx" or "token=xxx;media-user-token=xxx;storefront=cn"
+	// Cookie 格式："media-user-token=xxx" 或 "token=xxx;media-user-token=xxx;storefront=cn"
 	if cookie != "" {
 		parts := parseCookieParts(cookie)
 		if v := parts["media-user-token"]; v != "" {
@@ -45,7 +45,7 @@ func New(cookie string) *Apple {
 
 var defaultApple = New("")
 
-// Package-level convenience functions delegating to defaultApple.
+// 包级便捷函数，统一委托给 defaultApple。
 
 func Search(keyword string) ([]model.Song, error)          { return defaultApple.Search(keyword) }
 func GetDownloadURL(s *model.Song) (string, error)         { return defaultApple.GetDownloadURL(s) }
@@ -70,7 +70,7 @@ func GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist,
 	return defaultApple.GetCategoryPlaylists(categoryID, page, limit)
 }
 
-// Apple Music genre curators (extracted from public search-landing recommendations).
+// Apple Music 曲风策展人（从公开的搜索落地页推荐中提取）。
 var appleCuratorCategories = []model.PlaylistCategory{
 	{ID: "1526756058", Name: "热门", Source: "apple"},
 	{ID: "1479949880", Name: "C-Pop", Source: "apple"},
@@ -103,12 +103,12 @@ var appleCuratorCategories = []model.PlaylistCategory{
 	{ID: "989010186", Name: "亲子", Source: "apple"},
 }
 
-// GetPlaylistCategories returns Apple Music genre categories.
+// GetPlaylistCategories 返回 Apple Music 的曲风分类。
 func (a *Apple) GetPlaylistCategories() ([]model.PlaylistCategory, error) {
 	return appleCuratorCategories, nil
 }
 
-// GetCategoryPlaylists returns playlists for a given Apple Music curator category.
+// GetCategoryPlaylists 返回指定 Apple Music 策展分类下的歌单。
 func (a *Apple) GetCategoryPlaylists(categoryID string, page, limit int) ([]model.Playlist, error) {
 	if limit <= 0 {
 		limit = 20
@@ -116,7 +116,7 @@ func (a *Apple) GetCategoryPlaylists(categoryID string, page, limit int) ([]mode
 	const apiMax = 25
 	offset := (page - 1) * limit
 
-	// Curator IDs are from cn storefront; use cn for category playlists.
+	// 策展人 ID 来自中国区商店，分类歌单统一使用 cn。
 	storefront := "cn"
 
 	var all []model.Playlist
@@ -135,7 +135,7 @@ func (a *Apple) GetCategoryPlaylists(categoryID string, page, limit int) ([]mode
 		body, err := a.ampGet(uri, params)
 		if err != nil {
 			if len(all) > 0 {
-				break // return what we have
+				break // 返回已经拿到的数据
 			}
 			return nil, err
 		}
@@ -149,7 +149,7 @@ func (a *Apple) GetCategoryPlaylists(categoryID string, page, limit int) ([]mode
 			all = append(all, applePlaylistToPlaylist(item))
 		}
 
-		// No more data or no next page
+		// 没有更多数据或没有下一页
 		if len(resp.Data) < batchSize || resp.Next == "" {
 			break
 		}
@@ -201,7 +201,7 @@ func (a *Apple) ampGetRaw(uri string) ([]byte, error) {
 	return utils.Get(fullURL, a.ampHeaders()...)
 }
 
-// Search searches Apple Music catalog for songs.
+// Search 在 Apple Music 曲库中搜索歌曲。
 func (a *Apple) Search(keyword string) ([]model.Song, error) {
 	params := url.Values{}
 	params.Set("term", keyword)
@@ -226,7 +226,7 @@ func (a *Apple) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// SearchAlbum searches Apple Music catalog for albums.
+// SearchAlbum 在 Apple Music 曲库中搜索专辑。
 func (a *Apple) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("term", keyword)
@@ -251,7 +251,7 @@ func (a *Apple) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	return playlists, nil
 }
 
-// SearchPlaylist searches Apple Music catalog for playlists.
+// SearchPlaylist 在 Apple Music 曲库中搜索歌单。
 func (a *Apple) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("term", keyword)
@@ -276,19 +276,19 @@ func (a *Apple) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return playlists, nil
 }
 
-// GetAlbumSongs returns songs from an album.
+// GetAlbumSongs 返回专辑中的歌曲。
 func (a *Apple) GetAlbumSongs(id string) ([]model.Song, error) {
 	_, songs, err := a.ParseAlbum(id)
 	return songs, err
 }
 
-// GetPlaylistSongs returns songs from a playlist.
+// GetPlaylistSongs 返回歌单中的歌曲。
 func (a *Apple) GetPlaylistSongs(id string) ([]model.Song, error) {
 	_, songs, err := a.ParsePlaylist(id)
 	return songs, err
 }
 
-// ParseAlbum fetches album details.
+// ParseAlbum 获取专辑详情。
 func (a *Apple) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	albumID := extractAppleID(link, "album")
 	if albumID == "" {
@@ -322,7 +322,7 @@ func (a *Apple) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return &pl, songs, nil
 }
 
-// ParsePlaylist fetches playlist details.
+// ParsePlaylist 获取歌单详情。
 func (a *Apple) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	playlistID := extractAppleID(link, "playlist")
 	if playlistID == "" {
@@ -393,7 +393,7 @@ func (a *Apple) fetchAllTrackResources(tracks appleTrackRelationship) ([]appleRe
 	return all, nil
 }
 
-// Parse parses a single song link.
+// Parse 解析单曲链接。
 func (a *Apple) Parse(link string) (*model.Song, error) {
 	songID := extractAppleID(link, "song")
 	if songID == "" {
@@ -422,7 +422,7 @@ func (a *Apple) Parse(link string) (*model.Song, error) {
 	return &song, nil
 }
 
-// GetDownloadURL returns the preview URL (full download requires DRM decryption via gamdl).
+// GetDownloadURL 返回试听地址（完整下载需要经 gamdl 做 DRM 解密）。
 func (a *Apple) GetDownloadURL(s *model.Song) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("song is nil")
@@ -430,7 +430,7 @@ func (a *Apple) GetDownloadURL(s *model.Song) (string, error) {
 	if s.URL != "" {
 		return s.URL, nil
 	}
-	// Fetch song to get preview URL
+	// 获取歌曲信息以拿到试听地址
 	song, err := a.Parse(s.ID)
 	if err != nil {
 		return "", err
@@ -441,7 +441,7 @@ func (a *Apple) GetDownloadURL(s *model.Song) (string, error) {
 	return song.URL, nil
 }
 
-// GetLyrics fetches lyrics for a song.
+// GetLyrics 获取歌曲歌词。
 func (a *Apple) GetLyrics(s *model.Song) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("song is nil")
@@ -477,7 +477,7 @@ func (a *Apple) GetLyrics(s *model.Song) (string, error) {
 	return "", nil
 }
 
-// --- Token fetching ---
+// --- 获取 Token ---
 
 func fetchAppleToken() (string, error) {
 	body, err := utils.Get(appleHomepageURL,
@@ -560,7 +560,7 @@ func extractAppleDeveloperToken(bundle []byte) string {
 	return fallback
 }
 
-// --- ID extraction ---
+// --- 提取 ID ---
 
 func extractAppleID(link string, mediaType string) string {
 	link = strings.TrimSpace(link)
@@ -639,7 +639,7 @@ func extractAppleIDFromPath(path string, mediaType string) string {
 	return ""
 }
 
-// --- Response types ---
+// --- 响应结构 ---
 
 type appleArtwork struct {
 	URL    string `json:"url"`
@@ -751,7 +751,7 @@ type appleSearchResponse struct {
 	} `json:"results"`
 }
 
-// --- Converters ---
+// --- 转换函数 ---
 
 func appleSongFromCatalog(res appleResource) model.Song {
 	var attr appleSongAttributes

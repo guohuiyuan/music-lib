@@ -24,10 +24,10 @@ var (
 
 // --- 常量定义 ---
 
-// Linux API Key (Hex)
+// Linux API 密钥（Hex）
 const linuxApiKeyHex = "7246674226682325323F5E6544673A51"
 
-// WeApi Constants
+// WeApi 常量
 const (
 	weApiNonce      = "0CoJUm6Qyw8W8jud"
 	weApiIv         = "0102030405060708"
@@ -101,7 +101,7 @@ func aesEncryptCBC(text string, key string, iv string) string {
 }
 
 // rsaEncrypt 实现 RSA 加密 (NoPadding)
-// Python: pow(int(hex(text)), int(pub), int(mod))
+// Python 写法：pow(int(hex(text)), int(pub), int(mod))
 func rsaEncrypt(text, pubKey, modulus string) string {
 	// 1. 反转字符串
 	text = reverseString(text)
@@ -118,7 +118,7 @@ func rsaEncrypt(text, pubKey, modulus string) string {
 	biMod := new(big.Int)
 	biMod.SetString(modulus, 16)
 
-	// exp = text^pub % mod
+	// 计算公式：exp = text^pub % mod
 	biRet := new(big.Int).Exp(biText, biPub, biMod)
 
 	// 4. 补齐 256 位 hex
@@ -172,7 +172,7 @@ func EncryptEApi(urlPath string, payload string) string {
 	eapiKey := []byte("e82ckenh8dichen8")
 	encrypted := aesEncryptECB([]byte(data), eapiKey)
 
-	// Python original uses lower case hex string for eapi
+	// Python 原版对 eapi 使用小写 hex 字符串
 	return hex.EncodeToString(encrypted)
 }
 

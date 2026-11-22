@@ -43,9 +43,8 @@ type spotifyTOTPSecret struct {
 	values  []byte
 }
 
-// Spotify rotates the Web Player TOTP secret occasionally. Try the newest
-// known versions in order so a server-side rollout does not immediately break
-// the anonymous fallback.
+// Spotify 会不定期轮换 Web Player 的 TOTP 密钥。按顺序尝试最新的
+// 已知版本，避免服务端一更新就让匿名回退立刻失效。
 var spotifyWebPlayerTOTPSecrets = []spotifyTOTPSecret{
 	{
 		version: 61,

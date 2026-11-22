@@ -21,7 +21,7 @@ import (
 // 为什么需要它：会员整曲流（POST /luna/pc/track_v2）要求 x-helios / x-medusa，
 // 而这两个头只能由官方原生组件生成（bdms.node，底层 mssdk/metasecml.dll），
 // 没有可复刻的纯软件实现。这里用内置的 JS 垫片把
-// bdms.init({deviceId}) + bdms.generateHttpSignatureHeaders(url, headerLines)
+// 调用顺序：bdms.init({deviceId}) → bdms.generateHttpSignatureHeaders(url, headerLines)
 // 跑起来：请求体走 stdin、签名头走 stdout，进程随用随起，不占端口、不需要服务。
 //
 // JS 运行时优先用 node，其次回退到官方客户端自带的 Electron

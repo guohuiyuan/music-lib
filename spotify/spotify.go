@@ -43,8 +43,8 @@ var (
 	_ provider.RecommendedPlaylistProvider = (*Spotify)(nil)
 )
 
-// Spotify implements the public Spotify Web API catalog and, when an OAuth
-// refresh token is configured, the current user's playlists.
+// Spotify 实现公开的 Spotify Web API 曲库访问；配置 OAuth refresh token 后，
+// 还支持读取当前用户的歌单。
 type Spotify struct {
 	clientID     string
 	clientSecret string

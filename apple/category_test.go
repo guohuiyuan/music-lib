@@ -23,7 +23,7 @@ func TestApplePlaylistCategoriesIntegration(t *testing.T) {
 		t.Fatal("No categories returned")
 	}
 
-	// Test GetCategoryPlaylists with first category
+	// 用第一个分类测试 GetCategoryPlaylists
 	first := categories[0]
 	playlists, err := client.GetCategoryPlaylists(first.ID, 1, 5)
 	if err != nil {
@@ -37,14 +37,14 @@ func TestApplePlaylistCategoriesIntegration(t *testing.T) {
 		t.Fatal("No playlists returned")
 	}
 
-	// Test with limit=120 (what the web UI uses)
+	// 测试 limit=120（Web UI 实际使用的值）
 	playlists2, err := client.GetCategoryPlaylists(first.ID, 1, 120)
 	if err != nil {
 		t.Fatalf("GetCategoryPlaylists(%s, 1, 120) failed: %v", first.ID, err)
 	}
 	t.Logf("Category %q with limit=120: got %d playlists", first.Name, len(playlists2))
 
-	// Test K-Pop (1019399551) which was reported as 404
+	// 测试曾报 404 的 K-Pop（1019399551）
 	kpop, err := client.GetCategoryPlaylists("1019399551", 1, 120)
 	if err != nil {
 		t.Fatalf("GetCategoryPlaylists(K-Pop) failed: %v", err)
@@ -56,7 +56,7 @@ func TestApplePlaylistCategoriesIntegration(t *testing.T) {
 func TestAppleCuratorPlaylistFields(t *testing.T) {
 	client := New("storefront=cn")
 
-	// Fetch raw response to check if trackCount is in the data
+	// 抓取原始响应，确认数据里是否包含 trackCount
 	params := url.Values{}
 	params.Set("limit", "2")
 	params.Set("offset", "0")
@@ -65,7 +65,7 @@ func TestAppleCuratorPlaylistFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed: %v", err)
 	}
-	// Print first 800 chars to see what fields are available
+	// 打印前 800 个字符，查看有哪些可用字段
 	if len(body) > 800 {
 		t.Logf("Raw: %s", string(body[:800]))
 	} else {

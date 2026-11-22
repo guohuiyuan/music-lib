@@ -16,13 +16,13 @@ var spotifyPreviewQuality = model.AudioQualityOption{
 	Format: "m4a",
 }
 
-// ListQualityOptions returns every playable Spotify quality tier.
+// ListQualityOptions 返回 Spotify 所有可播放的音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	return []model.AudioQualityOption{spotifyPreviewQuality}
 }
 
-// AvailableQualityOptions reports the playable preview exposed by Spotify
-// without handling DRM-protected full tracks.
+// AvailableQualityOptions 报告 Spotify 无需处理 DRM 完整音轨就能播放的
+// 试听片段。
 func (s *Spotify) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	_, err := s.GetDownloadURL(&model.Song{Source: "spotify", ID: spotifyQualityProbeSongID})
 	if err != nil {

@@ -287,7 +287,7 @@ func TestSodaQRConnectResultRateLimitedBacksOff(t *testing.T) {
 	if result.Extra["rate_limited"] != "true" {
 		t.Fatalf("rate_limited flag missing: %#v", result.Extra)
 	}
-	// Subsequent allow check must be denied during the backoff window.
+	// 在退避窗口内，后续的允许检查必须被拒绝。
 	if sodaQRPollAllowed(token) {
 		t.Fatal("rate-limited token should remain throttled after backoff")
 	}

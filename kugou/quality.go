@@ -37,14 +37,13 @@ var kugouQualityProbeSong = &model.Song{
 
 const kugouQualityProbeKeyword = "痛仰乐队"
 
-// ListQualityOptions returns all Kugou quality tiers.
+// ListQualityOptions 返回酷狗全部音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	return append([]model.AudioQualityOption(nil), kugouQualityCandidates...)
 }
 
-// AvailableQualityOptions probes actual download hashes for the configured
-// account. A song may have fewer tiers, so callers should still handle a
-// per-song quality error.
+// AvailableQualityOptions 针对配置的账号探测实际可用的下载 hash。
+// 单首歌可能少于全部档位，调用方仍需处理单曲音质错误。
 func (k *Kugou) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	if k.availableQualityCache != nil {
 		return append([]model.AudioQualityOption(nil), k.availableQualityCache...), nil
@@ -73,10 +72,9 @@ func (k *Kugou) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	return append([]model.AudioQualityOption(nil), options...), nil
 }
 
-// probeKugouQualityOptions uses one representative song at a time and stops
-// after the first song that yields a playable quality set. Quality is
-// track-specific, so probing every missing tier against many unrelated songs
-// adds latency without making the result more reliable.
+// probeKugouQualityOptions 一次只用一首代表性歌曲，遇到第一首能给出可播放
+// 音质集合的歌曲就停止。音质与具体歌曲相关，用许多不相关的歌曲去逐个补探
+// 缺失档位只会增加延迟，并不会让结果更可靠。
 func probeKugouQualityOptions(
 	songs []*model.Song,
 	probe func(*model.Song, model.AudioQuality) bool,

@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// IsVipAccount reports whether the current account is VIP.
+// IsVipAccount 报告当前账号是否为 VIP。
 func (n *Netease) IsVipAccount() (bool, error) {
 	if n.isVipCache != nil {
 		return *n.isVipCache, nil

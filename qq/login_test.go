@@ -136,8 +136,8 @@ func TestQQCookieStateRoundTrip(t *testing.T) {
 	want := map[string]string{"qrsig": "qr-value", "pt_login_sig": "sig-value", "empty": ""}
 	encoded := encodeQQCookieState(want)
 	if !strings.HasPrefix(encoded, "qrsig=") && !strings.Contains(encoded, "qrsig%3D") {
-		// Raw URL base64 usually starts with the encoded ASCII bytes, but the exact prefix is
-		// not part of the contract. Decoding is the important behavior.
+		// 原始 URL 的 base64 通常以编码后的 ASCII 字节开头，但具体前缀并不属于
+		// 约定的一部分，真正重要的是能正确解码。
 		t.Logf("encoded state: %s", encoded)
 	}
 	got := decodeQQCookieState(encoded)

@@ -20,12 +20,12 @@ var sodaQualityCandidates = []model.AudioQualityOption{
 	{Value: model.AudioQualityPreview, Label: "试听片段", Format: "m4a"},
 }
 
-// ListQualityOptions returns the complete Soda quality taxonomy.
+// ListQualityOptions 返回汽水音乐完整的音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	return append([]model.AudioQualityOption(nil), sodaQualityCandidates...)
 }
 
-// AvailableQualityOptions probes real streams for a representative Soda track.
+// AvailableQualityOptions 用一首代表性的汽水歌曲探测真实音频流。
 func (s *Soda) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	if s.availableQualityCache != nil {
 		return append([]model.AudioQualityOption(nil), s.availableQualityCache...), nil

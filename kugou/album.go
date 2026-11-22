@@ -25,8 +25,7 @@ func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return defaultKugou.ParseAlbum(link)
 }
 
-// SearchPlaylist 搜索歌单
-// SearchAlbum searches albums.
+// SearchAlbum 搜索专辑。
 func (k *Kugou) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("keyword", keyword)
@@ -98,14 +97,13 @@ func (k *Kugou) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	return albums, nil
 }
 
-// GetPlaylistSongs 获取歌单详情 (仅返回 Songs, 兼容旧接口)
-// GetAlbumSongs returns songs in an album.
+// GetAlbumSongs 获取专辑歌曲（仅返回 Songs，兼容旧接口）。
 func (k *Kugou) GetAlbumSongs(id string) ([]model.Song, error) {
 	_, songs, err := k.fetchAlbumDetail(id)
 	return songs, err
 }
 
-// ParseAlbum parses an album link.
+// ParseAlbum 解析专辑链接。
 func (k *Kugou) ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`album/single/(\d+)\.html`),

@@ -172,7 +172,7 @@ func (f *Fivesing) parseSongsFromHTML(htmlContent string) ([]model.Song, error) 
 		if len(songMatch) < 4 {
 			continue
 		}
-		kind := songMatch[1] // yc, fc, bz
+		kind := songMatch[1] // 类型：yc、fc、bz
 		songID := songMatch[2]
 		rawName := songMatch[3]
 
@@ -289,7 +289,7 @@ func (links fivesingAudioLinks) best() string {
 	return ""
 }
 
-// fetchAudioLinks returns every audio tier exposed by the 5sing API.
+// fetchAudioLinks 返回 5sing API 暴露的全部音频档位。
 func (f *Fivesing) fetchAudioLinks(songID, songType string) (fivesingAudioLinks, error) {
 	params := url.Values{}
 	params.Set("songid", songID)

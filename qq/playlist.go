@@ -26,7 +26,7 @@ func ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	return defaultQQ.ParsePlaylist(link)
 }
 
-// GetRecommendedPlaylists returns recommended playlists.
+// GetRecommendedPlaylists 返回推荐歌单。
 func GetRecommendedPlaylists() ([]model.Playlist, error) { return defaultQQ.GetRecommendedPlaylists() }
 
 func GetPlaylistCategories() ([]model.PlaylistCategory, error) {
@@ -208,7 +208,7 @@ func (q *QQ) GetCategoryPlaylists(categoryID string, page, limit int) ([]model.P
 	return playlists, nil
 }
 
-// SearchPlaylist searches playlists.
+// SearchPlaylist 搜索歌单。
 func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("query", keyword)
@@ -287,7 +287,7 @@ func (q *QQ) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	return playlists, nil
 }
 
-// GetPlaylistSongs returns songs in a playlist.
+// GetPlaylistSongs 返回歌单中的歌曲。
 func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
 	id = strings.TrimSpace(id)
 	if id == qqFavoriteSongsPlaylistID {
@@ -305,7 +305,7 @@ func (q *QQ) GetPlaylistSongs(id string) ([]model.Song, error) {
 	return songs, err
 }
 
-// ParsePlaylist parses a playlist link.
+// ParsePlaylist 解析歌单链接。
 func (q *QQ) ParsePlaylist(link string) (*model.Playlist, []model.Song, error) {
 	dissid, ok := extractQQPlaylistID(link)
 	if !ok {
@@ -363,9 +363,9 @@ func normalizeQQPlaylistID(value string) string {
 	return value
 }
 
-// GetRecommendedPlaylists returns QQ Music recommended playlists.
+// GetRecommendedPlaylists 返回 QQ 音乐推荐歌单。
 func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
-	// Build the musicu.fcg request body.
+	// 构造 musicu.fcg 请求体。
 	reqData := map[string]interface{}{
 		"comm": map[string]interface{}{
 			"ct": 24,
@@ -395,7 +395,7 @@ func (q *QQ) GetRecommendedPlaylists() ([]model.Playlist, error) {
 		return nil, err
 	}
 
-	// Response shape.
+	// 响应结构。
 	var resp struct {
 		Code          int `json:"code"`
 		RecomPlaylist struct {

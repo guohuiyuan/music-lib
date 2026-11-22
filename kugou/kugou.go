@@ -37,8 +37,7 @@ func New(cookie string) *Kugou { return &Kugou{cookie: cookie} }
 
 var defaultKugou = New("")
 
-// fetchPlaylistDetail [内部复用] 获取歌单详情 (Metadata + Songs)
-// fetchAlbumDetail returns album metadata and songs.
+// fetchAlbumDetail [内部复用] 获取专辑详情（Metadata + Songs）。
 func (k *Kugou) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {

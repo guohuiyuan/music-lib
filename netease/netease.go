@@ -116,7 +116,7 @@ func (n *Netease) setCachedVIPStatus(isVip bool) {
 	}
 }
 
-// cloudSearch calls the shared Netease cloud search route.
+// cloudSearch 调用共享的网易云搜索接口。
 func (n *Netease) cloudSearch(keyword string, searchType int, limit int) ([]byte, error) {
 	eparams := map[string]interface{}{
 		"method": "POST",
@@ -143,12 +143,12 @@ func (n *Netease) cloudSearch(keyword string, searchType int, limit int) ([]byte
 	return utils.Post(SearchAPI, strings.NewReader(form.Encode()), headers...)
 }
 
-// joinArtistNames joins artist names for display.
+// joinArtistNames 拼接用于展示的歌手名。
 func joinArtistNames(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// fetchAlbumDetail returns album metadata and songs.
+// fetchAlbumDetail 返回专辑信息和歌曲。
 func (n *Netease) fetchAlbumDetail(albumID string) (*model.Playlist, []model.Song, error) {
 	reqData := map[string]interface{}{
 		"csrf_token": "",
@@ -305,8 +305,8 @@ func (n *Netease) fetchPlaylistDetail(playlistID string) (*model.Playlist, []mod
 	return n.fetchPlaylistDetailLimited(playlistID, 0)
 }
 
-// fetchPlaylistDetailLimited fetches playlist metadata and songs.
-// maxSongs limits how many songs are fetched (0 means no limit).
+// fetchPlaylistDetailLimited 获取歌单信息和歌曲。
+// maxSongs 限制抓取的歌曲数量（0 表示不限制）。
 func (n *Netease) fetchPlaylistDetailLimited(playlistID string, maxSongs int) (*model.Playlist, []model.Song, error) {
 	reqData := map[string]interface{}{
 		"id":         playlistID,
@@ -343,7 +343,7 @@ func (n *Netease) fetchPlaylistDetailLimited(playlistID string, maxSongs int) (*
 			Creator     struct {
 				Nickname string `json:"nickname"`
 			} `json:"creator"`
-			// Use trackIds so we can fetch the full list separately.
+			// 使用 trackIds，方便后续单独拉取完整列表。
 			TrackIds []struct {
 				ID int64 `json:"id"`
 			} `json:"trackIds"`
@@ -357,7 +357,7 @@ func (n *Netease) fetchPlaylistDetailLimited(playlistID string, maxSongs int) (*
 		return nil, nil, fmt.Errorf("netease api error code: %d", resp.Code)
 	}
 
-	// Build playlist metadata.
+	// 构建歌单信息。
 	playlist := &model.Playlist{
 		Source:      "netease",
 		ID:          strconv.FormatInt(resp.Playlist.ID, 10),
@@ -370,7 +370,7 @@ func (n *Netease) fetchPlaylistDetailLimited(playlistID string, maxSongs int) (*
 		Link:        fmt.Sprintf("https://music.163.com/#/playlist?id=%d", resp.Playlist.ID),
 	}
 
-	// Collect all song IDs first.
+	// 先收集所有歌曲 ID。
 	var allIDs []string
 	for _, tid := range resp.Playlist.TrackIds {
 		allIDs = append(allIDs, strconv.FormatInt(tid.ID, 10))
@@ -379,7 +379,7 @@ func (n *Netease) fetchPlaylistDetailLimited(playlistID string, maxSongs int) (*
 		allIDs = allIDs[:maxSongs]
 	}
 
-	// Fetch song details in batches.
+	// 分批获取歌曲详情。
 	var allSongs []model.Song
 	batchSize := 500
 	for i := 0; i < len(allIDs); i += batchSize {
@@ -398,13 +398,13 @@ func (n *Netease) fetchPlaylistDetailLimited(playlistID string, maxSongs int) (*
 	return playlist, allSongs, nil
 }
 
-// fetchSongsBatch fetches song details in batches.
+// fetchSongsBatch 分批获取歌曲详情。
 func (n *Netease) fetchSongsBatch(songIDs []string) ([]model.Song, error) {
 	if len(songIDs) == 0 {
 		return nil, nil
 	}
 
-	// Build the c payload: [{"id":123},{"id":456},...]
+	// 构造 c 参数：[{"id":123},{"id":456},...]
 	var cList []map[string]interface{}
 	for _, id := range songIDs {
 		cList = append(cList, map[string]interface{}{"id": id})
@@ -629,8 +629,7 @@ func preferredDownloadLevels(s *model.Song) []string {
 	}
 }
 
-// getEAPIDownloadURL fetches a download URL and the metadata describing the
-// stream that was actually returned.
+// getEAPIDownloadURL 获取下载地址，以及描述实际返回音频流的元数据。
 func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, string, int, string, error) {
 	idNum, err := strconv.Atoi(songID)
 	if err != nil {
@@ -640,7 +639,7 @@ func (n *Netease) getEAPIDownloadURL(songID string, quality string) (string, str
 	headerJSON := `{"os":"pc","appver":"","osver":"","deviceId":"pyncm!","requestId":"12345678"}`
 	encodeType := "flac"
 	if strings.EqualFold(strings.TrimSpace(quality), "vivid") {
-		// NetEase only exposes vivid through its current Android client.
+		// 网易云目前只通过 Android 客户端开放 vivid 音质。
 		headerJSON = `{"os":"android","appver":"9.5.61","osver":"","deviceId":"pyncm!","requestId":"12345678"}`
 		encodeType = "mp3"
 	}

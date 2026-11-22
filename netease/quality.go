@@ -27,7 +27,7 @@ var neteaseQualityCandidates = []neteaseQualityCandidate{
 	{option: model.AudioQualityOption{Value: model.AudioQualityStandard, Label: "标准音质 128k", Format: "mp3", Bitrate: 128}, levels: []string{"standard"}},
 }
 
-// ListQualityOptions returns all quality tiers understood by NetEase.
+// ListQualityOptions 返回网易云支持的全部音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(neteaseQualityCandidates))
 	for _, candidate := range neteaseQualityCandidates {
@@ -36,9 +36,8 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions probes the current account against NetEase's player
-// endpoint. Actual entitlement is validated by the returned stream, not by a
-// standalone VIP flag.
+// AvailableQualityOptions 用当前账号探测网易云的播放接口。实际权益以返回的
+// 音频流为准，而不是只看单独的 VIP 标记。
 func (n *Netease) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	if n.availableQualityCache != nil {
 		return append([]model.AudioQualityOption(nil), n.availableQualityCache...), nil
@@ -106,10 +105,9 @@ func (n *Netease) probeNeteaseQualityLadder(
 	return nil, firstErr
 }
 
-// neteaseQualityLadderFrom returns the successfully probed tier and every
-// lower tier. Account entitlement is a capability range: a 320 kbps stream
-// also implies 192 kbps and 128 kbps availability even if an individual
-// track's lower-tier endpoint temporarily rejects a probe.
+// neteaseQualityLadderFrom 返回探测成功的档位及其全部更低档位。账号权益是一个
+// 能力区间：能拿到 320 kbps 就说明 192 kbps 和 128 kbps 也可用，即使某首歌的
+// 低档位接口暂时拒绝探测。
 func neteaseQualityLadderFrom(highestAvailableIndex int) []model.AudioQualityOption {
 	if highestAvailableIndex < 0 || highestAvailableIndex >= len(neteaseQualityCandidates) {
 		return nil

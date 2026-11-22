@@ -21,7 +21,7 @@ type qualityCandidate struct {
 	quality model.AudioQualityOption
 }
 
-// The order is also the auto-selection priority: highest quality first.
+// 这里的顺序同时也是自动选择优先级：音质从高到低。
 var qqQualityCandidates = []qualityCandidate{
 	{
 		prefix: "AI00",
@@ -74,7 +74,7 @@ var qqQualityCandidates = []qualityCandidate{
 	},
 }
 
-// ListQualityOptions returns every quality tier exposed by QQ Music.
+// ListQualityOptions 返回 QQ 音乐支持的全部音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(qqQualityCandidates))
 	for _, candidate := range qqQualityCandidates {
@@ -83,9 +83,8 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions probes the current account and returns the tiers it
-// can actually select. A tier is included only when the probe returns a
-// playable URL, because anonymous metadata does not imply anonymous playback.
+// AvailableQualityOptions 探测当前账号并返回实际能选到的档位。只有探测返回
+// 可播放地址时才会包含该档位，因为匿名可拿到的元数据不代表匿名可播放。
 func (q *QQ) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	if q.availableQualityCache != nil {
 		return append([]model.AudioQualityOption(nil), q.availableQualityCache...), nil
@@ -96,8 +95,8 @@ func (q *QQ) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 		isVip := false
 		q.isVipCache = &isVip
 		if strings.TrimSpace(q.cookie) == "" {
-			// QQ currently returns API code 1000 for anonymous vkey requests.
-			// Metadata search still works, but no playable stream tier exists.
+			// QQ 目前对匿名 vkey 请求返回 API code 1000。
+			// 元数据搜索仍然可用，但没有任何可播放的音频档位。
 			q.availableQualityCache = []model.AudioQualityOption{}
 			return []model.AudioQualityOption{}, nil
 		}
@@ -229,9 +228,8 @@ func (q *QQ) requestQualityURLs(songMID string, candidates []qualityCandidate) (
 	return purls, nil
 }
 
-// GetDownloadURLWithQuality returns a URL for an exact quality tier. An empty
-// or auto quality uses the compatibility behavior and selects the best URL the
-// current account can obtain.
+// GetDownloadURLWithQuality 返回指定音质档位的地址。音质为空或为 auto 时
+// 走兼容逻辑，选择当前账号能拿到的最佳地址。
 func (q *QQ) GetDownloadURLWithQuality(s *model.Song, quality string) (string, error) {
 	if s == nil {
 		return "", errors.New("song is nil")

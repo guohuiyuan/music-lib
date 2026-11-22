@@ -87,7 +87,7 @@ var jamendoQualityCandidates = []jamendoQualityCandidate{
 
 var jamendoQualityProbeClient = &http.Client{Timeout: 20 * time.Second}
 
-// ListQualityOptions returns all downloadable Jamendo stream tiers.
+// ListQualityOptions 返回 Jamendo 所有可下载的音频档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(jamendoQualityCandidates))
 	for _, candidate := range jamendoQualityCandidates {
@@ -96,8 +96,8 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions validates stream URLs because Jamendo can advertise
-// an mp33 URL while the storage backend returns 404 for that track.
+// AvailableQualityOptions 会校验音频流地址，因为 Jamendo 可能返回 mp33 地址，
+// 而存储后端对该歌曲实际返回 404。
 func (j *Jamendo) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	items, err := j.jamendoQualityProbeItems()
 	if err != nil {
@@ -127,8 +127,8 @@ func (j *Jamendo) AvailableQualityOptions() ([]model.AudioQualityOption, error) 
 	return options, nil
 }
 
-// GetDownloadURLWithQuality resolves one exact Jamendo tier. Automatic mode
-// keeps using the existing "best downloadable stream" behavior.
+// GetDownloadURLWithQuality 解析指定的 Jamendo 档位。自动模式保持原有的
+// “最佳可下载音频流”行为。
 func (j *Jamendo) GetDownloadURLWithQuality(song *model.Song, quality string) (string, error) {
 	normalized, ok := model.NormalizeAudioQuality(quality)
 	if !ok {

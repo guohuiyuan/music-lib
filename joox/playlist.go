@@ -165,13 +165,13 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 		return nil, err
 	}
 
-	// Update struct to match joox_playlist_search.json structure
+	// 结构体按 joox_playlist_search.json 的结构定义
 	var resp struct {
 		SectionList []struct {
 			SectionTitle string `json:"section_title"`
 			SectionType  int    `json:"section_type"`
 			ItemList     []struct {
-				Type           int `json:"type"` // 1: Editor Playlist, 2: Album, 5: Song
+				Type           int `json:"type"` // 1：编辑歌单，2：专辑，5：歌曲
 				EditorPlaylist struct {
 					ID     string `json:"id"`
 					Name   string `json:"name"`
@@ -191,8 +191,7 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	var playlists []model.Playlist
 	for _, section := range resp.SectionList {
 		for _, item := range section.ItemList {
-			// According to the JSON, Type 1 is a playlist (Editor Playlist)
-			// We skip Albums (Type 2) or Songs (Type 5)
+			// 根据 JSON，Type 1 是歌单（编辑歌单），跳过专辑（Type 2）和歌曲（Type 5）。
 			if item.Type != 1 {
 				continue
 			}
@@ -203,7 +202,7 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 				continue
 			}
 
-			// Image selection logic: prioritize 300px, fallback to first available
+			// 封面选择逻辑：优先 300px，没有则取第一张可用图片
 			var cover string
 			for _, img := range info.Images {
 				if img.Width == 300 {
@@ -215,24 +214,21 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 				cover = info.Images[0].URL
 			}
 
-			// Generate the public link
+			// 生成公开链接
 			link := jooxPlaylistLink(playlistID)
 
-			// Populate the Playlist model
+			// 填充 Playlist 结构
 			playlists = append(playlists, model.Playlist{
-				Source: "joox", // Essential for universal player logic
+				Source: "joox", // 通用播放器逻辑需要该字段
 				ID:     playlistID,
 				Name:   info.Name,
 				Cover:  cover,
 				Link:   link,
 
-				// Fields not provided in the Search API response (JSON):
-				// TrackCount:  0,
-				// PlayCount:   0,
-				// Creator:     "",
-				// Description: "",
+				// 搜索接口响应（JSON）中没有提供 TrackCount、PlayCount、Creator、
+				// Description，这些字段均留默认值。
 
-				// Optional: Store raw ID in Extra if needed for specific logic later
+				// 可选：如果之后需要特定逻辑，可把原始 ID 存进 Extra
 				Extra: map[string]string{
 					"playlist_id": playlistID,
 				},
@@ -244,13 +240,13 @@ func (j *Joox) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 	params := url.Values{}
-	// The new v3 API uses "id" instead of "playlistid"
+	// 新版 v3 API 使用 "id"，不再使用 "playlistid"
 	params.Set("id", id)
 	params.Set("country", "sg")
 	params.Set("lang", "zh_cn")
 
-	// Use the same host/path structure as Search
-	// Guessing the endpoint is /playlist based on /search pattern
+	// 使用与 Search 相同的 host/path 结构
+	// 根据 /search 的模式推测接口是 /playlist
 	apiURL := "https://cache.api.joox.com/openjoox/v3/playlist?" + params.Encode()
 
 	body, err := utils.Get(apiURL,
@@ -265,12 +261,12 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 		return nil, err
 	}
 
-	// We reuse the generic "Section" structure from the Search API
-	// because modern Joox APIs (v3) return "Pages" composed of "Sections".
+	// 复用 Search API 的通用 "Section" 结构，因为新版 JOOX API（v3）
+	// 返回的 "Pages" 由 "Sections" 组成。
 	var resp struct {
 		SectionList []struct {
 			ItemList []struct {
-				Type int `json:"type"` // We look for Type 5 (Song)
+				Type int `json:"type"` // 只查找 Type 5（歌曲）
 				Song []struct {
 					SongInfo struct {
 						ID         string `json:"id"`
@@ -302,10 +298,10 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 	var songs []model.Song
 	foundSongs := false
 
-	// Iterate through all sections to find songs
+	// 遍历所有 section 查找歌曲
 	for _, section := range resp.SectionList {
 		for _, item := range section.ItemList {
-			// Type 5 corresponds to Songs in the v3 API (as seen in your search json)
+			// 在 v3 API 里 Type 5 对应歌曲（见搜索 JSON）
 			if item.Type == 5 {
 				for _, songItem := range item.Song {
 					info := songItem.SongInfo
@@ -329,9 +325,9 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 						cover = info.Images[0].URL
 					}
 
-					// Fallback for missing cover using AlbumID if available
+					// 缺少封面时，如果有 AlbumID 就用它拼封面
 					if cover == "" && info.AlbumID != "" {
-						// Standard Joox album cover pattern
+						// JOOX 标准专辑封面地址格式
 						cover = fmt.Sprintf("https://imgcache.joox.com/music/joox/photo/mid_album_300/%s/%s/%s.jpg",
 							info.AlbumID[len(info.AlbumID)-2:],
 							info.AlbumID[len(info.AlbumID)-1:],
@@ -361,7 +357,7 @@ func (j *Joox) GetPlaylistSongs(id string) ([]model.Song, error) {
 		if fallbackSongs, fallbackErr := j.fetchPlaylistSongsFromPage(id); fallbackErr == nil && len(fallbackSongs) > 0 {
 			return fallbackSongs, nil
 		}
-		// If no songs found, the ID might be invalid or the playlist is empty
+		// 如果没找到歌曲，可能是 ID 无效或歌单为空
 		return nil, errors.New("no songs found in playlist or invalid playlist ID")
 	}
 

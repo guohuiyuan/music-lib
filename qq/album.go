@@ -24,7 +24,7 @@ func ParseAlbum(link string) (*model.Playlist, []model.Song, error) {
 	return defaultQQ.ParseAlbum(link)
 }
 
-// SearchAlbum searches albums.
+// SearchAlbum 搜索专辑。
 func (q *QQ) SearchAlbum(keyword string) ([]model.Playlist, error) {
 	params := url.Values{}
 	params.Set("format", "json")

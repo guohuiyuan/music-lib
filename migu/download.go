@@ -51,8 +51,8 @@ var miguTonePaths = map[string]string{
 	"ZQ32": "歌曲下载/wav_32bit",
 }
 
-// miguEncryptedAppCode is decrypted by the Android client with the first 16
-// characters of Signature.toCharsString() as the AES-128-CBC key.
+// miguEncryptedAppCode 由 Android 客户端解密：取 Signature.toCharsString() 的
+// 前 16 个字符作为 AES-128-CBC 密钥。
 var miguEncryptedAppCode = []byte{
 	0xAE, 0xEA, 0xC7, 0x17, 0x05, 0xA6, 0x89, 0x55,
 	0xA9, 0x31, 0xA6, 0xFE, 0x01, 0xE7, 0x28, 0xFF,
@@ -60,8 +60,8 @@ var miguEncryptedAppCode = []byte{
 	0xE3, 0xEA, 0x43, 0xC3, 0xE0, 0x58, 0x33, 0x83,
 }
 
-// DownloadInfo describes a Migu audio stream. Z3D streams require
-// DecryptAudio with FileKey before they can be played or saved as audio.
+// DownloadInfo 描述一条咪咕音频流。Z3D 流需要先用 FileKey 调用 DecryptAudio
+// 解密，才能播放或保存为音频。
 type DownloadInfo struct {
 	URL       string
 	Format    string
@@ -599,9 +599,9 @@ func firstPositiveInt64(values ...int64) int64 {
 	return 0
 }
 
-// DecryptAudio decrypts a Migu Z3D stream. The stream key is the uppercase
-// hexadecimal MD5 of the decrypted app code followed by androidFileKey. Each
-// byte is decoded as cipher[i] - streamKey[i % 32].
+// DecryptAudio 解密咪咕 Z3D 音频流。流密钥是解密后的 app code 拼接
+// androidFileKey 后取大写十六进制 MD5。每个字节按 cipher[i] - streamKey[i % 32]
+// 还原。
 func DecryptAudio(fileData []byte, fileKey string) ([]byte, error) {
 	if len(fileData) == 0 {
 		return nil, errors.New("empty z3d data")

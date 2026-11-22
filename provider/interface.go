@@ -14,9 +14,8 @@ type SongDownloader interface {
 	GetDownloadURL(s *model.Song) (string, error)
 }
 
-// AudioQualityProvider exposes the quality tiers that the current account can
-// actually use. Implementations must account for the configured cookie rather
-// than inferring entitlement from a standalone VIP boolean.
+// AudioQualityProvider 暴露当前账号实际可用的音质档位。实现必须根据配置的
+// Cookie 判断，而不是只凭一个 VIP 布尔值推断权益。
 type AudioQualityProvider interface {
 	AvailableQualityOptions() ([]model.AudioQualityOption, error)
 	GetDownloadURLWithQuality(s *model.Song, quality string) (string, error)

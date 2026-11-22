@@ -75,8 +75,8 @@ var (
 	sodaQRLastPoll = map[string]time.Time{}
 )
 
-// sodaQRPollAllowed reports whether enough time has elapsed since the last
-// check_qrconnect call for the given token. It also records the call time.
+// sodaQRPollAllowed 报告距离该 token 上次调用 check_qrconnect 是否已经过去
+// 足够长的时间，同时记录本次调用时间。
 func sodaQRPollAllowed(token string) bool {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -107,8 +107,8 @@ func sodaQRPollForget(token string) {
 	delete(sodaQRLastPoll, token)
 }
 
-// sodaQRPollBackoff suppresses further upstream polling for the given token
-// until `duration` has elapsed. Used when Soda returns error_code=7.
+// sodaQRPollBackoff 在 `duration` 过去之前抑制该 token 的后续上游轮询，
+// 用于汽水返回 error_code=7 的场景。
 func sodaQRPollBackoff(token string, duration time.Duration) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -116,8 +116,8 @@ func sodaQRPollBackoff(token string, duration time.Duration) {
 	}
 	sodaQRPollMu.Lock()
 	defer sodaQRPollMu.Unlock()
-	// Record a future "last poll" so the next sodaQRPollAllowed call sees
-	// a negative elapsed window and stays throttled for `duration`.
+	// 记录一个未来的“上次轮询”时间，让下一次 sodaQRPollAllowed 调用看到
+	// 负的时间差，从而在 `duration` 内继续保持限流。
 	sodaQRLastPoll[token] = time.Now().Add(duration - sodaQRPollMinInterval)
 }
 
@@ -126,7 +126,7 @@ func CheckQRLogin(key string) (*model.QRLoginResult, error) {
 	return defaultSoda.CheckQRLogin(key)
 }
 
-// CreateQRLogin creates a QR login session for Soda.
+// CreateQRLogin 创建汽水音乐的扫码登录会话。
 func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	cleanupSodaQRLoginPending()
 
@@ -149,7 +149,7 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 		return nil, err
 	}
 
-	// Capture cookies from get_qrcode response (passport_csrf_token etc.)
+	// 从 get_qrcode 响应中提取 Cookie（passport_csrf_token 等）
 	createCookies := make(map[string]string)
 	for _, c := range httpResp.Cookies() {
 		if c.Name != "" && c.Value != "" {
@@ -186,7 +186,7 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	sodaQRDebugLogf("[DEBUG get_qrcode] qrcode_index_url=%s\n", sodaRedactURLSecrets(resp.Data.QRCodeB))
 	sodaQRDebugLogf("[DEBUG get_qrcode] custom_scan_url=%s\n", sodaRedactURLSecrets(scanURL))
 
-	// Prefer official qrcode_index_url for Soda PC QR login.
+	// 汽水 PC 扫码优先使用官方 qrcode_index_url。
 	qrURL := strings.TrimSpace(resp.Data.QRCodeB)
 	if qrURL == "" {
 		qrURL = strings.TrimSpace(resp.Data.WebURL)
@@ -195,7 +195,7 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 		qrURL = strings.TrimSpace(scanURL)
 	}
 
-	// Store cookies from get_qrcode so check_qrconnect can use them
+	// 保存 get_qrcode 返回的 Cookie，供 check_qrconnect 使用
 	if len(createCookies) > 0 {
 		rememberSodaQRLoginPending(resp.Data.Token, sodaQRLoginPendingState{
 			Cookies:   createCookies,
@@ -220,9 +220,10 @@ func (s *Soda) CreateQRLogin() (*model.QRLoginSession, error) {
 	}, nil
 }
 
-// CheckQRLogin checks the QR scan status and handles the MFA SMS flow.
-// The key format is: "token" for initial check, "token|send_code|encrypt_uid|verify_params" for send_code,
-// "token|validate|encrypt_uid|verify_params|code" for validate.
+// CheckQRLogin 查询扫码状态，并处理 MFA 短信验证流程。
+// key 格式：首次查询为 "token"；send_code 为
+// "token|send_code|encrypt_uid|verify_params"；validate 为
+// 校验格式为 "token|validate|encrypt_uid|verify_params|code"。
 func (s *Soda) CheckQRLogin(key string) (*model.QRLoginResult, error) {
 	parts := strings.SplitN(key, "|", 5)
 
@@ -246,9 +247,8 @@ func (s *Soda) sodaCheckQRConnect(token string) (*model.QRLoginResult, error) {
 	return s.sodaCheckQRConnectWithState(token, pending, false)
 }
 
-// sodaThrottledResult returns the most useful cached state when the caller
-// polls too often. It mirrors the previous /check_qrconnect outcome instead of
-// hitting Soda again and tripping error_code=7.
+// sodaThrottledResult 在调用方轮询过于频繁时返回最有用的缓存状态。
+// 它沿用上一次 /check_qrconnect 的结果，避免再次请求汽水触发 error_code=7。
 func sodaThrottledResult(token string, pending sodaQRLoginPendingState) *model.QRLoginResult {
 	if pending.EncryptUID != "" {
 		result := &model.QRLoginResult{
@@ -347,8 +347,8 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 		Message: resp.Message,
 	}
 
-	// Handle rate limiting: instead of failing the whole session, back off
-	// upstream calls so the frontend can keep polling without hitting Soda.
+	// 处理限流：不要让整个会话失败，而是退避上游请求，
+	// 让前端可以继续轮询又不会打到汽水。
 	if resp.Data.ErrorCode == 7 {
 		sodaQRPollBackoff(token, sodaQRRateLimitBackoff)
 		pending, _ := getSodaQRLoginPending(token)
@@ -363,7 +363,7 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 		return throttled
 	}
 
-	// Final success: cookies carry a real session
+	// 最终成功：Cookie 里已经带有真实会话
 	if sodaCookiesHaveSession(cookies) {
 		cookie := sodaJoinCookies(cookies)
 		result.Status = model.QRLoginStatusSuccess
@@ -377,8 +377,8 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 		return result
 	}
 
-	// MFA branch: official check_qrconnect returns no `status` but
-	// account_flow=verify and error_code=2046 with encrypt_uid + biz_params.
+	// MFA 分支：官方 check_qrconnect 不返回 `status`，而是返回
+	// account_flow=verify、error_code=2046 以及 encrypt_uid + biz_params。
 	status := strings.ToLower(strings.TrimSpace(resp.Data.Status))
 	accountFlow := strings.ToLower(strings.TrimSpace(resp.Data.AccountFlow))
 	if accountFlow == "verify" || resp.Data.ErrorCode == 2046 {
@@ -393,9 +393,8 @@ func (s *Soda) sodaQRConnectResult(token string, body []byte, cookies map[string
 
 	switch status {
 	case "confirmed":
-		// QR confirmed on phone but session cookies not yet issued.
-		// Caller should keep polling; the next check_qrconnect typically
-		// returns Set-Cookie with sessionid.
+		// 手机已确认扫码，但会话 Cookie 还没下发。调用方应继续轮询，
+		// 下一次 check_qrconnect 通常会返回带 sessionid 的 Set-Cookie。
 		result.Status = model.QRLoginStatusScanned
 		result.Message = "已扫码确认，等待登录结果"
 		rememberSodaQRLoginPending(token, sodaQRLoginPendingState{
@@ -736,7 +735,7 @@ func (s *Soda) sodaValidateCode(token, encryptUID, verifyParams, code string) (*
 		}, nil
 	}
 
-	// Success - collect cookies
+	// 成功 —— 收集 Cookie
 	mergedCookies := mergeSodaCookies(pending.Cookies, cookies)
 	pending.Cookies = mergedCookies
 	pending.EncryptUID = encryptUID
@@ -777,7 +776,7 @@ func (s *Soda) postSodaPassportWithCookie(apiURL string, form url.Values, cookie
 	} else {
 		req.Header.Set("Accept", "application/json, text/javascript")
 	}
-	// bd-ticket-guard headers required by Bytedance Passport
+	// 字节 Passport 要求携带的 bd-ticket-guard 请求头
 	req.Header.Set("bd-ticket-guard-version", "2")
 	req.Header.Set("bd-ticket-guard-iteration-version", "2")
 	req.Header.Set("bd-ticket-guard-ree-public-key", "BAnIxKL96Jby5x+Um9i7HZ2c8O6lfZJRxm6yk73Mqcr06l2qIw2iqu2Mtm3U/6OI98usukA9dqxUlsctVWK9rKA=")
@@ -980,7 +979,7 @@ func sodaStableDeviceID() string {
 }
 
 func sodaStableInstallID() string {
-	sodaStableDeviceID() // ensure init
+	sodaStableDeviceID() // 确保已初始化
 	return sodaInstallIDVal
 }
 

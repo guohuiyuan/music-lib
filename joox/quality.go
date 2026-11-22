@@ -121,8 +121,8 @@ var jooxQualityCandidates = []jooxQualityCandidate{
 	},
 }
 
-// ListQualityOptions returns every JOOX quality tier understood by either the
-// current open API or the legacy web_get_songinfo response.
+// ListQualityOptions 返回当前 Open API 或旧版 web_get_songinfo 响应
+// 支持的全部 JOOX 音质档位。
 func ListQualityOptions() []model.AudioQualityOption {
 	options := make([]model.AudioQualityOption, 0, len(jooxQualityCandidates))
 	for _, candidate := range jooxQualityCandidates {
@@ -131,8 +131,8 @@ func ListQualityOptions() []model.AudioQualityOption {
 	return options
 }
 
-// AvailableQualityOptions checks the configured JOOX account against a real
-// catalog track and reports only URLs returned by the playable track response.
+// AvailableQualityOptions 用一首真实曲库歌曲校验配置的 JOOX 账号，
+// 只返回可播放歌曲响应里实际给出的地址。
 func (j *Joox) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	songs, err := j.Search(jooxQualityProbeKeyword)
 	if err != nil {
@@ -164,8 +164,8 @@ func (j *Joox) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	return options, nil
 }
 
-// GetDownloadURLWithQuality resolves one exact JOOX tier. The shared core
-// fallback is responsible for moving to lower tiers when a request fails.
+// GetDownloadURLWithQuality 解析指定的 JOOX 档位。请求失败时由公共核心的
+// 回退逻辑负责降级到更低档位。
 func (j *Joox) GetDownloadURLWithQuality(song *model.Song, quality string) (string, error) {
 	normalized, ok := model.NormalizeAudioQuality(quality)
 	if !ok {

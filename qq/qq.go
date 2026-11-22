@@ -30,12 +30,12 @@ func New(cookie string) *QQ { return &QQ{cookie: cookie} }
 
 var defaultQQ = New("")
 
-// joinQQNames joins artist names for display.
+// joinQQNames 拼接用于展示的歌手名。
 func joinQQNames(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// fetchAlbumDetail returns album metadata and songs.
+// fetchAlbumDetail 返回专辑信息和歌曲。
 func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) {
 	albumMID := strings.TrimSpace(id)
 	if albumMID == "" {
@@ -279,7 +279,7 @@ func (q *QQ) fetchAlbumDetail(id string) (*model.Playlist, []model.Song, error) 
 	return album, songs, nil
 }
 
-// fetchPlaylistDetail returns playlist metadata and songs.
+// fetchPlaylistDetail 返回歌单信息和歌曲。
 func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, error) {
 	params := url.Values{}
 	params.Set("type", "1")
@@ -402,7 +402,7 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 
 	info := resp.Cdlist[0]
 
-	// Build playlist metadata.
+	// 构建歌单信息。
 	playlist := &model.Playlist{
 		Source:      "qq",
 		ID:          id,
@@ -461,7 +461,7 @@ func (q *QQ) fetchPlaylistDetail(id string) (*model.Playlist, []model.Song, erro
 	return playlist, songs, nil
 }
 
-// fetchSongDetail loads song metadata by songmid.
+// fetchSongDetail 根据 songmid 加载歌曲元数据。
 func (q *QQ) fetchSongDetail(songMID string) (*model.Song, error) {
 	params := url.Values{}
 	params.Set("songmid", songMID)

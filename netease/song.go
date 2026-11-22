@@ -12,7 +12,7 @@ func Search(keyword string) ([]model.Song, error) { return defaultNetease.Search
 
 func Parse(link string) (*model.Song, error) { return defaultNetease.Parse(link) }
 
-// Search searches songs.
+// Search 搜索歌曲。
 func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	body, err := n.cloudSearch(keyword, 1, 10)
 	if err != nil {
@@ -58,13 +58,13 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	isVip, _ := n.IsVipAccount()
 
 	for _, item := range resp.Result.Songs {
-		// Skip unavailable songs for non-VIP accounts.
+		// 非 VIP 账号跳过不可用的歌曲。
 		if !isVip && item.Privilege.Fl == 0 {
 			continue
 		}
 
 		var size int64
-		// Prefer the highest available bitrate.
+		// 优先选择可用的最高码率。
 		if item.Privilege.Fl >= 320000 && item.H.Size > 0 {
 			size = item.H.Size
 		} else if item.Privilege.Fl >= 192000 && item.M.Size > 0 {
@@ -103,7 +103,7 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// Parse parses a song link.
+// Parse 解析歌曲链接。
 func (n *Netease) Parse(link string) (*model.Song, error) {
 	kind, songID, err := parseNeteaseLink(link)
 	if err != nil {

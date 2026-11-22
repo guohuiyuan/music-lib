@@ -16,7 +16,7 @@ func Search(keyword string) ([]model.Song, error) { return defaultQQ.Search(keyw
 
 func Parse(link string) (*model.Song, error) { return defaultQQ.Parse(link) }
 
-// Search searches songs.
+// Search 搜索歌曲。
 func (q *QQ) Search(keyword string) ([]model.Song, error) {
 	params := url.Values{}
 	params.Set("w", keyword)
@@ -69,7 +69,7 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 
 	var songs []model.Song
 	for _, item := range resp.Data.Song.List {
-		// Hide VIP-only songs for non-VIP accounts.
+		// 非 VIP 账号隐藏 VIP 专属歌曲。
 		if !isVip && item.Pay.PayPlay == 1 {
 			continue
 		}
@@ -118,21 +118,21 @@ func (q *QQ) Search(keyword string) ([]model.Song, error) {
 	return songs, nil
 }
 
-// Parse parses a song link and enriches it with download info when possible.
+// Parse 解析歌曲链接，并在可能时补充下载信息。
 func (q *QQ) Parse(link string) (*model.Song, error) {
 	var songMID string
 
-	// Try songDetail/xxx format
+	// 尝试 songDetail/xxx 格式
 	re := regexp.MustCompile(`songDetail/(\w+)`)
 	if matches := re.FindStringSubmatch(link); len(matches) >= 2 {
 		songMID = matches[1]
 	}
 
-	// Try playsong.html?songid=xxx or songid query param
+	// 尝试 playsong.html?songid=xxx 或 songid 查询参数
 	if songMID == "" {
 		if u, err := url.Parse(link); err == nil {
 			if id := u.Query().Get("songid"); id != "" {
-				// Numeric songid — fetch detail by ID
+				// 纯数字 songid —— 按 ID 获取详情
 				song, err := q.fetchSongDetailByID(id)
 				if err != nil {
 					return nil, err

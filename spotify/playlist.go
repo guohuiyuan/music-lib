@@ -52,8 +52,8 @@ type spotifyEmbedEntity struct {
 	TrackList []spotifyEmbedTrack `json:"trackList"`
 }
 
-// spotifyEmbedReleaseDate accepts both the historical string format and the
-// object format currently returned by Spotify's public embed endpoints.
+// spotifyEmbedReleaseDate 同时接受历史上的字符串格式和 Spotify 公开嵌入接口
+// 目前返回的对象格式。
 type spotifyEmbedReleaseDate struct {
 	ISOString string
 	Year      int
@@ -276,8 +276,8 @@ func (s *Spotify) fetchPlaylistTracks(id string) ([]model.Song, error) {
 		var page spotifyPaging[spotifyPlaylistItem]
 		path := "/playlists/" + url.PathEscape(id) + "/" + endpoint
 		if err := s.getJSON(context.Background(), path, query, false, &page); err != nil {
-			// Spotify renamed the endpoint to /items. Keep the old endpoint as
-			// a fallback for applications pinned to the legacy Web API shape.
+			// Spotify 已把接口改名为 /items。保留旧接口，
+			// 作为仍固定使用旧版 Web API 形态的应用的回退。
 			if offset == 0 && endpoint == "items" && isSpotifyEndpointUnavailable(err) {
 				endpoint = "tracks"
 				continue
