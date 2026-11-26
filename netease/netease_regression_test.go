@@ -1,7 +1,10 @@
 package netease
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +109,29 @@ func TestParseRecommendedPlaylistsWithLargeIDRegression(t *testing.T) {
 	}
 	if playlists[0].Name != "large id playlist" {
 		t.Fatalf("parseRecommendedPlaylists returned name %q, want large id playlist", playlists[0].Name)
+	}
+}
+
+func TestCloudSearchUsesEAPIEndpoint(t *testing.T) {
+	if !strings.Contains(SearchAPI, "/eapi/cloudsearch/pc") {
+		t.Fatalf("SearchAPI = %q, want /eapi/cloudsearch/pc endpoint", SearchAPI)
+	}
+	rawPayload := `{"limit":10,"offset":0,"s":"晴天","type":1}`
+	cipherHex := EncryptEApi(SearchAPI, rawPayload)
+	cipherBytes, err := hex.DecodeString(cipherHex)
+	if err != nil {
+		t.Fatalf("hex decode eapi params: %v", err)
+	}
+	plain, err := aesECBDecrypt([]byte("e82ckenh8dichen8"), cipherBytes)
+	if err != nil {
+		t.Fatalf("decrypt eapi params: %v", err)
+	}
+	parts := strings.Split(string(pkcs7Unpad(plain)), "-36cd479b6b5-")
+	if len(parts) != 3 || parts[0] != "/api/cloudsearch/pc" {
+		t.Fatalf("unexpected decrypted eapi envelope: %q", parts)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(parts[1]), &got); err != nil || got["s"] != "晴天" {
+		t.Fatalf("unexpected decrypted search payload: %v, %v", got, err)
 	}
 }
