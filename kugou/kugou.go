@@ -688,9 +688,17 @@ func (k *Kugou) fetchVIPSongInfo(s *model.Song) (*model.Song, error) {
 }
 
 func (k *Kugou) fetchURLV5(s *model.Song, hash string) (*model.Song, error) {
+	return k.fetchURLV5WithQuality(s, hash, "flac")
+}
+
+func (k *Kugou) fetchURLV5WithQuality(s *model.Song, hash, quality string) (*model.Song, error) {
 	hash = strings.ToLower(strings.TrimSpace(hash))
 	if !isValidHash(hash) {
 		return nil, errors.New("invalid kugou hash")
+	}
+	quality = strings.TrimSpace(quality)
+	if quality == "" {
+		quality = "flac"
 	}
 
 	cookie := parseKugouCookie(k.cookie)
@@ -703,11 +711,13 @@ func (k *Kugou) fetchURLV5(s *model.Song, hash string) (*model.Song, error) {
 
 	albumAudioID := "0"
 	albumID := "0"
+	duration := 0
 	name, artist, album := "", "", ""
 	if s != nil {
 		name = s.Name
 		artist = s.Artist
 		album = s.Album
+		duration = s.Duration
 		albumID = firstNonEmpty(s.AlbumID, albumID)
 		if s.Extra != nil {
 			albumAudioID = firstNonEmpty(s.Extra["album_audio_id"], s.Extra["audio_id"], albumAudioID)
@@ -732,7 +742,7 @@ func (k *Kugou) fetchURLV5(s *model.Song, hash string) (*model.Song, error) {
 		"ssa_flag":       "is_fromtrack",
 		"version":        "11436",
 		"page_id":        "967177915",
-		"quality":        "flac",
+		"quality":        quality,
 		"album_audio_id": albumAudioID,
 		"behavior":       "play",
 		"pid":            "411",
@@ -778,17 +788,18 @@ func (k *Kugou) fetchURLV5(s *model.Song, hash string) (*model.Song, error) {
 		ext = "flac"
 	}
 	return &model.Song{
-		Source:  "kugou",
-		ID:      hash,
-		Name:    firstNonEmpty(findKugouString(resp, "songName", "song_name", "audio_name"), name),
-		Artist:  firstNonEmpty(findKugouString(resp, "authorName", "author_name", "singerName"), artist),
-		Album:   album,
-		AlbumID: albumID,
-		Size:    findKugouInt64(resp, "fileSize", "filesize"),
-		Bitrate: normalizeKugouBitrate(findKugouInt(resp, "bitRate", "bitrate")),
-		Ext:     ext,
-		URL:     downloadURL,
-		Link:    fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
+		Source:   "kugou",
+		ID:       hash,
+		Name:     firstNonEmpty(findKugouString(resp, "songName", "song_name", "audio_name"), name),
+		Artist:   firstNonEmpty(findKugouString(resp, "authorName", "author_name", "singerName"), artist),
+		Album:    album,
+		AlbumID:  albumID,
+		Duration: duration,
+		Size:     findKugouInt64(resp, "fileSize", "filesize"),
+		Bitrate:  normalizeKugouBitrate(findKugouInt(resp, "bitRate", "bitrate")),
+		Ext:      ext,
+		URL:      downloadURL,
+		Link:     fmt.Sprintf("https://www.kugou.com/song/#hash=%s", hash),
 		Extra: map[string]string{
 			"hash":           hash,
 			"album_audio_id": albumAudioID,

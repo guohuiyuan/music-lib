@@ -9,12 +9,12 @@ import (
 )
 
 var kugouQualityCandidates = []model.AudioQualityOption{
+	{Value: model.AudioQualityUltra, Label: "超清 96kHz", Format: "flac", VIP: true},
+	{Value: model.AudioQualitySpatial, Label: "沉浸环绕声 6ch", Format: "flac", VIP: true},
 	{Value: model.AudioQualityHiRes, Label: "Hi-Res 无损", Format: "flac", VIP: true},
 	{Value: model.AudioQualityLossless, Label: "无损音质", Format: "flac", VIP: true},
 	{Value: model.AudioQualityHigh, Label: "高品质 320k", Format: "mp3", Bitrate: 320},
-	{Value: model.AudioQualityHigher, Label: "较高品质 192k", Format: "ogg", Bitrate: 192},
 	{Value: model.AudioQualityStandard, Label: "标准音质 128k", Format: "mp3", Bitrate: 128},
-	{Value: model.AudioQualityLow, Label: "低品质 64k", Format: "mp3", Bitrate: 64},
 }
 
 var kugouQualityProbeSong = &model.Song{
@@ -49,6 +49,13 @@ func (k *Kugou) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 		return append([]model.AudioQualityOption(nil), k.availableQualityCache...), nil
 	}
 
+	if !k.hasAppToken() && !k.hasSonginfoAuth() {
+		// 没有可用登录态时酷狗匿名只保证标准音质，直接返回可避免长时间探测。
+		options := kugouQualityOptionsFor(model.AudioQualityStandard)
+		k.availableQualityCache = append([]model.AudioQualityOption(nil), options...)
+		return append([]model.AudioQualityOption(nil), options...), nil
+	}
+
 	probeSongs := make([]*model.Song, 0, 4)
 	if songs, err := k.Search(kugouQualityProbeKeyword); err == nil {
 		for i := range songs {
@@ -61,40 +68,86 @@ func (k *Kugou) AvailableQualityOptions() ([]model.AudioQualityOption, error) {
 	}
 	probeSongs = append(probeSongs, kugouQualityProbeSong)
 
-	options := probeKugouQualityOptions(
-		probeSongs,
-		func(song *model.Song, quality model.AudioQuality) bool {
-			_, err := k.GetDownloadURLWithQuality(song, string(quality))
-			return err == nil
-		},
-	)
+	probe := func(song *model.Song, quality model.AudioQuality) bool {
+		_, err := k.GetDownloadURLWithQuality(song, string(quality))
+		return err == nil
+	}
+	if k.hasAppToken() {
+		// App token 账号直接走 v5 精确探测，避免逐档回退到大体积接口。
+		probe = func(song *model.Song, quality model.AudioQuality) bool {
+			return k.probeV5Quality(song, quality)
+		}
+	} else {
+		// 普通网页 Cookie 只用一个探测歌曲，避免逐个档位回退导致设置页长时间等待。
+		probeSongs = probeSongs[:1]
+	}
+
+	options := probeKugouQualityOptions(probeSongs, probe)
 	k.availableQualityCache = append([]model.AudioQualityOption(nil), options...)
 	return append([]model.AudioQualityOption(nil), options...), nil
 }
 
-// probeKugouQualityOptions 一次只用一首代表性歌曲，遇到第一首能给出可播放
-// 音质集合的歌曲就停止。音质与具体歌曲相关，用许多不相关的歌曲去逐个补探
-// 缺失档位只会增加延迟，并不会让结果更可靠。
+func (k *Kugou) hasAppToken() bool {
+	cookie := parseKugouCookie(k.cookie)
+	return strings.TrimSpace(cookie["token"]) != "" &&
+		strings.TrimSpace(cookie["userid"]) != "" &&
+		strings.TrimSpace(cookie["KUGOU_API_MID"]) != ""
+}
+
+func (k *Kugou) hasSonginfoAuth() bool {
+	cookie := parseKugouCookie(k.cookie)
+	return strings.TrimSpace(cookie["t"]) != "" && strings.TrimSpace(cookie["KugooID"]) != ""
+}
+
+func (k *Kugou) probeV5Quality(song *model.Song, quality model.AudioQuality) bool {
+	for _, hash := range kugouHashesForQuality(song, quality) {
+		for _, v5Quality := range kugouV5QualityNames(quality) {
+			info, err := k.fetchURLV5WithQuality(song, hash, v5Quality)
+			if err == nil && kugouQualitySatisfies(info, quality) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func kugouQualityOptionsFor(quality model.AudioQuality) []model.AudioQualityOption {
+	options := make([]model.AudioQualityOption, 0, 1)
+	for _, option := range kugouQualityCandidates {
+		if option.Value == quality {
+			options = append(options, option)
+		}
+	}
+	return options
+}
+
+// probeKugouQualityOptions 会在多首探测歌曲之间补齐尚未确认的档位。
+// 单首歌可能缺少某些 hash（Hi-Res/环绕声尤其明显），只看第一首歌会漏报。
 func probeKugouQualityOptions(
 	songs []*model.Song,
 	probe func(*model.Song, model.AudioQuality) bool,
 ) []model.AudioQualityOption {
+	available := make(map[model.AudioQuality]struct{}, len(kugouQualityCandidates))
 	for _, song := range songs {
 		if song == nil {
 			continue
 		}
-		available := make(map[model.AudioQuality]struct{}, len(kugouQualityCandidates))
 		for _, option := range kugouQualityCandidates {
+			if _, exists := available[option.Value]; exists {
+				continue
+			}
 			if probe(song, option.Value) {
 				available[option.Value] = struct{}{}
 			}
 		}
-		if len(available) == 0 {
-			continue
+		if len(available) == len(kugouQualityCandidates) {
+			break
 		}
-		return qualityOptionsFromAvailable(available)
 	}
-	return nil
+	if len(available) == 0 {
+		return nil
+	}
+	return qualityOptionsFromAvailable(available)
 }
 
 func qualityOptionsFromAvailable(available map[model.AudioQuality]struct{}) []model.AudioQualityOption {
@@ -144,7 +197,7 @@ func (k *Kugou) GetDownloadURLWithQuality(s *model.Song, quality string) (string
 				"privilege":      extraValue(s, "privilege"),
 			},
 		}
-		info, err := k.fetchKugouQualityInfo(candidate, hash)
+		info, err := k.fetchKugouQualityInfo(candidate, hash, normalized)
 		if err != nil {
 			lastErr = err
 			continue
@@ -152,7 +205,7 @@ func (k *Kugou) GetDownloadURLWithQuality(s *model.Song, quality string) (string
 		if info == nil || strings.TrimSpace(info.URL) == "" {
 			continue
 		}
-		if kugouSongQuality(info) != normalized {
+		if !kugouQualitySatisfies(info, normalized) {
 			lastErr = fmt.Errorf("kugou returned %s instead of %s", kugouSongQuality(info), normalized)
 			continue
 		}
@@ -164,32 +217,78 @@ func (k *Kugou) GetDownloadURLWithQuality(s *model.Song, quality string) (string
 	return "", fmt.Errorf("kugou audio quality %s is unavailable for this song or account", normalized)
 }
 
-func (k *Kugou) fetchKugouQualityInfo(song *model.Song, hash string) (*model.Song, error) {
+func (k *Kugou) fetchKugouQualityInfo(song *model.Song, hash string, quality model.AudioQuality) (*model.Song, error) {
 	var lastErr error
-	if info, err := k.fetchVIPSongInfo(song); err == nil && info != nil {
-		return info, nil
-	} else if err != nil {
-		lastErr = err
+	for _, v5Quality := range kugouV5QualityNames(quality) {
+		info, err := k.fetchURLV5WithQuality(song, hash, v5Quality)
+		if err == nil && info != nil && info.URL != "" {
+			if kugouQualitySatisfies(info, quality) {
+				return info, nil
+			}
+			lastErr = fmt.Errorf("kugou returned %s instead of %s", kugouSongQuality(info), quality)
+		} else if err != nil {
+			lastErr = err
+		}
 	}
-	if info, err := k.fetchSonginfoV2(hash); err == nil && info != nil {
-		return info, nil
-	} else if err != nil {
-		lastErr = err
-	}
-	if info, err := k.fetchTrackerSongInfo(hash); err == nil && info != nil {
-		return info, nil
-	} else if err != nil {
-		lastErr = err
-	}
-	if info, err := k.fetchSongInfo(hash); err == nil && info != nil {
-		return info, nil
-	} else if err != nil {
-		lastErr = err
+	for _, fetch := range []func(string) (*model.Song, error){
+		k.fetchSonginfoV2,
+		k.fetchTrackerSongInfo,
+		k.fetchSongInfo,
+	} {
+		info, err := fetch(hash)
+		if err == nil && info != nil && info.URL != "" {
+			if kugouQualitySatisfies(info, quality) {
+				return info, nil
+			}
+			lastErr = fmt.Errorf("kugou returned %s instead of %s", kugouSongQuality(info), quality)
+		} else if err != nil {
+			lastErr = err
+		}
 	}
 	if lastErr != nil {
 		return nil, lastErr
 	}
 	return nil, errors.New("kugou download url not found")
+}
+
+func kugouV5QualityNames(quality model.AudioQuality) []string {
+	switch quality {
+	case model.AudioQualityUltra:
+		return []string{"viper_clear"}
+	case model.AudioQualitySpatial:
+		return []string{"viper_atmos"}
+	case model.AudioQualityHiRes:
+		return []string{"high", "viper_clear"}
+	case model.AudioQualityLossless:
+		return []string{"flac"}
+	case model.AudioQualityHigh:
+		return []string{"320"}
+	case model.AudioQualityHigher:
+		return []string{"192"}
+	case model.AudioQualityStandard:
+		return []string{"128"}
+	case model.AudioQualityLow:
+		return []string{"64"}
+	}
+	return nil
+}
+
+func kugouQualitySatisfies(info *model.Song, quality model.AudioQuality) bool {
+	if info == nil || strings.TrimSpace(info.URL) == "" {
+		return false
+	}
+	actual := kugouSongQuality(info)
+	if actual == quality {
+		return true
+	}
+	switch quality {
+	case model.AudioQualityHiRes:
+		return actual == model.AudioQualityUltra
+	case model.AudioQualitySpatial:
+		bitrate := inferKugouBitrate(info.Bitrate, info.Size, info.Duration)
+		return strings.EqualFold(strings.TrimSpace(info.Ext), "flac") && bitrate >= 1800 && bitrate < 3000
+	}
+	return false
 }
 
 func kugouHashesForQuality(song *model.Song, quality model.AudioQuality) []string {
@@ -205,6 +304,10 @@ func kugouHashesForQuality(song *model.Song, quality model.AudioQuality) []strin
 		keys = []string{"sq_hash", "hash"}
 	case model.AudioQualityHiRes:
 		keys = []string{"res_hash", "sq_hash", "hash"}
+	case model.AudioQualityUltra:
+		keys = []string{"res_hash", "sq_hash", "hash"}
+	case model.AudioQualitySpatial:
+		keys = []string{"res_hash", "hash"}
 	default:
 		return nil
 	}
@@ -238,6 +341,8 @@ func kugouSongQuality(song *model.Song) model.AudioQuality {
 	ext := strings.ToLower(strings.TrimSpace(song.Ext))
 	bitrate := inferKugouBitrate(song.Bitrate, song.Size, song.Duration)
 	switch {
+	case ext == "flac" && bitrate >= 3000:
+		return model.AudioQualityUltra
 	case ext == "flac" && bitrate >= 1000:
 		return model.AudioQualityHiRes
 	case looksLossless(ext, bitrate, song.Size):

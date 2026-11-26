@@ -22,6 +22,8 @@ func TestKugouHashesForQuality(t *testing.T) {
 		model.AudioQualityHigh:     "2123456789abcdef0123456789abcdef",
 		model.AudioQualityLossless: "3123456789abcdef0123456789abcdef",
 		model.AudioQualityHiRes:    "4123456789abcdef0123456789abcdef",
+		model.AudioQualityUltra:    "4123456789abcdef0123456789abcdef",
+		model.AudioQualitySpatial:  "4123456789abcdef0123456789abcdef",
 	}
 	for quality, want := range tests {
 		hashes := kugouHashesForQuality(song, quality)
@@ -36,12 +38,13 @@ func TestKugouSongQuality(t *testing.T) {
 		song *model.Song
 		want model.AudioQuality
 	}{
-		{&model.Song{Ext: "mp3", Bitrate: 128}, model.AudioQualityStandard},
-		{&model.Song{Ext: "mp3", Bitrate: 320}, model.AudioQualityHigh},
-		{&model.Song{Ext: "flac", Bitrate: 800}, model.AudioQualityLossless},
-		{&model.Song{Ext: "flac", Bitrate: 1200000}, model.AudioQualityHiRes},
-		{&model.Song{Ext: "mp3", Size: 9_600_000, Duration: 240}, model.AudioQualityHigh},
-		{&model.Song{Ext: "flac", Size: 28_800_000, Duration: 240}, model.AudioQualityLossless},
+		{&model.Song{URL: "https://example.com/track", Ext: "mp3", Bitrate: 128}, model.AudioQualityStandard},
+		{&model.Song{URL: "https://example.com/track", Ext: "mp3", Bitrate: 320}, model.AudioQualityHigh},
+		{&model.Song{URL: "https://example.com/track", Ext: "flac", Bitrate: 800}, model.AudioQualityLossless},
+		{&model.Song{URL: "https://example.com/track", Ext: "flac", Bitrate: 1200000}, model.AudioQualityHiRes},
+		{&model.Song{URL: "https://example.com/track", Ext: "flac", Size: 121_767_659, Duration: 270}, model.AudioQualityUltra},
+		{&model.Song{URL: "https://example.com/track", Ext: "mp3", Size: 9_600_000, Duration: 240}, model.AudioQualityHigh},
+		{&model.Song{URL: "https://example.com/track", Ext: "flac", Size: 28_800_000, Duration: 240}, model.AudioQualityLossless},
 	}
 	for _, test := range tests {
 		if got := kugouSongQuality(test.song); got != test.want {
@@ -73,7 +76,87 @@ func TestInferKugouBitrate(t *testing.T) {
 	}
 }
 
-func TestProbeKugouQualityOptionsStopsAfterFirstPlayableSong(t *testing.T) {
+func TestKugouV5QualityNames(t *testing.T) {
+	tests := map[model.AudioQuality]string{
+		model.AudioQualityUltra:    "viper_clear",
+		model.AudioQualitySpatial:  "viper_atmos",
+		model.AudioQualityHiRes:    "high",
+		model.AudioQualityLossless: "flac",
+		model.AudioQualityHigh:     "320",
+		model.AudioQualityStandard: "128",
+	}
+	for quality, want := range tests {
+		names := kugouV5QualityNames(quality)
+		if len(names) == 0 || names[0] != want {
+			t.Fatalf("kugouV5QualityNames(%s) = %#v, want first %q", quality, names, want)
+		}
+	}
+}
+
+func TestKugouQualitySatisfies(t *testing.T) {
+	tests := []struct {
+		name      string
+		song      *model.Song
+		requested model.AudioQuality
+		want      bool
+	}{
+		{
+			name:      "hires accepts 24bit",
+			song:      &model.Song{URL: "https://example.com/track", Ext: "flac", Size: 55_397_039, Duration: 270},
+			requested: model.AudioQualityHiRes,
+			want:      true,
+		},
+		{
+			name:      "hires accepts 96khz",
+			song:      &model.Song{URL: "https://example.com/track", Ext: "flac", Size: 121_767_659, Duration: 270},
+			requested: model.AudioQualityHiRes,
+			want:      true,
+		},
+		{
+			name:      "ultra accepts 96khz",
+			song:      &model.Song{URL: "https://example.com/track", Ext: "flac", Size: 121_767_659, Duration: 270},
+			requested: model.AudioQualityUltra,
+			want:      true,
+		},
+		{
+			name:      "spatial accepts 6ch size",
+			song:      &model.Song{URL: "https://example.com/track", Ext: "flac", Size: 72_293_078, Duration: 270},
+			requested: model.AudioQualitySpatial,
+			want:      true,
+		},
+		{
+			name:      "spatial rejects 24bit",
+			song:      &model.Song{URL: "https://example.com/track", Ext: "flac", Size: 55_397_039, Duration: 270},
+			requested: model.AudioQualitySpatial,
+			want:      false,
+		},
+		{
+			name:      "high accepts 320",
+			song:      &model.Song{URL: "https://example.com/track", Ext: "mp3", Size: 10_792_943, Duration: 270},
+			requested: model.AudioQualityHigh,
+			want:      true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := kugouQualitySatisfies(test.song, test.requested); got != test.want {
+				t.Fatalf("kugouQualitySatisfies() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAvailableQualityOptionsAnonymousReturnsStandard(t *testing.T) {
+	options, err := New("").AvailableQualityOptions()
+	if err != nil {
+		t.Fatalf("AvailableQualityOptions: %v", err)
+	}
+	if len(options) != 1 || options[0].Value != model.AudioQualityStandard {
+		t.Fatalf("anonymous options = %#v, want only standard", options)
+	}
+}
+
+func TestProbeKugouQualityOptionsAggregatesAcrossSongs(t *testing.T) {
 	songs := []*model.Song{
 		{ID: "first"},
 		{ID: "second"},
@@ -84,11 +167,14 @@ func TestProbeKugouQualityOptionsStopsAfterFirstPlayableSong(t *testing.T) {
 		songs,
 		func(song *model.Song, quality model.AudioQuality) bool {
 			callsBySong[song.ID]++
-			if song.ID != "second" {
+			switch song.ID {
+			case "first":
+				return quality == model.AudioQualityHigh
+			case "second":
+				return quality == model.AudioQualityStandard
+			default:
 				return false
 			}
-			return quality == model.AudioQualityHigh ||
-				quality == model.AudioQualityStandard
 		},
 	)
 
@@ -96,12 +182,8 @@ func TestProbeKugouQualityOptionsStopsAfterFirstPlayableSong(t *testing.T) {
 		t.Fatalf("first song probe calls = %d, want %d",
 			callsBySong["first"], len(kugouQualityCandidates))
 	}
-	if callsBySong["second"] != len(kugouQualityCandidates) {
-		t.Fatalf("second song probe calls = %d, want %d",
-			callsBySong["second"], len(kugouQualityCandidates))
-	}
-	if callsBySong["third"] != 0 {
-		t.Fatalf("third song probe calls = %d, want 0", callsBySong["third"])
+	if callsBySong["second"] == 0 || callsBySong["third"] == 0 {
+		t.Fatalf("later songs were not probed: %#v", callsBySong)
 	}
 	if len(options) != 2 ||
 		options[0].Value != model.AudioQualityHigh ||
