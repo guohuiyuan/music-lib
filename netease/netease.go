@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	Referer                = "http://music.163.com/"
-	SearchAPI              = "http://music.163.com/api/linux/forward"
+	Referer                = "https://music.163.com/"
+	SearchAPI              = "https://interface3.music.163.com/eapi/cloudsearch/pc"
 	DownloadAPI            = "http://music.163.com/weapi/song/enhance/player/url"
 	DownloadEAPI           = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1"
 	DetailAPI              = "https://music.163.com/weapi/v3/song/detail"
@@ -118,20 +118,18 @@ func (n *Netease) setCachedVIPStatus(isVip bool) {
 
 // cloudSearch 调用共享的网易云搜索接口。
 func (n *Netease) cloudSearch(keyword string, searchType int, limit int) ([]byte, error) {
-	eparams := map[string]interface{}{
-		"method": "POST",
-		"url":    "http://music.163.com/api/cloudsearch/pc",
-		"params": map[string]interface{}{
-			"s":      keyword,
-			"type":   searchType,
-			"offset": 0,
-			"limit":  limit,
-		},
+	payload := map[string]interface{}{
+		"s":      keyword,
+		"type":   searchType,
+		"offset": 0,
+		"limit":  limit,
 	}
-	eparamsJSON, _ := json.Marshal(eparams)
-	encryptedParam := EncryptLinux(string(eparamsJSON))
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
 	form := url.Values{}
-	form.Set("eparams", encryptedParam)
+	form.Set("params", EncryptEApi(SearchAPI, string(payloadJSON)))
 
 	headers := []utils.RequestOption{
 		utils.WithHeader("Referer", Referer),

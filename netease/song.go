@@ -20,6 +20,7 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 	}
 
 	var resp struct {
+		Code   int `json:"code"`
 		Result struct {
 			Songs []struct {
 				ID   int    `json:"id"`
@@ -52,6 +53,9 @@ func (n *Netease) Search(keyword string) ([]model.Song, error) {
 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("netease json parse error: %w", err)
+	}
+	if resp.Code != 200 {
+		return nil, fmt.Errorf("netease api error code: %d", resp.Code)
 	}
 
 	var songs []model.Song

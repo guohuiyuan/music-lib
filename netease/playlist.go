@@ -48,6 +48,7 @@ func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 	}
 
 	var resp struct {
+		Code   int `json:"code"`
 		Result struct {
 			Playlists []struct {
 				ID          int64  `json:"id"`
@@ -65,6 +66,9 @@ func (n *Netease) SearchPlaylist(keyword string) ([]model.Playlist, error) {
 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("netease playlist json parse error: %w", err)
+	}
+	if resp.Code != 200 {
+		return nil, fmt.Errorf("netease api error code: %d", resp.Code)
 	}
 
 	var playlists []model.Playlist
